@@ -11,14 +11,16 @@ from pathlib import Path
 from flask import Flask, jsonify, request, render_template
 
 from registry import Registry
-from scanner import Scanner
-from runner import Runner
+from scanner  import Scanner
+from runner   import Runner
+from vault    import Vault
 
 app = Flask(__name__)
 
 registry = Registry()
 scanner  = Scanner()
 runner   = Runner()
+vault    = Vault()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -51,11 +53,10 @@ def build_project_view(project: dict, scan: dict, state: dict) -> dict:
 
     view = {**project, "status": status, **proc_data}
 
-    # Attach most recent error from logs (if any)
+    # Attach most recent error from logs
     recent_error = runner.find_recent_error(name)
     if recent_error:
         view["recent_error"] = recent_error
-        # Running project with a logged error → flag it
         if status == "running":
             view["has_error"] = True
 
@@ -121,6 +122,7 @@ def remove_project(name):
     try:
         registry.remove(name)
         registry.clear_pid(name)
+        vault.clear_project(name)   # remove any vault overrides
         return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -147,7 +149,8 @@ def start_project(name):
         }), 409
 
     try:
-        pid = runner.start(project)
+        extra_env = vault.resolve_for_project(name, project.get("env", []))
+        pid       = runner.start(project, extra_env=extra_env)
         registry.set_pid(name, pid)
         return jsonify({"ok": True, "pid": pid})
     except (ValueError, OSError) as e:
@@ -255,7 +258,7 @@ def get_groups():
 
 @app.route("/api/groups", methods=["POST"])
 def add_group():
-    data = request.json or {}
+    data     = request.json or {}
     name     = (data.get("name") or "").strip()
     projects = data.get("projects") or []
 
@@ -264,7 +267,6 @@ def add_group():
     if not isinstance(projects, list):
         return jsonify({"error": "'projects' must be a list"}), 400
 
-    # Validate that all named projects exist
     unknown = [p for p in projects if not registry.get(p)]
     if unknown:
         return jsonify({"error": f"Unknown projects: {', '.join(unknown)}"}), 400
@@ -300,13 +302,11 @@ def start_group(name):
             results.append({"name": proj_name, "error": "Project not found in registry"})
             continue
 
-        # Already running → skip
         managed_pid = state.get(proj_name, {}).get("pid")
         if managed_pid and runner.is_running(managed_pid):
             results.append({"name": proj_name, "status": "already_running"})
             continue
 
-        # Port conflict → skip
         if project["port"] in scan:
             proc = scan[project["port"]]
             results.append({
@@ -316,12 +316,12 @@ def start_group(name):
             continue
 
         try:
-            pid = runner.start(project)
+            extra_env = vault.resolve_for_project(proj_name, project.get("env", []))
+            pid       = runner.start(project, extra_env=extra_env)
             registry.set_pid(proj_name, pid)
             results.append({"name": proj_name, "status": "started", "pid": pid})
-            # Brief pause so this process can bind its port before the next starts
             time.sleep(0.4)
-            scan = scanner.scan()   # refresh after each start
+            scan = scanner.scan()
         except Exception as e:
             results.append({"name": proj_name, "error": str(e)})
 
@@ -349,6 +349,104 @@ def stop_group(name):
     return jsonify({"group": name, "results": results})
 
 
+# ── Vault — summary & keys ─────────────────────────────────────────────────
+
+
+@app.route("/api/vault", methods=["GET"])
+def get_vault_summary():
+    return jsonify(vault.summary())
+
+
+@app.route("/api/vault/keys", methods=["GET"])
+def list_vault_keys():
+    return jsonify(vault.list_keys())
+
+
+@app.route("/api/vault/keys/<key>", methods=["GET"])
+def get_vault_key(key):
+    value = vault.get(key)
+    if value is None:
+        return jsonify({"error": f"Key '{key}' not found in vault"}), 404
+    return jsonify({"key": key, "value": value})
+
+
+@app.route("/api/vault/keys", methods=["POST"])
+def set_vault_key():
+    data  = request.json or {}
+    key   = (data.get("key") or "").strip().upper()
+    value = data.get("value", "")
+    if not key:
+        return jsonify({"error": "Missing field: key"}), 400
+    vault.set(key, value)
+    return jsonify({"ok": True, "key": key})
+
+
+@app.route("/api/vault/keys/<key>", methods=["DELETE"])
+def delete_vault_key(key):
+    vault.delete(key)
+    return jsonify({"ok": True})
+
+
+# ── Vault — overrides ──────────────────────────────────────────────────────
+
+
+@app.route("/api/vault/overrides/<project>", methods=["GET"])
+def get_project_overrides(project):
+    # Return key names only (not values) for the status display
+    return jsonify({"keys": sorted(vault.get_overrides(project).keys())})
+
+
+@app.route("/api/vault/overrides/<project>/<key>", methods=["GET"])
+def get_override_value(project, key):
+    overrides = vault.get_overrides(project)
+    if key not in overrides:
+        return jsonify({"error": f"No override for '{key}' in project '{project}'"}), 404
+    return jsonify({"key": key, "value": overrides[key]})
+
+
+@app.route("/api/vault/overrides/<project>", methods=["POST"])
+def set_project_override(project):
+    data  = request.json or {}
+    key   = (data.get("key") or "").strip().upper()
+    value = data.get("value", "")
+    if not key:
+        return jsonify({"error": "Missing field: key"}), 400
+    vault.set_override(project, key, value)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/vault/overrides/<project>/<key>", methods=["DELETE"])
+def delete_project_override(project, key):
+    vault.delete_override(project, key)
+    return jsonify({"ok": True})
+
+
+# ── Vault — audit & import ─────────────────────────────────────────────────
+
+
+@app.route("/api/vault/audit", methods=["GET"])
+def vault_audit():
+    return jsonify(vault.audit(registry.list()))
+
+
+@app.route("/api/vault/import", methods=["POST"])
+def import_dotenv():
+    data    = request.json or {}
+    content = data.get("content", "").strip()
+    project = data.get("project") or None   # None = import to shared
+
+    if not content:
+        return jsonify({"error": "No .env content provided"}), 400
+
+    imported = vault.import_dotenv(content, project)
+    return jsonify({
+        "ok":      True,
+        "count":   len(imported),
+        "keys":    sorted(imported.keys()),
+        "project": project,
+    })
+
+
 # ── Open in Finder / Terminal / Browser ────────────────────────────────────
 
 
@@ -369,11 +467,8 @@ def open_path():
         elif mode == "terminal":
             script = f'tell application "Terminal" to do script "cd {expanded}"'
             subprocess.Popen(["osascript", "-e", script])
-        elif mode == "browser":
+        elif mode in ("browser", "editor"):
             subprocess.Popen(["open", path])
-        elif mode == "editor":
-            # Open a specific file in the default editor
-            subprocess.Popen(["open", expanded])
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
