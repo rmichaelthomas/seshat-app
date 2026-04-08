@@ -6,6 +6,7 @@ let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
 let activeView   = "projects";   // "projects" | "vault" | "organize"
+let routerStatus = null;   // result of GET /api/router/status
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("vaultBtn").addEventListener("click", toggleVaultView);
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
+  loadSetupStatus();
   setInterval(refresh, 5000);
 });
 
@@ -95,6 +97,131 @@ async function showOrganizeView() {
   $("addProjectBtn").style.display = "none";
   closeDetail();
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+}
+
+// ── Router setup ──────────────────────────────────────────────────────────
+
+async function loadSetupStatus() {
+  try {
+    const res  = await fetch("/api/router/status");
+    routerStatus = await res.json();
+    updateRouterBanner();
+  } catch (_) { /* server may be restarting */ }
+}
+
+function routerReady() {
+  return routerStatus &&
+    routerStatus.caddy_running &&
+    routerStatus.dnsmasq_running &&
+    routerStatus.resolver_configured;
+}
+
+function updateRouterBanner() {
+  const banner = $("routerBanner");
+  if (!routerStatus) return;
+  const fullySetup = routerStatus.caddy_installed && routerStatus.dnsmasq_installed &&
+                     routerStatus.caddy_running    && routerStatus.dnsmasq_running &&
+                     routerStatus.resolver_configured;
+  if (fullySetup) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "flex";
+  const installed  = routerStatus.caddy_installed && routerStatus.dnsmasq_installed;
+  const configured = routerStatus.resolver_configured;
+  $("routerRestartBtn").style.display = (installed && configured) ? "" : "none";
+}
+
+function openSetupModal() {
+  $("routerModalOverlay").style.display = "flex";
+  runSetupWizard();
+}
+
+function closeSetupModal() {
+  $("routerModalOverlay").style.display = "none";
+  if (_resolverPollTimer) { clearInterval(_resolverPollTimer); _resolverPollTimer = null; }
+}
+
+let _resolverPollTimer = null;
+
+async function runSetupWizard() {
+  if (!routerStatus) await loadSetupStatus();
+  updateStepStatus("caddy",   routerStatus.caddy_installed);
+  updateStepStatus("dnsmasq", routerStatus.dnsmasq_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) {
+    await runDnsmasqConfig();
+  }
+}
+
+function updateStepStatus(stepId, ok, running = false) {
+  const el   = $(`step-${stepId}-status`);
+  const body = $(`step-${stepId}-body`);
+  if (running) {
+    el.textContent = "⏳";
+    if (body) body.style.display = "none";
+    return;
+  }
+  el.textContent = ok ? "✅" : "❌";
+  if (body) body.style.display = ok ? "none" : "";
+}
+
+async function checkCaddyInstalled() {
+  await loadSetupStatus();
+  updateStepStatus("caddy", routerStatus.caddy_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) runDnsmasqConfig();
+}
+
+async function checkDnsmasqInstalled() {
+  await loadSetupStatus();
+  updateStepStatus("dnsmasq", routerStatus.dnsmasq_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) runDnsmasqConfig();
+}
+
+async function runDnsmasqConfig() {
+  updateStepStatus("dnsmasq-cfg", false, true);
+  try {
+    const res  = await fetch("/api/router/setup/dnsmasq", { method: "POST" });
+    const data = await res.json();
+    updateStepStatus("dnsmasq-cfg", data.ok);
+    if (data.ok) startResolverPolling();
+    else $("routerModalError").textContent = data.error || "dnsmasq configuration failed";
+  } catch (e) {
+    updateStepStatus("dnsmasq-cfg", false);
+    $("routerModalError").textContent = e.message;
+  }
+}
+
+function startResolverPolling() {
+  updateStepStatus("resolver", false);
+  _resolverPollTimer = setInterval(async () => {
+    await loadSetupStatus();
+    if (routerStatus.resolver_configured) {
+      clearInterval(_resolverPollTimer);
+      _resolverPollTimer = null;
+      updateStepStatus("resolver", true);
+      $("routerModalDoneBtn").style.display = "";
+    }
+  }, 2000);
+}
+
+async function finishSetup() {
+  const res  = await fetch("/api/router/setup/caddy-start", { method: "POST" });
+  const data = await res.json();
+  if (!data.ok) {
+    $("routerModalError").textContent = data.error || "Failed to start Caddy";
+    return;
+  }
+  closeSetupModal();
+  await loadSetupStatus();
+  await loadHostnames();
+  renderShelf();
+}
+
+async function restartRouterServices() {
+  await fetch("/api/router/setup/caddy-start", { method: "POST" });
+  await fetch("/api/router/setup/dnsmasq",     { method: "POST" });
+  await loadSetupStatus();
+  renderShelf();
 }
 
 // ── Render (projects view) ─────────────────────────────────────────────────
