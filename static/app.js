@@ -6,6 +6,8 @@ let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
 let activeView   = "projects";   // "projects" | "vault" | "organize"
+let routerStatus = null;   // result of GET /api/router/status
+let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +19,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("vaultBtn").addEventListener("click", toggleVaultView);
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
+  loadSetupStatus();
+  loadHostnames();
   setInterval(refresh, 5000);
 });
 
@@ -24,14 +28,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function refresh() {
   try {
-    const [projRes, orphanRes, groupRes] = await Promise.all([
+    const [projRes, orphanRes, groupRes, hostnamesRes] = await Promise.all([
       fetch("/api/projects"),
       fetch("/api/orphans"),
       fetch("/api/groups"),
+      fetch("/api/router/hostnames"),
     ]);
-    projects = await projRes.json();
-    orphans  = await orphanRes.json();
-    groups   = await groupRes.json();
+    projects  = await projRes.json();
+    orphans   = await orphanRes.json();
+    groups    = await groupRes.json();
+    hostnames = await hostnamesRes.json();
 
     if (activeView === "projects") {
       render();
@@ -97,6 +103,195 @@ async function showOrganizeView() {
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
 }
 
+// ── Router setup ──────────────────────────────────────────────────────────
+
+async function loadSetupStatus() {
+  try {
+    const res  = await fetch("/api/router/status");
+    routerStatus = await res.json();
+    updateRouterBanner();
+  } catch (_) { /* server may be restarting */ }
+}
+
+function routerReady() {
+  return routerStatus &&
+    routerStatus.caddy_running &&
+    routerStatus.dnsmasq_running &&
+    routerStatus.resolver_configured;
+}
+
+function updateRouterBanner() {
+  const banner = $("routerBanner");
+  if (!routerStatus) return;
+  const fullySetup = routerStatus.caddy_installed && routerStatus.dnsmasq_installed &&
+                     routerStatus.caddy_running    && routerStatus.dnsmasq_running &&
+                     routerStatus.resolver_configured;
+  if (fullySetup) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "flex";
+  const installed  = routerStatus.caddy_installed && routerStatus.dnsmasq_installed;
+  const configured = routerStatus.resolver_configured;
+  $("routerRestartBtn").style.display = (installed && configured) ? "" : "none";
+}
+
+function openSetupModal() {
+  $("routerModalOverlay").style.display = "flex";
+  runSetupWizard();
+}
+
+function closeSetupModal() {
+  $("routerModalOverlay").style.display = "none";
+  if (_resolverPollTimer) { clearInterval(_resolverPollTimer); _resolverPollTimer = null; }
+}
+
+let _resolverPollTimer = null;
+
+async function runSetupWizard() {
+  if (!routerStatus) await loadSetupStatus();
+  updateStepStatus("caddy",   routerStatus.caddy_installed);
+  updateStepStatus("dnsmasq", routerStatus.dnsmasq_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) {
+    await runDnsmasqConfig();
+  }
+}
+
+function updateStepStatus(stepId, ok, running = false) {
+  const el   = $(`step-${stepId}-status`);
+  const body = $(`step-${stepId}-body`);
+  if (running) {
+    el.textContent = "⏳";
+    if (body) body.style.display = "none";
+    return;
+  }
+  el.textContent = ok ? "✅" : "❌";
+  if (body) body.style.display = ok ? "none" : "";
+}
+
+async function checkCaddyInstalled() {
+  await loadSetupStatus();
+  updateStepStatus("caddy", routerStatus.caddy_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) runDnsmasqConfig();
+}
+
+async function checkDnsmasqInstalled() {
+  await loadSetupStatus();
+  updateStepStatus("dnsmasq", routerStatus.dnsmasq_installed);
+  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) runDnsmasqConfig();
+}
+
+async function runDnsmasqConfig() {
+  updateStepStatus("dnsmasq-cfg", false, true);
+  try {
+    const res  = await fetch("/api/router/setup/dnsmasq", { method: "POST" });
+    const data = await res.json();
+    updateStepStatus("dnsmasq-cfg", data.ok);
+    if (data.ok) startResolverPolling();
+    else $("routerModalError").textContent = data.error || "dnsmasq configuration failed";
+  } catch (e) {
+    updateStepStatus("dnsmasq-cfg", false);
+    $("routerModalError").textContent = e.message;
+  }
+}
+
+function startResolverPolling() {
+  updateStepStatus("resolver", false);
+  _resolverPollTimer = setInterval(async () => {
+    await loadSetupStatus();
+    if (routerStatus.resolver_configured) {
+      clearInterval(_resolverPollTimer);
+      _resolverPollTimer = null;
+      updateStepStatus("resolver", true);
+      $("routerModalDoneBtn").style.display = "";
+    }
+  }, 2000);
+}
+
+async function finishSetup() {
+  const res  = await fetch("/api/router/setup/caddy-start", { method: "POST" });
+  const data = await res.json();
+  if (!data.ok) {
+    $("routerModalError").textContent = data.error || "Failed to start Caddy";
+    return;
+  }
+  closeSetupModal();
+  await loadSetupStatus();
+  await loadHostnames();
+  renderShelf();
+}
+
+async function restartRouterServices() {
+  await fetch("/api/router/setup/caddy-start", { method: "POST" });
+  await fetch("/api/router/setup/dnsmasq",     { method: "POST" });
+  await loadSetupStatus();
+  renderShelf();
+}
+
+function editHostname(projectName) {
+  const field = $(`hostname-field-${projectName}`);
+  if (!field) return;
+  const h       = hostnames.find(x => x.project_name === projectName);
+  const current = h ? h.hostname : _slugify(projectName);
+  const safeN   = projectName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  field.querySelector(".hostname-field-view").outerHTML = `
+    <div class="hostname-field-edit">
+      <input class="hostname-edit-input" id="hostname-input-${esc(projectName)}"
+             value="${esc(current)}" spellcheck="false">
+      <button class="btn btn-primary btn-sm" onclick="saveHostname('${safeN}')">Save</button>
+      <button class="btn btn-ghost  btn-sm" onclick="resetHostname('${safeN}')">Reset to default</button>
+    </div>`;
+}
+
+async function saveHostname(projectName) {
+  const input = $(`hostname-input-${projectName}`);
+  if (!input) return;
+  const hostname = input.value.trim();
+  const res  = await fetch(`/api/router/hostnames/${encodeURIComponent(projectName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hostname }),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  await loadHostnames();
+  renderShelf();
+  updateDetailPanel(projectName);
+}
+
+async function resetHostname(projectName) {
+  const res  = await fetch(`/api/router/hostnames/${encodeURIComponent(projectName)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  await loadHostnames();
+  renderShelf();
+  updateDetailPanel(projectName);
+}
+
+async function useHostnameForVaultKey(key, hostnameUrl, proj) {
+  const url  = proj
+    ? `/api/vault/overrides/${encodeURIComponent(proj)}`
+    : "/api/vault/keys";
+  const res  = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value: hostnameUrl }),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  toast("Updated to hostname URL", "success");
+  await renderVaultView();
+}
+
+async function loadHostnames() {
+  try {
+    const res = await fetch("/api/router/hostnames");
+    hostnames = await res.json();
+  } catch (_) { /* server may be restarting */ }
+}
+
 // ── Render (projects view) ─────────────────────────────────────────────────
 
 function render() {
@@ -157,6 +352,14 @@ function getStatusLightClass(p) {
   return p.status;   // "running" | "stopped"
 }
 
+function _hostnameChipHTML(projectName) {
+  const h = hostnames.find(x => x.project_name === projectName);
+  if (!h) return "";
+  const ready = routerReady();
+  return `<div class="hostname-chip${ready ? "" : " muted"}"
+               data-hostname="${esc(h.hostname)}">${esc(h.hostname)}</div>`;
+}
+
 function projectRowHTML(p) {
   const isRunning  = p.status === "running";
   const hasError   = isRunning && p.has_error && p.recent_error;
@@ -177,6 +380,7 @@ function projectRowHTML(p) {
         ${conflictLine}${errorLine}
       </div>
       <div class="project-port">:${p.port}</div>
+      ${_hostnameChipHTML(p.name)}
       <div class="project-dir">${esc(shortPath(p.directory))}</div>
       <div class="project-actions">
         <button class="action-btn start-stop-btn ${ssCls}" title="${isRunning?"Stop":"Start"}">${ssIcon}</button>
@@ -197,6 +401,10 @@ function attachRowEvents(shelf) {
     });
     row.querySelector(".open-browser-btn").addEventListener("click", e => {
       e.stopPropagation(); window.open(p.url || `http://localhost:${p.port}`, "_blank");
+    });
+    row.querySelector(".hostname-chip:not(.muted)")?.addEventListener("click", e => {
+      e.stopPropagation();
+      window.open(`http://${e.currentTarget.dataset.hostname}`, "_blank");
     });
     row.querySelector(".open-finder-btn").addEventListener("click", e => {
       e.stopPropagation(); apiOpen(p.directory, "finder");
@@ -261,6 +469,24 @@ function selectProject(name) {
   loadEnvStatus(name);
 }
 
+function _slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") + ".seshat";
+}
+
+function _hostnameDetailFieldHTML(projectName) {
+  const h = hostnames.find(x => x.project_name === projectName);
+  const current = h ? h.hostname : _slugify(projectName);
+  const safeN = projectName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return `
+    <div class="detail-field hostname-detail-field" id="hostname-field-${esc(projectName)}">
+      <div class="detail-label">Local Address</div>
+      <div class="hostname-field-view">
+        <span class="hostname-field-value">${esc(current)}</span>
+        <button class="detail-section-action" onclick="editHostname('${safeN}')">Edit</button>
+      </div>
+    </div>`;
+}
+
 function updateDetailPanel(name) {
   const p = projects.find(x => x.name === name);
   if (!p) return;
@@ -304,6 +530,7 @@ function updateDetailPanel(name) {
     <div class="detail-name">${esc(p.name)}</div>
     <div class="detail-url">localhost:${p.port}</div>
     <div class="detail-status ${statusCls}">${statusTxt}</div>
+    ${_hostnameDetailFieldHTML(p.name)}
     ${conflictBlock}${errorBlock}
     <div class="detail-actions">
       ${isRunning
@@ -690,6 +917,26 @@ function renderImportSection() {
     </div>`;
 }
 
+function buildLocalhostHint(value, key, proj) {
+  // value must match http://localhost:PORT or https://localhost:PORT
+  const m = /^https?:\/\/localhost:(\d+)/.exec(value);
+  if (!m) return null;
+  const port = parseInt(m[1], 10);
+  const match = hostnames.find(h => h.port === port);
+  if (!match) return null;
+  const hostnameUrl = `http://${match.hostname}`;
+  const safeKey  = key.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const safeProj = (proj || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return `
+    <div class="vault-hostname-hint">
+      You can also use <code>${esc(hostnameUrl)}</code>
+      <button class="vault-hostname-hint-btn"
+              onclick="useHostnameForVaultKey('${safeKey}','${esc(hostnameUrl)}','${safeProj}')">
+        Use hostname
+      </button>
+    </div>`;
+}
+
 function initVaultViewEvents() {
   // Reveal shared key
   document.querySelectorAll(".reveal-key-btn").forEach(btn => {
@@ -697,12 +944,20 @@ function initVaultViewEvents() {
       const key = btn.dataset.key;
       const el  = $(`keyval-${key}`);
       if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed"); return;
+        el.textContent = "••••••••"; el.classList.remove("revealed");
+        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+        return;
       }
       try {
         const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
         const d   = await res.json();
         el.textContent = d.value; el.classList.add("revealed");
+        const hint = buildLocalhostHint(d.value, key, null);
+        if (hint) {
+          el.closest(".vault-key-row")
+            .querySelector(".vault-row-actions")
+            .insertAdjacentHTML("beforebegin", hint);
+        }
       } catch (_) { toast("Could not reveal key", "error"); }
     });
   });
@@ -729,12 +984,20 @@ function initVaultViewEvents() {
       const { proj, key } = btn.dataset;
       const el = $(`ovval-${proj}-${key}`);
       if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed"); return;
+        el.textContent = "••••••••"; el.classList.remove("revealed");
+        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+        return;
       }
       try {
         const res = await fetch(`/api/vault/overrides/${encodeURIComponent(proj)}/${encodeURIComponent(key)}`);
         const d   = await res.json();
         el.textContent = d.value; el.classList.add("revealed");
+        const hint = buildLocalhostHint(d.value, key, proj);
+        if (hint) {
+          el.closest(".vault-key-row")
+            .querySelector(".vault-row-actions")
+            .insertAdjacentHTML("beforebegin", hint);
+        }
       } catch (_) { toast("Could not reveal value", "error"); }
     });
   });

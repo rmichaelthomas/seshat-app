@@ -16,6 +16,7 @@ from scanner   import Scanner
 from runner    import Runner
 from vault     import Vault
 from organizer import Organizer
+from router    import Router
 import deps as deps_module
 
 app = Flask(__name__)
@@ -25,6 +26,7 @@ scanner  = Scanner()
 runner   = Runner()
 vault     = Vault()
 organizer = Organizer(registry)
+router   = Router(registry)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -160,7 +162,9 @@ def add_project():
         "env":          data.get("env") or [],
     }
     try:
-        return jsonify(registry.add(project)), 201
+        result = registry.add(project)
+        router._reload_caddy()
+        return jsonify(result), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
 
@@ -181,6 +185,7 @@ def remove_project(name):
         registry.clear_pid(name)
         vault.clear_project(name)       # remove any vault overrides
         deps_module.invalidate(name)    # clear dep cache
+        router._reload_caddy()
         return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -578,6 +583,51 @@ def rollback_move():
         return jsonify(organizer.rollback(move_id))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+
+# ── Router ─────────────────────────────────────────────────────────────────
+
+
+@app.route("/api/router/status", methods=["GET"])
+def get_router_status():
+    return jsonify(router.setup_status())
+
+
+@app.route("/api/router/setup/dnsmasq", methods=["POST"])
+def setup_dnsmasq():
+    return jsonify(router.configure_dnsmasq())
+
+
+@app.route("/api/router/setup/caddy-start", methods=["POST"])
+def setup_caddy_start():
+    return jsonify(router.start_caddy())
+
+
+@app.route("/api/router/hostnames", methods=["GET"])
+def get_hostnames():
+    return jsonify(router.all_hostnames())
+
+
+@app.route("/api/router/hostnames/<project>", methods=["PUT"])
+def set_hostname(project):
+    data     = request.json or {}
+    hostname = (data.get("hostname") or "").strip()
+    if not hostname:
+        return jsonify({"error": "Missing required field: hostname"}), 400
+    try:
+        return jsonify(router.set_hostname(project, hostname))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/router/hostnames/<project>", methods=["DELETE"])
+def reset_hostname(project):
+    return jsonify(router.reset_hostname(project))
+
+
+@app.route("/api/router/reload", methods=["POST"])
+def reload_caddy():
+    return jsonify(router._reload_caddy())
 
 
 # ── Open in Finder / Terminal / Browser ────────────────────────────────────

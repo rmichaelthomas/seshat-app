@@ -23,6 +23,15 @@
     </div>
   </header>
 
+  <!-- ── Router setup banner ─────────────────────────────────────────── -->
+  <div id="routerBanner" class="router-banner" style="display:none">
+    <span>Local hostnames not configured — projects could be reachable at
+      <code>vault.seshat</code> and friends.</span>
+    <button class="router-banner-btn" onclick="openSetupModal()">Set Up</button>
+    <button class="router-banner-btn router-banner-restart" id="routerRestartBtn"
+            style="display:none" onclick="restartRouterServices()">Restart Services</button>
+  </div>
+
   <!-- Body -->
   <div class="layout">
 
@@ -262,6 +271,78 @@
 </div>
 
 <div class="toast-container" id="toastContainer"></div>
+
+<!-- ── Router setup modal ──────────────────────────────────────────── -->
+<div class="modal-overlay" id="routerModalOverlay" style="display:none">
+  <div class="modal router-modal">
+    <div class="modal-header">
+      <h2>Set Up Local Hostnames</h2>
+      <button class="icon-btn" onclick="closeSetupModal()">✕</button>
+    </div>
+
+    <p class="router-modal-intro">
+      This wizard installs Caddy and dnsmasq so every project gets a
+      friendly <code>.seshat</code> address in your browser.
+    </p>
+
+    <ol class="router-setup-steps">
+
+      <li class="router-step" id="step-caddy">
+        <div class="router-step-header">
+          <span class="router-step-label">Install Caddy</span>
+          <span class="router-step-status" id="step-caddy-status"></span>
+        </div>
+        <div class="router-step-body" id="step-caddy-body">
+          <pre class="router-cmd">brew install caddy</pre>
+          <button class="btn btn-ghost btn-sm" onclick="checkCaddyInstalled()">Check Again</button>
+        </div>
+      </li>
+
+      <li class="router-step" id="step-dnsmasq">
+        <div class="router-step-header">
+          <span class="router-step-label">Install dnsmasq</span>
+          <span class="router-step-status" id="step-dnsmasq-status"></span>
+        </div>
+        <div class="router-step-body" id="step-dnsmasq-body">
+          <pre class="router-cmd">brew install dnsmasq</pre>
+          <button class="btn btn-ghost btn-sm" onclick="checkDnsmasqInstalled()">Check Again</button>
+        </div>
+      </li>
+
+      <li class="router-step" id="step-dnsmasq-cfg">
+        <div class="router-step-header">
+          <span class="router-step-label">Configure dnsmasq</span>
+          <span class="router-step-status" id="step-dnsmasq-cfg-status"></span>
+        </div>
+        <div class="router-step-body" id="step-dnsmasq-cfg-body">
+          <span style="color:var(--text-muted);font-size:13px">Running automatically…</span>
+        </div>
+      </li>
+
+      <li class="router-step" id="step-resolver">
+        <div class="router-step-header">
+          <span class="router-step-label">Configure macOS resolver</span>
+          <span class="router-step-status" id="step-resolver-status"></span>
+        </div>
+        <div class="router-step-body" id="step-resolver-body">
+          <p style="font-size:13px;margin:0 0 8px">
+            Run these two commands in your Terminal, then wait — Seshat will detect when it's done.
+          </p>
+          <pre class="router-cmd">sudo mkdir -p /etc/resolver
+sudo tee /etc/resolver/seshat &lt;&lt;&lt; "nameserver 127.0.0.1"</pre>
+        </div>
+      </li>
+
+    </ol>
+
+    <div class="router-modal-footer">
+      <span id="routerModalError" class="form-error" style="flex:1"></span>
+      <button class="btn btn-ghost" onclick="closeSetupModal()">Cancel</button>
+      <button class="btn btn-primary" id="routerModalDoneBtn"
+              style="display:none" onclick="finishSetup()">Done</button>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
