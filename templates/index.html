@@ -48,6 +48,15 @@
         <span class="filter-left"><span class="filter-dot orange"></span>Orphans</span>
         <span class="count" id="count-orphans">0</span>
       </button>
+
+      <!-- Groups -->
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-section-header">
+        <span class="sidebar-label" style="padding:0">Groups</span>
+        <button class="sidebar-add-btn" id="addGroupBtn" title="New group">+</button>
+      </div>
+      <div id="groupList"><!-- rendered by JS --></div>
+
     </aside>
 
     <!-- Main shelf -->
@@ -93,7 +102,7 @@
   </div>
 </div>
 
-<!-- Add Project Modal -->
+<!-- ── Register Project Modal ───────────────────────────────────────────── -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <div class="modal-header">
@@ -135,6 +144,33 @@
       <div class="form-actions">
         <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
         <button type="submit" class="btn btn-primary">Register</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Create Group Modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="groupModalOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>New Group</h2>
+      <button class="icon-btn" id="groupModalClose">✕</button>
+    </div>
+    <form id="addGroupForm" autocomplete="off">
+      <div class="form-group">
+        <label>Group Name <span class="required">*</span></label>
+        <input type="text" name="groupName" placeholder="e.g. Full Stack" required>
+      </div>
+      <div class="form-group">
+        <label>Projects</label>
+        <div class="checkbox-list" id="groupProjectCheckboxes">
+          <div style="color:var(--text-muted);font-size:12px">No projects registered yet.</div>
+        </div>
+      </div>
+      <div class="form-error" id="groupFormError"></div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-ghost" id="groupCancelBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Group</button>
       </div>
     </form>
   </div>
