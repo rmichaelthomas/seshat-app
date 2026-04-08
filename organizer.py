@@ -3,9 +3,9 @@ organizer.py — folder map, recommended structure, safe migration, rollback.
 """
 
 import re
-import shutil
-import subprocess
-from datetime import datetime, timezone
+import shutil       # used in migrate() and rollback()
+import subprocess   # used in _git_verify()
+from datetime import datetime, timezone  # used in migrate()
 from pathlib import Path
 
 import yaml
@@ -36,7 +36,7 @@ class Organizer:
 
     # ── History ────────────────────────────────────────────────────────────
 
-    def load_history(self, project_name: str = None) -> list[dict]:
+    def load_history(self, project_name: str | None = None) -> list[dict]:
         moves = self._load_moves()
         if project_name:
             moves = [m for m in moves if m["project"] == project_name]

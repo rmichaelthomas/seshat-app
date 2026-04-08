@@ -1,7 +1,5 @@
 import pytest
 from pathlib import Path
-from unittest.mock import patch
-
 import registry as reg_module
 import organizer as org_module
 from registry import Registry
