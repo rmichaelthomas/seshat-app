@@ -58,3 +58,19 @@ class Organizer:
     def _write_moves(self, moves: list[dict]) -> None:
         SESHAT_DIR.mkdir(exist_ok=True)
         MOVES_FILE.write_text(yaml.dump({"moves": moves}, **_YAML_OPTS))
+
+    # ── Folder map ─────────────────────────────────────────────────────────────
+
+    def folder_map(self) -> list[dict]:
+        projects = self.registry.list()
+        groups: dict[str, list] = {}
+        for p in projects:
+            expanded = str(Path(p["directory"]).expanduser().resolve())
+            parent   = str(Path(expanded).parent)
+            groups.setdefault(parent, []).append({
+                "name":      p["name"],
+                "port":      p["port"],
+                "tags":      p.get("tags", []),
+                "directory": expanded,
+            })
+        return [{"parent": k, "projects": v} for k, v in sorted(groups.items())]
