@@ -74,3 +74,24 @@ class Organizer:
                 "directory": str(path),
             })
         return [{"parent": k, "projects": v} for k, v in sorted(groups.items())]
+
+    # ── Recommendations ────────────────────────────────────────────────────────
+
+    def recommend_structure(self, root: str = "~/Projects") -> list[dict]:
+        root_path = Path(root).expanduser()
+        result = []
+        for p in self.registry.list():
+            current  = str(Path(p["directory"]).expanduser().resolve())
+            slug     = _slugify(p["name"])
+            subdir   = next(
+                (TAG_DIRS[t] for t in (p.get("tags") or []) if t in TAG_DIRS),
+                "misc",
+            )
+            suggested = str(root_path / subdir / slug)
+            result.append({
+                "project_name": p["name"],
+                "current":      current,
+                "suggested":    suggested,
+                "slug":         slug,
+            })
+        return result

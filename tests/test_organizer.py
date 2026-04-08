@@ -146,3 +146,47 @@ def test_folder_map_expands_home_directory(org, tmp_seshat, monkeypatch):
     # directory in result should be fully expanded (no ~)
     assert "~" not in result[0]["projects"][0]["directory"]
     assert result[0]["projects"][0]["directory"].startswith(str(tmp_seshat))
+
+
+# ── recommend_structure ────────────────────────────────────────────────────
+
+def _add_project(org, name, port, directory, tags):
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    org.registry.add({"name": name, "port": port, "directory": directory,
+                       "start": "npm start", "tags": tags, "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+
+def test_recommend_maps_tag_to_subdir(org, tmp_seshat):
+    _add_project(org, "VAULT", 5001, str(tmp_seshat / "old" / "vault"), ["infrastructure", "rag"])
+    recs = org.recommend_structure(root=str(tmp_seshat / "Projects"))
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec["project_name"] == "VAULT"
+    assert "infrastructure" in rec["suggested"]
+    assert "vault" in rec["suggested"]
+
+
+def test_recommend_unknown_tag_goes_to_misc(org, tmp_seshat):
+    _add_project(org, "RandomApp", 9001, str(tmp_seshat / "old" / "random"), ["unknown-tag"])
+    recs = org.recommend_structure(root=str(tmp_seshat / "Projects"))
+    assert "misc" in recs[0]["suggested"]
+
+
+def test_recommend_slug_lowercases_and_hyphenates(org, tmp_seshat):
+    _add_project(org, "SLAPS Prototype", 3000, str(tmp_seshat / "old" / "slaps"), ["games"])
+    recs = org.recommend_structure(root=str(tmp_seshat / "Projects"))
+    assert recs[0]["slug"] == "slaps-prototype"
+    assert "slaps-prototype" in recs[0]["suggested"]
+
+
+def test_recommend_current_path_is_resolved(org, tmp_seshat):
+    _add_project(org, "App", 8000, str(tmp_seshat / "old" / "app"), [])
+    recs = org.recommend_structure()
+    assert Path(recs[0]["current"]).is_absolute()
+
+
+def test_recommend_rag_tag_maps_to_infrastructure(org, tmp_seshat):
+    _add_project(org, "RAGApp", 5002, str(tmp_seshat / "old" / "rag"), ["rag"])
+    recs = org.recommend_structure(root=str(tmp_seshat / "Projects"))
+    assert "infrastructure" in recs[0]["suggested"]
