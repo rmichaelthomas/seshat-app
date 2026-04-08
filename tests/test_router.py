@@ -341,7 +341,8 @@ def test_setup_status_resolver_not_configured(rtr, monkeypatch, tmp_seshat):
 # ── configure_dnsmasq ──────────────────────────────────────────────────────
 
 def test_configure_dnsmasq_appends_line(rtr, monkeypatch, tmp_path):
-    conf = tmp_path / "dnsmasq.conf"
+    conf = tmp_path / "etc" / "dnsmasq.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("# existing config\n")
     calls = []
 
@@ -363,7 +364,8 @@ def test_configure_dnsmasq_appends_line(rtr, monkeypatch, tmp_path):
     assert "address=/.seshat/127.0.0.1" in conf.read_text()
 
 def test_configure_dnsmasq_is_idempotent(rtr, monkeypatch, tmp_path):
-    conf = tmp_path / "dnsmasq.conf"
+    conf = tmp_path / "etc" / "dnsmasq.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("# existing\naddress=/.seshat/127.0.0.1\n")
 
     def fake_run(cmd, **_):
@@ -383,7 +385,8 @@ def test_configure_dnsmasq_is_idempotent(rtr, monkeypatch, tmp_path):
     assert content.count("address=/.seshat/127.0.0.1") == 1
 
 def test_configure_dnsmasq_restarts_service(rtr, monkeypatch, tmp_path):
-    conf = tmp_path / "dnsmasq.conf"
+    conf = tmp_path / "etc" / "dnsmasq.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("")
     calls = []
 
