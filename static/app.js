@@ -5,7 +5,7 @@ let orphans      = [];
 let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
-let activeView   = "projects";   // "projects" | "vault"
+let activeView   = "projects";   // "projects" | "vault" | "organize"
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initGroupModal();
   initVaultKeyModal();
   $("vaultBtn").addEventListener("click", toggleVaultView);
+  $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
   setInterval(refresh, 5000);
 });
@@ -52,11 +53,21 @@ function toggleVaultView() {
   }
 }
 
+function toggleOrganizeView() {
+  if (activeView === "organize") {
+    showProjectView();
+  } else {
+    showOrganizeView();
+  }
+}
+
 function showProjectView() {
   activeView = "projects";
-  $("projectView").style.display = "block";
-  $("vaultView").style.display   = "none";
+  $("projectView").style.display  = "block";
+  $("vaultView").style.display    = "none";
+  $("organizeView").style.display = "none";
   $("vaultBtn").classList.remove("active");
+  $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "";
   closeDetail();
   render();
@@ -64,12 +75,26 @@ function showProjectView() {
 
 async function showVaultView() {
   activeView = "vault";
-  $("projectView").style.display = "none";
-  $("vaultView").style.display   = "block";
+  $("projectView").style.display  = "none";
+  $("vaultView").style.display    = "block";
+  $("organizeView").style.display = "none";
   $("vaultBtn").classList.add("active");
+  $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   closeDetail();
   await renderVaultView();
+}
+
+async function showOrganizeView() {
+  activeView = "organize";
+  $("projectView").style.display  = "none";
+  $("vaultView").style.display    = "none";
+  $("organizeView").style.display = "block";
+  $("organizeBtn").classList.add("active");
+  $("vaultBtn").classList.remove("active");
+  $("addProjectBtn").style.display = "none";
+  closeDetail();
+  await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
 }
 
 // ── Render (projects view) ─────────────────────────────────────────────────
@@ -1047,6 +1072,42 @@ function closeGroupModal() {
   $("addGroupForm").reset();
   $("groupFormError").textContent = "";
 }
+
+// ── Organize view ──────────────────────────────────────────────────────────
+
+async function loadFolderMap() {
+  const el = $("folderMapContent");
+  if (!el) return;
+  try {
+    const res  = await fetch("/api/organize/map");
+    const data = await res.json();
+    el.innerHTML = renderFolderMap(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load folder map.</div></div>`;
+  }
+}
+
+function renderFolderMap(groups) {
+  if (!groups || groups.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No projects registered yet.</div></div>`;
+  }
+  return groups.map(g => `
+    <div class="folder-group">
+      <div class="folder-group-header">${esc(shortPath(g.parent))}</div>
+      ${g.projects.map(p => `
+        <div class="folder-group-row">
+          <span class="folder-project-name">${esc(p.name)}</span>
+          <span class="folder-project-port">:${p.port}</span>
+          <span class="folder-project-dir">${esc(shortPath(p.directory))}</span>
+          ${(p.tags||[]).slice(0,3).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+// Stubs — implemented in Tasks 11-13
+async function loadRecommendations() {}
+async function loadMoveHistory()     {}
+async function moveAll()             {}
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
