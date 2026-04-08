@@ -42,3 +42,18 @@ class Router:
         HOSTNAMES_FILE.write_text(
             yaml.dump({"hostnames": hostnames}, **_YAML_OPTS)
         )
+
+    # ── Public hostname API ────────────────────────────────────────────────
+
+    def all_hostnames(self) -> list[dict]:
+        """Return [{project_name, hostname, port}] for all registered projects."""
+        saved = self._load_hostnames()
+        result = []
+        for p in self.registry.list():
+            name = p["name"]
+            result.append({
+                "project_name": name,
+                "hostname":     saved.get(name) or _slugify(name),
+                "port":         p.get("port"),
+            })
+        return result

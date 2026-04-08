@@ -64,3 +64,38 @@ def test_write_hostnames_creates_seshat_dir(rtr, tmp_seshat):
 def test_load_hostnames_empty_file(rtr, tmp_seshat):
     (tmp_seshat / "hostnames.yaml").write_text("")
     assert rtr._load_hostnames() == {}
+
+
+# ── all_hostnames ──────────────────────────────────────────────────────────
+
+def test_all_hostnames_empty_registry(rtr):
+    assert rtr.all_hostnames() == []
+
+def test_all_hostnames_auto_generates_slug(rtr):
+    rtr.registry.add({"name": "My Vault", "directory": "/tmp/vault", "port": 5001})
+    result = rtr.all_hostnames()
+    assert len(result) == 1
+    assert result[0]["project_name"] == "My Vault"
+    assert result[0]["hostname"]     == "my-vault.seshat"
+    assert result[0]["port"]         == 5001
+
+def test_all_hostnames_uses_saved_override(rtr):
+    rtr.registry.add({"name": "My Vault", "directory": "/tmp/vault", "port": 5001})
+    rtr._write_hostnames({"My Vault": "vault.seshat"})
+    result = rtr.all_hostnames()
+    assert result[0]["hostname"] == "vault.seshat"
+
+def test_all_hostnames_mixed_saved_and_auto(rtr):
+    rtr.registry.add({"name": "Vault",  "directory": "/tmp/v", "port": 5001})
+    rtr.registry.add({"name": "My API", "directory": "/tmp/a", "port": 3000})
+    rtr._write_hostnames({"Vault": "vault.seshat"})
+    result = rtr.all_hostnames()
+    names = {r["project_name"]: r["hostname"] for r in result}
+    assert names["Vault"]  == "vault.seshat"
+    assert names["My API"] == "my-api.seshat"
+
+def test_all_hostnames_project_without_port(rtr):
+    rtr.registry.add({"name": "Docs", "directory": "/tmp/docs", "port": None})
+    result = rtr.all_hostnames()
+    assert result[0]["port"] is None
+    assert result[0]["hostname"] == "docs.seshat"
