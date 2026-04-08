@@ -11,10 +11,11 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, render_template
 
-from registry import Registry
-from scanner  import Scanner
-from runner   import Runner
-from vault    import Vault
+from registry  import Registry
+from scanner   import Scanner
+from runner    import Runner
+from vault     import Vault
+from organizer import Organizer
 import deps as deps_module
 
 app = Flask(__name__)
@@ -22,7 +23,8 @@ app = Flask(__name__)
 registry = Registry()
 scanner  = Scanner()
 runner   = Runner()
-vault    = Vault()
+vault     = Vault()
+organizer = Organizer(registry)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -521,6 +523,61 @@ def import_dotenv():
         "keys":    sorted(imported.keys()),
         "project": project,
     })
+
+
+# ── Organize ───────────────────────────────────────────────────────────────
+
+
+@app.route("/api/organize/map", methods=["GET"])
+def get_folder_map():
+    return jsonify(organizer.folder_map())
+
+
+@app.route("/api/organize/recommendations", methods=["GET"])
+def get_recommendations():
+    root = request.args.get("root", "~/Projects")
+    return jsonify(organizer.recommend_structure(root))
+
+
+@app.route("/api/organize/migrate", methods=["POST"])
+def migrate_project():
+    data        = request.json or {}
+    project     = (data.get("project") or "").strip()
+    destination = (data.get("destination") or "").strip()
+    force       = bool(data.get("force", False))
+
+    if not project or not destination:
+        return jsonify({"error": "Missing required fields: project, destination"}), 400
+
+    try:
+        result = organizer.migrate(project, destination, force=force)
+        if "warning" in result:
+            return jsonify(result), 200
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/organize/history", methods=["GET"])
+def get_move_history():
+    return jsonify(organizer.load_history())
+
+
+@app.route("/api/organize/history/<project_name>", methods=["GET"])
+def get_project_move_history(project_name):
+    return jsonify(organizer.load_history(project_name))
+
+
+@app.route("/api/organize/rollback", methods=["POST"])
+def rollback_move():
+    data    = request.json or {}
+    move_id = (data.get("move_id") or "").strip()
+    if not move_id:
+        return jsonify({"error": "Missing required field: move_id"}), 400
+    try:
+        return jsonify(organizer.rollback(move_id))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 # ── Open in Finder / Terminal / Browser ────────────────────────────────────

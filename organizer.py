@@ -1,0 +1,229 @@
+"""
+organizer.py — folder map, recommended structure, safe migration, rollback.
+"""
+
+import re
+import shutil       # used in migrate() and rollback()
+import subprocess   # used in _git_verify()
+from datetime import datetime, timezone  # used in migrate()
+from pathlib import Path
+
+import yaml
+
+from registry import Registry, SESHAT_DIR
+
+MOVES_FILE = SESHAT_DIR / "moves.log"
+
+_YAML_OPTS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+TAG_DIRS = {
+    "infrastructure": "infrastructure",
+    "games":          "games",
+    "creative":       "creative",
+    "civic":          "civic",
+    "rag":            "infrastructure",
+}
+
+
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+class Organizer:
+
+    def __init__(self, registry: Registry):
+        self.registry = registry
+
+    # ── History ────────────────────────────────────────────────────────────
+
+    def load_history(self, project_name: str | None = None) -> list[dict]:
+        moves = self._load_moves()
+        if project_name:
+            moves = [m for m in moves if m["project"] == project_name]
+        return list(reversed(moves))
+
+    # ── Moves log I/O ──────────────────────────────────────────────────────
+
+    def _load_moves(self) -> list[dict]:
+        if not MOVES_FILE.exists():
+            return []
+        data = yaml.safe_load(MOVES_FILE.read_text()) or {}
+        return data.get("moves", [])
+
+    def _append_move(self, record: dict) -> None:
+        moves = self._load_moves()
+        moves.append(record)
+        self._write_moves(moves)
+
+    def _write_moves(self, moves: list[dict]) -> None:
+        SESHAT_DIR.mkdir(exist_ok=True)
+        MOVES_FILE.write_text(yaml.dump({"moves": moves}, **_YAML_OPTS))
+
+    # ── Folder map ─────────────────────────────────────────────────────────────
+
+    def folder_map(self) -> list[dict]:
+        projects = self.registry.list()
+        groups: dict[str, list] = {}
+        for p in projects:
+            path   = Path(p["directory"]).expanduser().resolve()
+            parent = str(path.parent)
+            groups.setdefault(parent, []).append({
+                "name":      p["name"],
+                "port":      p["port"],
+                "tags":      p.get("tags", []),
+                "directory": str(path),
+            })
+        return [{"parent": k, "projects": v} for k, v in sorted(groups.items())]
+
+    # ── Recommendations ────────────────────────────────────────────────────────
+
+    def recommend_structure(self, root: str = "~/Projects") -> list[dict]:
+        root_path = Path(root).expanduser()
+        result = []
+        for p in self.registry.list():
+            current  = str(Path(p["directory"]).expanduser().resolve())
+            slug     = _slugify(p["name"])
+            subdir   = next(
+                (TAG_DIRS[t] for t in (p.get("tags") or []) if t in TAG_DIRS),
+                "misc",
+            )
+            suggested = str(root_path / subdir / slug)
+            result.append({
+                "project_name": p["name"],
+                "current":      current,
+                "suggested":    suggested,
+                "slug":         slug,
+            })
+        return result
+
+    # ── Migration ──────────────────────────────────────────────────────────────
+
+    def migrate(self, project_name: str, destination: str, force: bool = False) -> dict:
+        project = self.registry.get(project_name)
+        if not project:
+            raise ValueError(f"Project '{project_name}' not found.")
+
+        state = self.registry.get_state()
+        if project_name in state and not force:
+            return {"warning": "project_running"}
+
+        current = Path(project["directory"]).expanduser().resolve()
+        dest    = Path(destination).expanduser().resolve()
+
+        if dest.exists():
+            raise ValueError(f"Destination already exists: {dest}")
+        if not dest.parent.exists():
+            raise ValueError(f"Parent directory does not exist: {dest.parent}")
+
+        shutil.move(str(current), str(dest))
+
+        self.registry.update(project_name, {"directory": str(dest)})
+
+        git_result    = self._git_verify(str(dest))
+        health_result = self._health_check({**project, "directory": str(dest)})
+
+        now     = datetime.now(timezone.utc)
+        move_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{_slugify(project_name)}"
+        self._append_move({
+            "id":              move_id,
+            "project":         project_name,
+            "from":            str(current),
+            "to":              str(dest),
+            "timestamp":       now.isoformat(),
+            "git_verified":    git_result["ok"],
+            "health_verified": health_result["ok"],
+            "rolled_back":     False,
+        })
+
+        return {
+            "ok":            True,
+            "move_id":       move_id,
+            "git_result":    git_result,
+            "health_result": health_result,
+        }
+
+    # ── Rollback ───────────────────────────────────────────────────────────────
+
+    def rollback(self, move_id: str) -> dict:
+        moves = self._load_moves()
+        record = next((m for m in moves if m["id"] == move_id), None)
+        if not record:
+            raise ValueError(f"Move record '{move_id}' not found.")
+        if record.get("rolled_back"):
+            raise ValueError(f"Move '{move_id}' has already been rolled back.")
+
+        dest   = Path(record["to"]).expanduser().resolve()
+        origin = Path(record["from"]).expanduser().resolve()
+
+        if not dest.exists():
+            raise ValueError(f"Cannot roll back: '{dest}' no longer exists.")
+        if origin.exists():
+            raise ValueError(
+                f"Cannot roll back: original location '{origin}' is already occupied."
+            )
+
+        shutil.move(str(dest), str(origin))
+        self.registry.update(record["project"], {"directory": str(origin)})
+        git_result = self._git_verify(str(origin))
+
+        record["rolled_back"] = True
+        self._write_moves(moves)
+
+        return {"ok": True, "git_result": git_result}
+
+    # ── Git verification ───────────────────────────────────────────────────────
+
+    def _git_verify(self, directory: str) -> dict:
+        path = Path(directory)
+
+        if not (path / ".git").exists():
+            return {"ok": False, "error": "Not a git repository"}
+
+        def run(cmd: list[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd, cwd=directory,
+                capture_output=True, text=True, timeout=15,
+            )
+
+        r = run(["git", "status"])
+        if r.returncode != 0:
+            return {"ok": False, "error": f"git status failed: {r.stderr.strip()}"}
+
+        r = run(["git", "remote", "-v"])
+        if r.returncode != 0 or not r.stdout.strip():
+            return {"ok": False, "error": "No git remote configured"}
+
+        r = run(["git", "fetch", "--dry-run"])
+        if r.returncode != 0:
+            detail = r.stderr.strip() or r.stdout.strip() or "(no output)"
+            return {"ok": False, "error": f"Remote not reachable: {detail}"}
+
+        return {"ok": True}
+
+    # ── Health check ──────────────────────────────────────────────────────────
+
+    def _health_check(self, project: dict) -> dict:
+        start = project.get("start", "").lower()
+        dirp  = Path(project["directory"])
+
+        if any(kw in start for kw in ("npm", "yarn", "pnpm", "bun")):
+            if (dirp / "package.json").exists():
+                return {"ok": True, "check_type": "package.json"}
+            return {"ok": False, "error": f"package.json not found in {dirp}"}
+
+        if any(kw in start for kw in ("python", "flask", "uvicorn", "gunicorn")):
+            if (dirp / "requirements.txt").exists():
+                return {"ok": True, "check_type": "requirements.txt"}
+            if (dirp / "pyproject.toml").exists():
+                return {"ok": True, "check_type": "pyproject.toml"}
+            return {
+                "ok":    False,
+                "error": f"Neither requirements.txt nor pyproject.toml found in {dirp}",
+            }
+
+        if "cargo" in start:
+            if (dirp / "Cargo.toml").exists():
+                return {"ok": True, "check_type": "Cargo.toml"}
+            return {"ok": False, "error": f"Cargo.toml not found in {dirp}"}
+
+        return {"ok": True, "check_type": "unknown"}

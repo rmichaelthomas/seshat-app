@@ -5,7 +5,7 @@ let orphans      = [];
 let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
-let activeView   = "projects";   // "projects" | "vault"
+let activeView   = "projects";   // "projects" | "vault" | "organize"
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initGroupModal();
   initVaultKeyModal();
   $("vaultBtn").addEventListener("click", toggleVaultView);
+  $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
   setInterval(refresh, 5000);
 });
@@ -52,11 +53,21 @@ function toggleVaultView() {
   }
 }
 
+function toggleOrganizeView() {
+  if (activeView === "organize") {
+    showProjectView();
+  } else {
+    showOrganizeView();
+  }
+}
+
 function showProjectView() {
   activeView = "projects";
-  $("projectView").style.display = "block";
-  $("vaultView").style.display   = "none";
+  $("projectView").style.display  = "block";
+  $("vaultView").style.display    = "none";
+  $("organizeView").style.display = "none";
   $("vaultBtn").classList.remove("active");
+  $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "";
   closeDetail();
   render();
@@ -64,12 +75,26 @@ function showProjectView() {
 
 async function showVaultView() {
   activeView = "vault";
-  $("projectView").style.display = "none";
-  $("vaultView").style.display   = "block";
+  $("projectView").style.display  = "none";
+  $("vaultView").style.display    = "block";
+  $("organizeView").style.display = "none";
   $("vaultBtn").classList.add("active");
+  $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   closeDetail();
   await renderVaultView();
+}
+
+async function showOrganizeView() {
+  activeView = "organize";
+  $("projectView").style.display  = "none";
+  $("vaultView").style.display    = "none";
+  $("organizeView").style.display = "block";
+  $("organizeBtn").classList.add("active");
+  $("vaultBtn").classList.remove("active");
+  $("addProjectBtn").style.display = "none";
+  closeDetail();
+  await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
 }
 
 // ── Render (projects view) ─────────────────────────────────────────────────
@@ -1046,6 +1071,261 @@ function closeGroupModal() {
   $("groupModalOverlay").classList.remove("open");
   $("addGroupForm").reset();
   $("groupFormError").textContent = "";
+}
+
+// ── Organize view ──────────────────────────────────────────────────────────
+
+async function loadFolderMap() {
+  const el = $("folderMapContent");
+  if (!el) return;
+  try {
+    const res  = await fetch("/api/organize/map");
+    const data = await res.json();
+    el.innerHTML = renderFolderMap(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load folder map.</div></div>`;
+  }
+}
+
+function renderFolderMap(groups) {
+  if (!groups || groups.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No projects registered yet.</div></div>`;
+  }
+  return groups.map(g => `
+    <div class="folder-group">
+      <div class="folder-group-header">${esc(shortPath(g.parent))}</div>
+      ${g.projects.map(p => `
+        <div class="folder-group-row">
+          <span class="folder-project-name">${esc(p.name)}</span>
+          <span class="folder-project-port">:${p.port}</span>
+          <span class="folder-project-dir">${esc(shortPath(p.directory))}</span>
+          ${(p.tags||[]).slice(0,3).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+async function loadRecommendations() {
+  const el   = $("recommendationsContent");
+  const root = ($("structureRoot") || {}).value || "~/Projects";
+  if (!el) return;
+  try {
+    const res  = await fetch(`/api/organize/recommendations?root=${encodeURIComponent(root)}`);
+    const data = await res.json();
+    el.innerHTML = renderRecommendations(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load recommendations.</div></div>`;
+  }
+}
+
+function renderRecommendations(recs) {
+  if (!recs || recs.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No projects to organize.</div></div>`;
+  }
+  return `
+    <table class="organize-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Current Location</th>
+          <th>Suggested Location</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${recs.map(r => {
+          const already = r.current === r.suggested;
+          return `
+            <tr class="rec-row ${already ? 'rec-row--done' : ''}" data-project="${esc(r.project_name)}">
+              <td class="rec-name">${esc(r.project_name)}</td>
+              <td class="rec-current mono">${esc(shortPath(r.current))}</td>
+              <td class="rec-dest">
+                <input class="rec-dest-input mono" type="text"
+                  value="${esc(r.suggested)}"
+                  ${already ? 'disabled' : ''}
+                  data-original="${esc(r.suggested)}">
+              </td>
+              <td class="rec-action">
+                ${already
+                  ? `<span class="rec-done-badge">✓ moved</span>`
+                  : `<button class="btn btn-ghost btn-sm move-btn"
+                       onclick="moveSingle('${esc(r.project_name.replace(/'/g, "\\'"))}', this)">
+                       Move
+                     </button>`}
+              </td>
+            </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+}
+
+async function moveSingle(projectName, btn) {
+  const row  = btn.closest(".rec-row");
+  const dest = row.querySelector(".rec-dest-input").value.trim();
+  if (!dest) { toast("Destination cannot be empty", "error"); return; }
+
+  // Check if project is running
+  const p = projects.find(x => x.name === projectName);
+  if (p && p.status === "running") {
+    if (!confirm(
+      `"${projectName}" is currently running. Moving it won't affect the running process, ` +
+      `but the next start will use the new location.\n\nContinue?`
+    )) return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Moving…";
+
+  const result = await _doMigrate(projectName, dest, true);
+  if (!result) {
+    btn.disabled = false;
+    btn.textContent = "Move";
+    return;
+  }
+
+  toast(`${projectName} moved`, "success");
+  await Promise.all([loadFolderMap(), loadRecommendations()]);
+}
+
+async function _doMigrate(projectName, destination, force) {
+  try {
+    const res  = await fetch("/api/organize/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: projectName, destination, force }),
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "Migration failed", "error"); return null; }
+    if (data.warning === "project_running") {
+      toast("Project is currently running — stop it first or use the individual Move button to confirm.", "error");
+      return null;
+    }
+    return data;
+  } catch (e) {
+    toast(`Migration error: ${e.message}`, "error");
+    return null;
+  }
+}
+
+async function moveAll() {
+  const rows = document.querySelectorAll(".rec-row:not(.rec-row--done)");
+  if (rows.length === 0) { toast("Nothing to move", "info"); return; }
+
+  // Collect destinations from the editable inputs
+  const moves = [...rows].map(row => ({
+    project:     row.dataset.project,
+    destination: row.querySelector(".rec-dest-input").value.trim(),
+  })).filter(m => m.destination);
+
+  // Identify running projects
+  const runningNames = moves
+    .filter(m => projects.find(p => p.name === m.project && p.status === "running"))
+    .map(m => m.project);
+
+  if (runningNames.length > 0) {
+    if (!confirm(
+      `${runningNames.length} project${runningNames.length > 1 ? "s are" : " is"} currently running: ` +
+      `${runningNames.join(", ")}.\n\n` +
+      `Moving them won't affect running processes, but the next start will use the new locations.\n\nContinue?`
+    )) return;
+  }
+
+  const btn = $("moveAllBtn");
+  btn.disabled = true;
+  btn.textContent = "Moving…";
+
+  let succeeded = 0;
+  for (const { project, destination } of moves) {
+    const result = await _doMigrate(project, destination, true);
+    if (!result) {
+      // _doMigrate already toasted the error; stop on hard failure
+      break;
+    }
+    succeeded++;
+  }
+
+  btn.disabled = false;
+  btn.textContent = "Move All";
+
+  if (succeeded > 0) {
+    toast(`${succeeded} project${succeeded > 1 ? "s" : ""} moved`, "success");
+    await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+  }
+}
+
+async function loadMoveHistory() {
+  const el = $("moveHistoryContent");
+  if (!el) return;
+  try {
+    const res  = await fetch("/api/organize/history");
+    const data = await res.json();
+    el.innerHTML = renderMoveHistory(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load history.</div></div>`;
+  }
+}
+
+function renderMoveHistory(moves) {
+  if (!moves || moves.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No moves recorded yet.</div></div>`;
+  }
+  return `
+    <table class="organize-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>From</th>
+          <th>To</th>
+          <th>Date</th>
+          <th>Git</th>
+          <th>Health</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${moves.map(m => {
+          const rolledBack = m.rolled_back;
+          const date = new Date(m.timestamp).toLocaleDateString("en-US", {
+            month: "short", day: "numeric", year: "numeric",
+          });
+          return `
+            <tr class="history-row ${rolledBack ? 'history-row--rolled-back' : ''}" data-move-id="${esc(m.id)}">
+              <td>${esc(m.project)}</td>
+              <td class="mono history-path">${esc(shortPath(m.from))}</td>
+              <td class="mono history-path">${esc(shortPath(m.to))}</td>
+              <td class="history-date">${date}</td>
+              <td class="history-check">${m.git_verified ? "✓" : "✗"}</td>
+              <td class="history-check">${m.health_verified ? "✓" : "✗"}</td>
+              <td>${rolledBack
+                ? `<span class="history-status rolled-back">rolled back</span>`
+                : `<span class="history-status moved">moved</span>`}</td>
+              <td>
+                ${rolledBack
+                  ? ""
+                  : `<button class="btn btn-ghost btn-sm rollback-btn"
+                       onclick="doRollback(this.closest('tr').dataset.moveId)">Roll Back</button>`}
+              </td>
+            </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+}
+
+async function doRollback(moveId) {
+  if (!confirm("Roll back this move? The folder will be moved to its original location and the registry will be updated.")) return;
+  try {
+    const res  = await fetch("/api/organize/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ move_id: moveId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast("Rolled back successfully", "success");
+    await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+  } catch (e) {
+    toast(`Rollback failed: ${e.message}`, "error");
+  }
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
