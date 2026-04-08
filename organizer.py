@@ -171,7 +171,30 @@ class Organizer:
 
         return {"ok": True}
 
-    # ── Health check (stub — replaced in Task 6) ──────────────────────────────
+    # ── Health check ──────────────────────────────────────────────────────────
 
     def _health_check(self, project: dict) -> dict:
+        start = project.get("start", "").lower()
+        dirp  = Path(project["directory"])
+
+        if any(kw in start for kw in ("npm", "yarn", "pnpm", "bun")):
+            if (dirp / "package.json").exists():
+                return {"ok": True, "check_type": "package.json"}
+            return {"ok": False, "error": f"package.json not found in {dirp}"}
+
+        if any(kw in start for kw in ("python", "flask", "uvicorn", "gunicorn")):
+            if (dirp / "requirements.txt").exists():
+                return {"ok": True, "check_type": "requirements.txt"}
+            if (dirp / "pyproject.toml").exists():
+                return {"ok": True, "check_type": "pyproject.toml"}
+            return {
+                "ok":    False,
+                "error": f"Neither requirements.txt nor pyproject.toml found in {dirp}",
+            }
+
+        if "cargo" in start:
+            if (dirp / "Cargo.toml").exists():
+                return {"ok": True, "check_type": "Cargo.toml"}
+            return {"ok": False, "error": f"Cargo.toml not found in {dirp}"}
+
         return {"ok": True, "check_type": "unknown"}

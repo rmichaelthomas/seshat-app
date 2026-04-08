@@ -415,3 +415,71 @@ def test_git_verify_fails_if_fetch_dry_run_fails(org, tmp_seshat, monkeypatch):
     result = org._git_verify(str(path))
     assert result["ok"] is False
     assert "reachable" in result["error"].lower()
+
+
+# ── _health_check ──────────────────────────────────────────────────────────
+
+def test_health_check_npm_with_package_json(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    (path / "package.json").write_text("{}")
+    project = {"start": "npm start", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is True
+    assert result["check_type"] == "package.json"
+
+
+def test_health_check_npm_without_package_json(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    project = {"start": "npm start", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is False
+    assert "package.json" in result["error"]
+
+
+def test_health_check_python_with_requirements_txt(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    (path / "requirements.txt").write_text("flask\n")
+    project = {"start": "flask run --port 5001", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is True
+    assert result["check_type"] == "requirements.txt"
+
+
+def test_health_check_python_with_pyproject_toml(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    (path / "pyproject.toml").write_text("[tool.poetry]\n")
+    project = {"start": "python -m uvicorn app:app", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is True
+    assert result["check_type"] == "pyproject.toml"
+
+
+def test_health_check_python_missing_both(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    project = {"start": "flask run", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is False
+
+
+def test_health_check_cargo(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    (path / "Cargo.toml").write_text("[package]\n")
+    project = {"start": "cargo run", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is True
+    assert result["check_type"] == "Cargo.toml"
+
+
+def test_health_check_unknown_command_passes(org, tmp_seshat):
+    path = tmp_seshat / "myapp"
+    path.mkdir()
+    project = {"start": "ruby server.rb", "directory": str(path)}
+    result = org._health_check(project)
+    assert result["ok"] is True
+    assert result["check_type"] == "unknown"
