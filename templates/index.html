@@ -17,6 +17,7 @@
       <span class="subtitle">Local Registry</span>
     </div>
     <div class="header-right">
+      <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
       <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
     </div>
@@ -89,6 +90,51 @@
           <div id="orphanList"></div>
         </div>
 
+      </div>
+
+      <!-- ── Organize view ──────────────────────────────────────────────── -->
+      <div id="organizeView" style="display:none">
+        <div id="organizeContent">
+
+          <!-- Section 1: Folder Map -->
+          <div class="organize-section">
+            <div class="organize-section-header">
+              <div class="organize-section-title">Folder Map</div>
+              <button class="btn btn-ghost btn-sm" onclick="loadFolderMap()">↺ Refresh</button>
+            </div>
+            <div id="folderMapContent">
+              <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
+            </div>
+          </div>
+
+          <!-- Section 2: Recommended Structure -->
+          <div class="organize-section">
+            <div class="organize-section-header">
+              <div class="organize-section-title">Recommended Structure</div>
+              <div class="organize-root-input">
+                <label>Root:</label>
+                <input type="text" id="structureRoot" value="~/Projects" style="width:200px">
+                <button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">↺ Refresh</button>
+                <button class="btn btn-primary btn-sm" id="moveAllBtn" onclick="moveAll()">Move All</button>
+              </div>
+            </div>
+            <div id="recommendationsContent">
+              <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
+            </div>
+          </div>
+
+          <!-- Section 3: Move History -->
+          <div class="organize-section">
+            <div class="organize-section-header">
+              <div class="organize-section-title">Move History</div>
+              <button class="btn btn-ghost btn-sm" onclick="loadMoveHistory()">↺ Refresh</button>
+            </div>
+            <div id="moveHistoryContent">
+              <div class="empty-state"><div class="empty-state-sub">No moves recorded yet.</div></div>
+            </div>
+          </div>
+
+        </div>
       </div>
 
       <!-- ── Vault view ─────────────────────────────────────────────────── -->
