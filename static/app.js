@@ -7,6 +7,7 @@ let activeFilter = "all";
 let selectedName = null;
 let activeView   = "projects";   // "projects" | "vault" | "organize"
 let routerStatus = null;   // result of GET /api/router/status
+let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
   loadSetupStatus();
+  loadHostnames();
   setInterval(refresh, 5000);
 });
 
@@ -26,14 +28,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function refresh() {
   try {
-    const [projRes, orphanRes, groupRes] = await Promise.all([
+    const [projRes, orphanRes, groupRes, hostnamesRes] = await Promise.all([
       fetch("/api/projects"),
       fetch("/api/orphans"),
       fetch("/api/groups"),
+      fetch("/api/router/hostnames"),
     ]);
-    projects = await projRes.json();
-    orphans  = await orphanRes.json();
-    groups   = await groupRes.json();
+    projects  = await projRes.json();
+    orphans   = await orphanRes.json();
+    groups    = await groupRes.json();
+    hostnames = await hostnamesRes.json();
 
     if (activeView === "projects") {
       render();
@@ -224,6 +228,13 @@ async function restartRouterServices() {
   renderShelf();
 }
 
+async function loadHostnames() {
+  try {
+    const res = await fetch("/api/router/hostnames");
+    hostnames = await res.json();
+  } catch (_) { /* server may be restarting */ }
+}
+
 // ── Render (projects view) ─────────────────────────────────────────────────
 
 function render() {
@@ -284,6 +295,14 @@ function getStatusLightClass(p) {
   return p.status;   // "running" | "stopped"
 }
 
+function _hostnameChipHTML(projectName) {
+  const h = hostnames.find(x => x.project_name === projectName);
+  if (!h) return "";
+  const ready = routerReady();
+  return `<div class="hostname-chip${ready ? "" : " muted"}"
+               data-hostname="${esc(h.hostname)}">${esc(h.hostname)}</div>`;
+}
+
 function projectRowHTML(p) {
   const isRunning  = p.status === "running";
   const hasError   = isRunning && p.has_error && p.recent_error;
@@ -304,6 +323,7 @@ function projectRowHTML(p) {
         ${conflictLine}${errorLine}
       </div>
       <div class="project-port">:${p.port}</div>
+      ${_hostnameChipHTML(p.name)}
       <div class="project-dir">${esc(shortPath(p.directory))}</div>
       <div class="project-actions">
         <button class="action-btn start-stop-btn ${ssCls}" title="${isRunning?"Stop":"Start"}">${ssIcon}</button>
@@ -324,6 +344,10 @@ function attachRowEvents(shelf) {
     });
     row.querySelector(".open-browser-btn").addEventListener("click", e => {
       e.stopPropagation(); window.open(p.url || `http://localhost:${p.port}`, "_blank");
+    });
+    row.querySelector(".hostname-chip:not(.muted)")?.addEventListener("click", e => {
+      e.stopPropagation();
+      window.open(`http://${e.currentTarget.dataset.hostname}`, "_blank");
     });
     row.querySelector(".open-finder-btn").addEventListener("click", e => {
       e.stopPropagation(); apiOpen(p.directory, "finder");
