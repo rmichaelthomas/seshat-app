@@ -65,12 +65,12 @@ class Organizer:
         projects = self.registry.list()
         groups: dict[str, list] = {}
         for p in projects:
-            expanded = str(Path(p["directory"]).expanduser().resolve())
-            parent   = str(Path(expanded).parent)
+            path   = Path(p["directory"]).expanduser().resolve()
+            parent = str(path.parent)
             groups.setdefault(parent, []).append({
                 "name":      p["name"],
                 "port":      p["port"],
                 "tags":      p.get("tags", []),
-                "directory": expanded,
+                "directory": str(path),
             })
         return [{"parent": k, "projects": v} for k, v in sorted(groups.items())]

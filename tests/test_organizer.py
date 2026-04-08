@@ -110,6 +110,9 @@ def test_folder_map_groups_by_parent(org, tmp_seshat):
     assert "AppA" in names
     assert "AppB" in names
 
+    # Verify sorted order
+    assert result == sorted(result, key=lambda g: g["parent"])
+
 
 def test_folder_map_single_project(org, tmp_seshat):
     proj = tmp_seshat / "work" / "myapp"
@@ -121,3 +124,25 @@ def test_folder_map_single_project(org, tmp_seshat):
     assert len(result) == 1
     assert result[0]["parent"] == str(proj.parent)
     assert result[0]["projects"][0]["name"] == "MyApp"
+
+    proj_entry = result[0]["projects"][0]
+    assert "port" in proj_entry
+    assert "tags" in proj_entry
+    assert "directory" in proj_entry
+
+
+def test_folder_map_expands_home_directory(org, tmp_seshat, monkeypatch):
+    # Register a project using ~ in the directory path
+    proj = tmp_seshat / "work" / "myapp"
+    proj.mkdir(parents=True)
+    # Monkeypatch Path.home() and HOME env var so "~" resolves to tmp_seshat
+    monkeypatch.setattr(Path, "home", lambda: tmp_seshat)
+    monkeypatch.setenv("HOME", str(tmp_seshat))
+    org.registry.add({"name": "HomeApp", "port": 6000, "directory": "~/work/myapp",
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+    result = org.folder_map()
+    assert len(result) == 1
+    # directory in result should be fully expanded (no ~)
+    assert "~" not in result[0]["projects"][0]["directory"]
+    assert result[0]["projects"][0]["directory"].startswith(str(tmp_seshat))
