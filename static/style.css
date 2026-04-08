@@ -800,3 +800,205 @@ textarea { resize: vertical; }
   background: color-mix(in srgb, var(--text-muted) 15%, transparent);
   color: var(--text-muted);
 }
+
+/* ── Router setup banner ─────────────────────────────────────────────────── */
+
+.router-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--warning-bg, #fffbeb);
+  border-bottom: 1px solid var(--warning-border, #fde68a);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.router-banner span { flex: 1; }
+
+.router-banner code {
+  font-family: var(--font-mono, monospace);
+  background: rgba(0,0,0,.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.router-banner-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.router-banner-btn:hover { background: var(--surface-hover, #f5f5f5); }
+
+/* ── Router setup modal ──────────────────────────────────────────────────── */
+
+.router-modal {
+  width: 520px;
+  max-width: 95vw;
+}
+
+.router-modal-intro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.router-modal-intro code {
+  font-family: var(--font-mono, monospace);
+  background: rgba(0,0,0,.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.router-setup-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.router-step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.router-step-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.router-step-status { font-size: 16px; }
+
+.router-step-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.router-cmd {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--surface-secondary, #f8f8f8);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  user-select: all;
+}
+
+.router-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Hostname chip (shelf row) ───────────────────────────────────────────── */
+
+.hostname-chip {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--accent-light, #e0f2fe);
+  color: var(--accent, #0284c7);
+  border: 1px solid var(--accent-border, #bae6fd);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.hostname-chip:hover { background: var(--accent-hover, #bae6fd); }
+
+.hostname-chip.muted {
+  background: var(--surface-secondary, #f4f4f4);
+  color: var(--text-muted);
+  border-color: var(--border);
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ── Hostname inline edit (detail panel) ─────────────────────────────────── */
+
+.hostname-detail-field .hostname-field-view {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hostname-field-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.hostname-field-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hostname-edit-input {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  flex: 1;
+  min-width: 180px;
+}
+
+.hostname-edit-input:focus {
+  outline: none;
+  border-color: var(--accent, #0284c7);
+  box-shadow: 0 0 0 2px rgba(2,132,199,.15);
+}
+
+/* ── Vault hostname hint ─────────────────────────────────────────────────── */
+
+.vault-hostname-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 4px 0 0;
+  background: var(--accent-light, #e0f2fe);
+  border: 1px solid var(--accent-border, #bae6fd);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.vault-hostname-hint code {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent, #0284c7);
+}
+
+.vault-hostname-hint-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border, #bae6fd);
+  border-radius: 4px;
+  background: white;
+  color: var(--accent, #0284c7);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vault-hostname-hint-btn:hover { background: var(--accent-hover, #bae6fd); }
