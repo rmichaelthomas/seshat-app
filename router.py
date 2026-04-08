@@ -82,11 +82,42 @@ class Router:
         self._write_hostnames(saved)
         return self._reload_caddy()
 
+    # ── Caddyfile ──────────────────────────────────────────────────────────
+
+    def _generate_caddyfile(self) -> str:
+        """Build Caddyfile content from all registered projects."""
+        blocks = []
+        for h in self.all_hostnames():
+            if h["port"] is not None:
+                blocks.append(
+                    f"{h['hostname']} {{\n    reverse_proxy localhost:{h['port']}\n}}"
+                )
+        return "\n\n".join(blocks) + ("\n" if blocks else "")
+
     def _reload_caddy(self) -> dict:
-        """Signal Caddy to reload its configuration."""
-        result = subprocess.run(
-            ["caddy", "reload", "--config", str(CADDYFILE)],
-            capture_output=True,
-            text=True,
-        )
-        return {"ok": result.returncode == 0, "stderr": result.stderr}
+        """Write Caddyfile and reload (or start) Caddy."""
+        content = self._generate_caddyfile()
+        SESHAT_DIR.mkdir(exist_ok=True)
+        CADDYFILE.write_text(content)
+
+        which = subprocess.run(["which", "caddy"], capture_output=True, timeout=5)
+        if which.returncode != 0:
+            return {"ok": False, "error": "caddy not installed"}
+
+        running = subprocess.run(["pgrep", "-x", "caddy"], capture_output=True, timeout=5)
+        if running.returncode == 0:
+            r = subprocess.run(
+                ["caddy", "reload", "--config", str(CADDYFILE)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                return {"ok": True}
+            return {"ok": False, "error": r.stderr.strip() or "(no output)"}
+        else:
+            r = subprocess.run(
+                ["caddy", "start", "--config", str(CADDYFILE)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                return {"ok": True}
+            return {"ok": False, "error": r.stderr.strip() or "(no output)"}

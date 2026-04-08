@@ -168,3 +168,110 @@ def test_reset_hostname_reverts_to_auto_slug(rtr, monkeypatch):
     rtr.reset_hostname("My Vault")
     result = rtr.all_hostnames()
     assert result[0]["hostname"] == "my-vault.seshat"
+
+
+# ── _generate_caddyfile ────────────────────────────────────────────────────
+
+def test_generate_caddyfile_empty_registry(rtr):
+    assert rtr._generate_caddyfile() == ""
+
+def test_generate_caddyfile_single_project(rtr):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    cf = rtr._generate_caddyfile()
+    assert "vault.seshat" in cf
+    assert "reverse_proxy localhost:5001" in cf
+
+def test_generate_caddyfile_multi_project(rtr):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    rtr.registry.add({"name": "API",   "directory": "/tmp/a", "port": 3000})
+    cf = rtr._generate_caddyfile()
+    assert "vault.seshat" in cf
+    assert "api.seshat" in cf
+    assert "reverse_proxy localhost:5001" in cf
+    assert "reverse_proxy localhost:3000" in cf
+
+def test_generate_caddyfile_omits_project_without_port(rtr):
+    rtr.registry.add({"name": "Docs", "directory": "/tmp/d", "port": None})
+    assert rtr._generate_caddyfile() == ""
+
+def test_generate_caddyfile_uses_saved_hostname(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("Vault", "myapp.seshat")
+    cf = rtr._generate_caddyfile()
+    assert "myapp.seshat" in cf
+    assert "vault.seshat" not in cf
+
+
+# ── _reload_caddy ──────────────────────────────────────────────────────────
+
+def test_reload_caddy_returns_error_if_caddy_not_installed(rtr, monkeypatch, tmp_seshat):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+
+    def fake_run(cmd, **_):
+        m = MagicMock()
+        if cmd[0] == "which":
+            m.returncode = 1
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    result = rtr._reload_caddy()
+    assert result["ok"] is False
+    assert "caddy not installed" in result["error"]
+
+def test_reload_caddy_reloads_when_caddy_running(rtr, monkeypatch, tmp_seshat):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    called_with = []
+
+    def fake_run(cmd, **_):
+        called_with.append(cmd)
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    result = rtr._reload_caddy()
+    assert result["ok"] is True
+    reload_cmds = [c for c in called_with if "reload" in c]
+    assert len(reload_cmds) == 1
+
+def test_reload_caddy_starts_when_caddy_not_running(rtr, monkeypatch, tmp_seshat):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    called_with = []
+
+    def fake_run(cmd, **_):
+        called_with.append(cmd)
+        m = MagicMock()
+        # pgrep returns 1 (not running); everything else succeeds
+        m.returncode = 1 if cmd[0] == "pgrep" else 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    result = rtr._reload_caddy()
+    assert result["ok"] is True
+    start_cmds = [c for c in called_with if "start" in c]
+    assert len(start_cmds) == 1
+
+def test_reload_caddy_writes_caddyfile(rtr, monkeypatch, tmp_seshat):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+
+    def fake_run(cmd, **_):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    rtr._reload_caddy()
+    assert (tmp_seshat / "Caddyfile").exists()
+    content = (tmp_seshat / "Caddyfile").read_text()
+    assert "vault.seshat" in content
