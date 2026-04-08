@@ -118,10 +118,24 @@ function renderShelf() {
   }
 }
 
+// ── Status light helper ────────────────────────────────────────────────────
+
+/**
+ * Returns the CSS class for the status light dot.
+ * Priority: conflict > error > degraded > running > stopped
+ */
+function getStatusLightClass(p) {
+  if (p.status === "conflict") return "conflict";
+  const isRunning = p.status === "running";
+  if (isRunning && p.has_error && p.recent_error) return "error";
+  if (p.composite_status === "degraded") return "degraded";
+  return p.status;   // "running" | "stopped"
+}
+
 function projectRowHTML(p) {
   const isRunning  = p.status === "running";
   const hasError   = isRunning && p.has_error && p.recent_error;
-  const lightClass = hasError ? "error" : p.status;
+  const lightClass = getStatusLightClass(p);
   const tags = (p.tags || []).slice(0, 3).map(t => `<span class="tag">${esc(t)}</span>`).join("");
   const conflictLine = p.status === "conflict" && p.process_name
     ? `<div class="conflict-inline">⚠ Port in use by <code>${esc(p.process_name)}</code> (PID ${p.pid})</div>` : "";
@@ -228,8 +242,14 @@ function updateDetailPanel(name) {
   const isRunning  = p.status === "running";
   const isConflict = p.status === "conflict";
   const hasError   = isRunning && p.has_error && p.recent_error;
-  const statusCls  = hasError ? "error" : p.status;
-  const statusTxt  = hasError ? "⚠ Running with errors" : statusLabel(p.status);
+  const isDegraded = p.composite_status === "degraded";
+
+  // Status badge: conflict → error → degraded → base status
+  let statusCls, statusTxt;
+  if (isConflict)      { statusCls = "conflict"; statusTxt = "⚠ Conflict"; }
+  else if (hasError)   { statusCls = "error";    statusTxt = "⚠ Running with errors"; }
+  else if (isDegraded) { statusCls = "degraded"; statusTxt = "◑ Degraded — dep down"; }
+  else                 { statusCls = p.status;   statusTxt = statusLabel(p.status); }
 
   const conflictBlock = isConflict ? `
     <div class="conflict-message">
@@ -247,7 +267,8 @@ function updateDetailPanel(name) {
   const pidBlock = (p.pid&&isRunning) ? `
     <div class="detail-field"><div class="detail-label">PID</div>
     <div class="detail-value mono">${p.pid}</div></div>` : "";
-  const depsBlock = renderDependencies(p.dependencies||[]);
+
+  const depsBlock = renderDependencies(p.dependencies || [], p.dep_status || [], p.name);
 
   const safeN = p.name.replace(/\\/g,"\\\\").replace(/'/g,"\\'");
   const safeD = (p.directory||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'");
@@ -312,22 +333,63 @@ function renderErrorBlock(err) {
     </div>`;
 }
 
-function renderDependencies(deps) {
-  if (!deps||!deps.length) return "";
-  const icons = { tunnel:"🔗", database:"🗄️", api:"⚡", hosting:"🌐" };
+/**
+ * Render the Dependencies section of the detail panel.
+ *
+ * @param {Array}  deps      - Raw dep config objects from registry
+ * @param {Array}  depStatus - Live status results from /api/projects/<name>/deps (or cache)
+ * @param {string} name      - Project name (for the Refresh button callback)
+ */
+function renderDependencies(deps, depStatus, name) {
+  if (!deps || !deps.length) return "";
+
+  const icons = { tunnel: "🔗", database: "🗄️", api: "⚡", hosting: "🌐" };
+
+  // Build a lookup: (label || provider) → result
+  const statusMap = {};
+  (depStatus || []).forEach(d => {
+    const key = d.label || d.provider;
+    if (key) statusMap[key] = d;
+  });
+
+  const safeN = (name || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const cacheEmpty = !depStatus || depStatus.length === 0;
+
+  const rows = deps.map(d => {
+    const key    = d.label || d.provider;
+    const result = statusMap[key] || {};
+    const status = result.status || "unknown";
+    const detail = result.detail || "";
+    const pubUrl = result.public_url || "";
+
+    const statusLabels = { connected: "connected", disconnected: "disconnected", unknown: "…" };
+    const statusTxt = statusLabels[status] ?? status;
+
+    return `
+      <div class="dep-item">
+        <span class="dep-icon">${icons[d.type] || "○"}</span>
+        <div class="dep-info">
+          <div class="dep-label">${esc(d.label || d.provider)}</div>
+          <div class="dep-provider">${esc(d.provider)} · ${esc(d.type)}</div>
+          ${detail ? `<div class="dep-detail">${esc(detail)}</div>` : ""}
+          ${pubUrl  ? `<a href="${esc(pubUrl)}" target="_blank" class="dep-url">${esc(pubUrl)}</a>` : ""}
+        </div>
+        <span class="dep-status ${status}">${statusTxt}</span>
+      </div>`;
+  }).join("");
+
+  const hint = cacheEmpty
+    ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Checking… results appear within 30s or tap Refresh.</div>`
+    : "";
+
   return `
     <div class="detail-section">
-      <div class="detail-section-title">Dependencies</div>
-      <div class="dep-list">${deps.map(d=>`
-        <div class="dep-item">
-          <span class="dep-icon">${icons[d.type]||"○"}</span>
-          <div class="dep-info">
-            <div class="dep-label">${esc(d.label||d.provider)}</div>
-            <div class="dep-provider">${esc(d.provider)} · ${esc(d.type)}</div>
-          </div>
-          <span class="dep-status">unknown</span>
-        </div>`).join("")}
+      <div class="detail-section-header">
+        <div class="detail-section-title" style="margin:0;border:none;padding:0">Dependencies</div>
+        <button class="detail-section-action" onclick="loadDeps('${safeN}')">↺ Refresh</button>
       </div>
+      ${hint}
+      <div class="dep-list">${rows}</div>
     </div>`;
 }
 
@@ -363,6 +425,36 @@ async function loadLogs(name) {
     viewer.scrollTop = viewer.scrollHeight;
   } catch (_) {
     viewer.innerHTML = `<div class="log-empty">Could not load logs.</div>`;
+  }
+}
+
+// ── Dep force-refresh ──────────────────────────────────────────────────────
+
+/**
+ * Synchronous dep check for the selected project.
+ * Calls GET /api/projects/<name>/deps, updates the local project's dep_status,
+ * and re-renders the detail panel so status lights update immediately.
+ */
+async function loadDeps(name) {
+  try {
+    const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/deps`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Dep check failed");
+
+    // Patch dep_status into our local copy so the panel re-renders correctly
+    const p = projects.find(x => x.name === name);
+    if (p) {
+      p.dep_status = data;
+      // Recompute composite_status locally to avoid waiting for next poll
+      const anyDown = data.some(d => d.status === "disconnected");
+      p.composite_status = (p.status === "running" && anyDown) ? "degraded" : p.status;
+    }
+
+    if (selectedName === name) updateDetailPanel(name);
+    // Also re-render the shelf row so the status light updates
+    renderShelf();
+  } catch (e) {
+    toast(`Dep check: ${e.message}`, "error");
   }
 }
 
