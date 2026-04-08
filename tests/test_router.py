@@ -336,3 +336,81 @@ def test_setup_status_resolver_not_configured(rtr, monkeypatch, tmp_seshat):
     status = rtr.setup_status()
     # /etc/resolver/seshat won't exist in the test environment
     assert status["resolver_configured"] is False
+
+
+# ── configure_dnsmasq ──────────────────────────────────────────────────────
+
+def test_configure_dnsmasq_appends_line(rtr, monkeypatch, tmp_path):
+    conf = tmp_path / "dnsmasq.conf"
+    conf.write_text("# existing config\n")
+    calls = []
+
+    def fake_run(cmd, **_):
+        calls.append(cmd)
+        m = MagicMock()
+        if "brew" in cmd and "--prefix" in cmd:
+            m.returncode = 0
+            m.stdout = str(tmp_path)
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    result = rtr.configure_dnsmasq()
+    assert result["ok"] is True
+    assert "address=/.seshat/127.0.0.1" in conf.read_text()
+
+def test_configure_dnsmasq_is_idempotent(rtr, monkeypatch, tmp_path):
+    conf = tmp_path / "dnsmasq.conf"
+    conf.write_text("# existing\naddress=/.seshat/127.0.0.1\n")
+
+    def fake_run(cmd, **_):
+        m = MagicMock()
+        if "brew" in cmd and "--prefix" in cmd:
+            m.returncode = 0
+            m.stdout = str(tmp_path)
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    rtr.configure_dnsmasq()
+    content = conf.read_text()
+    assert content.count("address=/.seshat/127.0.0.1") == 1
+
+def test_configure_dnsmasq_restarts_service(rtr, monkeypatch, tmp_path):
+    conf = tmp_path / "dnsmasq.conf"
+    conf.write_text("")
+    calls = []
+
+    def fake_run(cmd, **_):
+        calls.append(cmd)
+        m = MagicMock()
+        if "brew" in cmd and "--prefix" in cmd:
+            m.returncode = 0
+            m.stdout = str(tmp_path)
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(router_module.subprocess, "run", fake_run)
+    rtr.configure_dnsmasq()
+    restart_calls = [c for c in calls if "restart" in c]
+    assert len(restart_calls) == 1
+    assert "dnsmasq" in restart_calls[0]
+
+
+# ── start_caddy ────────────────────────────────────────────────────────────
+
+def test_start_caddy_delegates_to_reload_caddy(rtr, monkeypatch):
+    calls = []
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: calls.append(1) or {"ok": True})
+    result = rtr.start_caddy()
+    assert result == {"ok": True}
+    assert len(calls) == 1

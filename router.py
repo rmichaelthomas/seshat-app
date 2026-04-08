@@ -124,6 +124,37 @@ class Router:
 
     # ── Setup ──────────────────────────────────────────────────────────────
 
+    def configure_dnsmasq(self) -> dict:
+        """Append *.seshat wildcard to dnsmasq config and restart the service."""
+        r = subprocess.run(["brew", "--prefix"], capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return {"ok": False, "error": "brew not found"}
+        prefix = Path(r.stdout.strip())
+        # Try standard brew location first, fall back to prefix root
+        for candidate in (prefix / "etc" / "dnsmasq.conf", prefix / "dnsmasq.conf"):
+            if candidate.exists():
+                conf_path = candidate
+                break
+        else:
+            return {"ok": False, "error": f"dnsmasq config not found under {prefix}"}
+
+        line = "address=/.seshat/127.0.0.1"
+        content = conf_path.read_text()
+        if line not in content:
+            conf_path.write_text(content.rstrip() + f"\n{line}\n")
+
+        r2 = subprocess.run(
+            ["brew", "services", "restart", "dnsmasq"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r2.returncode != 0:
+            return {"ok": False, "error": r2.stderr.strip() or "(no output)"}
+        return {"ok": True}
+
+    def start_caddy(self) -> dict:
+        """Generate Caddyfile and start (or reload) Caddy."""
+        return self._reload_caddy()
+
     def setup_status(self) -> dict:
         """Check whether the full routing stack is installed and configured."""
         caddy_installed    = subprocess.run(["which", "caddy"],   capture_output=True, timeout=5).returncode == 0
