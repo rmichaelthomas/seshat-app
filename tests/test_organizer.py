@@ -1,5 +1,6 @@
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 import registry as reg_module
 import organizer as org_module
 from registry import Registry
@@ -190,3 +191,129 @@ def test_recommend_rag_tag_maps_to_infrastructure(org, tmp_seshat):
     _add_project(org, "RAGApp", 5002, str(tmp_seshat / "old" / "rag"), ["rag"])
     recs = org.recommend_structure(root=str(tmp_seshat / "Projects"))
     assert "infrastructure" in recs[0]["suggested"]
+
+
+# ── migrate ────────────────────────────────────────────────────────────────
+
+def test_migrate_moves_directory(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+
+    assert result["ok"] is True
+    assert dst.exists()
+    assert not src.exists()
+
+
+def test_migrate_updates_registry(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        org.migrate("MyApp", str(dst))
+
+    updated = org.registry.get("MyApp")
+    assert updated["directory"] == str(dst)
+
+
+def test_migrate_appends_move_record(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+
+    history = org.load_history()
+    assert len(history) == 1
+    assert history[0]["id"] == result["move_id"]
+    assert history[0]["rolled_back"] is False
+
+
+def test_migrate_warns_if_project_running(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+    org.registry.set_pid("MyApp", 12345)
+
+    result = org.migrate("MyApp", str(dst), force=False)
+    assert result == {"warning": "project_running"}
+    assert not dst.exists()  # no move happened
+
+
+def test_migrate_force_proceeds_if_running(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+    org.registry.set_pid("MyApp", 12345)
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst), force=True)
+
+    assert result["ok"] is True
+    assert dst.exists()
+
+
+def test_migrate_rejects_existing_destination(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.mkdir(parents=True)  # already exists
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with pytest.raises(ValueError, match="already exists"):
+        org.migrate("MyApp", str(dst))
+
+
+def test_migrate_rejects_missing_parent(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "nonexistent_parent" / "myapp"
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with pytest.raises(ValueError, match="Parent directory does not exist"):
+        org.migrate("MyApp", str(dst))
+
+
+def test_migrate_unknown_project_raises(org):
+    with pytest.raises(ValueError, match="not found"):
+        org.migrate("GhostApp", "/some/path")

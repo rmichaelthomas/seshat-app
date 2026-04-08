@@ -95,3 +95,61 @@ class Organizer:
                 "slug":         slug,
             })
         return result
+
+    # ── Migration ──────────────────────────────────────────────────────────────
+
+    def migrate(self, project_name: str, destination: str, force: bool = False) -> dict:
+        project = self.registry.get(project_name)
+        if not project:
+            raise ValueError(f"Project '{project_name}' not found.")
+
+        state = self.registry.get_state()
+        if project_name in state and not force:
+            return {"warning": "project_running"}
+
+        current = Path(project["directory"]).expanduser().resolve()
+        dest    = Path(destination).expanduser().resolve()
+
+        if dest.exists():
+            raise ValueError(f"Destination already exists: {dest}")
+        if not dest.parent.exists():
+            raise ValueError(f"Parent directory does not exist: {dest.parent}")
+
+        shutil.move(str(current), str(dest))
+
+        self.registry.update(project_name, {"directory": str(dest)})
+
+        git_result    = self._git_verify(str(dest))
+        health_result = self._health_check({**project, "directory": str(dest)})
+
+        move_id = (
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+            f"-{_slugify(project_name)}"
+        )
+        self._append_move({
+            "id":              move_id,
+            "project":         project_name,
+            "from":            str(current),
+            "to":              str(dest),
+            "timestamp":       datetime.now(timezone.utc).isoformat(),
+            "git_verified":    git_result["ok"],
+            "health_verified": health_result["ok"],
+            "rolled_back":     False,
+        })
+
+        return {
+            "ok":            True,
+            "move_id":       move_id,
+            "git_result":    git_result,
+            "health_result": health_result,
+        }
+
+    # ── Git verification (stub — replaced in Task 5) ───────────────────────────
+
+    def _git_verify(self, directory: str) -> dict:
+        return {"ok": True}
+
+    # ── Health check (stub — replaced in Task 6) ──────────────────────────────
+
+    def _health_check(self, project: dict) -> dict:
+        return {"ok": True, "check_type": "unknown"}
