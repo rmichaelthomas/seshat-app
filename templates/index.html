@@ -17,6 +17,7 @@
       <span class="subtitle">Local Registry</span>
     </div>
     <div class="header-right">
+      <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
     </div>
   </header>
@@ -59,33 +60,42 @@
 
     </aside>
 
-    <!-- Main shelf -->
+    <!-- Main area (projects view OR vault view) -->
     <main class="main">
 
-      <!-- Column headers -->
-      <div class="shelf-header">
-        <div></div>
-        <div class="shelf-header-cell">Project</div>
-        <div class="shelf-header-cell">Port</div>
-        <div class="shelf-header-cell">Directory</div>
-        <div class="shelf-header-cell" style="text-align:right">Actions</div>
+      <!-- ── Projects view ──────────────────────────────────────────────── -->
+      <div id="projectView">
+
+        <div class="shelf-header">
+          <div></div>
+          <div class="shelf-header-cell">Project</div>
+          <div class="shelf-header-cell">Port</div>
+          <div class="shelf-header-cell">Directory</div>
+          <div class="shelf-header-cell" style="text-align:right">Actions</div>
+        </div>
+
+        <div class="project-shelf" id="projectShelf">
+          <div class="empty-state">
+            <div class="empty-state-title">Loading…</div>
+          </div>
+        </div>
+
+        <div id="orphanSection" style="display:none">
+          <div class="section-header">
+            <span class="filter-dot orange"></span>
+            Unknown Processes
+            <span class="tag">not in registry</span>
+          </div>
+          <div id="orphanList"></div>
+        </div>
+
       </div>
 
-      <!-- Project rows -->
-      <div class="project-shelf" id="projectShelf">
-        <div class="empty-state">
-          <div class="empty-state-title">Loading…</div>
+      <!-- ── Vault view ─────────────────────────────────────────────────── -->
+      <div id="vaultView" style="display:none">
+        <div id="vaultContent">
+          <div class="empty-state"><div class="empty-state-title">Loading vault…</div></div>
         </div>
-      </div>
-
-      <!-- Orphan section -->
-      <div id="orphanSection" style="display:none">
-        <div class="section-header">
-          <span class="filter-dot orange"></span>
-          Unknown Processes
-          <span class="tag">not in registry</span>
-        </div>
-        <div id="orphanList"></div>
       </div>
 
     </main>
@@ -171,6 +181,35 @@
       <div class="form-actions">
         <button type="button" class="btn btn-ghost" id="groupCancelBtn">Cancel</button>
         <button type="submit" class="btn btn-primary">Create Group</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Add Vault Key Modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="vaultKeyModalOverlay">
+  <div class="modal" style="width:420px">
+    <div class="modal-header">
+      <h2 id="vaultKeyModalTitle">Add Key</h2>
+      <button class="icon-btn" id="vaultKeyModalClose">✕</button>
+    </div>
+    <form id="vaultKeyForm" autocomplete="off">
+      <input type="hidden" name="mode" value="shared">
+      <input type="hidden" name="project" value="">
+      <div class="form-group">
+        <label>Key Name <span class="required">*</span></label>
+        <input type="text" name="key" placeholder="e.g. ANTHROPIC_API_KEY"
+               style="font-family:var(--mono);text-transform:uppercase" required>
+      </div>
+      <div class="form-group">
+        <label>Value <span class="required">*</span></label>
+        <input type="password" name="value" placeholder="Secret value" required autocomplete="new-password">
+        <button type="button" class="reveal-toggle" id="vaultKeyReveal">Show</button>
+      </div>
+      <div class="form-error" id="vaultKeyError"></div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-ghost" id="vaultKeyCancelBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>
