@@ -122,16 +122,14 @@ class Organizer:
         git_result    = self._git_verify(str(dest))
         health_result = self._health_check({**project, "directory": str(dest)})
 
-        move_id = (
-            f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-            f"-{_slugify(project_name)}"
-        )
+        now     = datetime.now(timezone.utc)
+        move_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{_slugify(project_name)}"
         self._append_move({
             "id":              move_id,
             "project":         project_name,
             "from":            str(current),
             "to":              str(dest),
-            "timestamp":       datetime.now(timezone.utc).isoformat(),
+            "timestamp":       now.isoformat(),
             "git_verified":    git_result["ok"],
             "health_verified": health_result["ok"],
             "rolled_back":     False,
