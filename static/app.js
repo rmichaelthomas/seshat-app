@@ -1195,6 +1195,10 @@ async function _doMigrate(projectName, destination, force) {
     });
     const data = await res.json();
     if (!res.ok) { toast(data.error || "Migration failed", "error"); return null; }
+    if (data.warning === "project_running") {
+      toast("Project is currently running — stop it first or use the individual Move button to confirm.", "error");
+      return null;
+    }
     return data;
   } catch (e) {
     toast(`Migration error: ${e.message}`, "error");
@@ -1284,9 +1288,8 @@ function renderMoveHistory(moves) {
           const date = new Date(m.timestamp).toLocaleDateString("en-US", {
             month: "short", day: "numeric", year: "numeric",
           });
-          const safeId = esc(m.id).replace(/&#x27;/g, "\\'");
           return `
-            <tr class="history-row ${rolledBack ? 'history-row--rolled-back' : ''}">
+            <tr class="history-row ${rolledBack ? 'history-row--rolled-back' : ''}" data-move-id="${esc(m.id)}">
               <td>${esc(m.project)}</td>
               <td class="mono history-path">${esc(shortPath(m.from))}</td>
               <td class="mono history-path">${esc(shortPath(m.to))}</td>
@@ -1300,7 +1303,7 @@ function renderMoveHistory(moves) {
                 ${rolledBack
                   ? ""
                   : `<button class="btn btn-ghost btn-sm rollback-btn"
-                       onclick="doRollback('${safeId}')">Roll Back</button>`}
+                       onclick="doRollback(this.closest('tr').dataset.moveId)">Roll Back</button>`}
               </td>
             </tr>`;
         }).join("")}
