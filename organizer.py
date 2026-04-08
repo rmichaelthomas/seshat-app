@@ -142,9 +142,32 @@ class Organizer:
             "health_result": health_result,
         }
 
-    # ── Git verification (stub — replaced in Task 5) ───────────────────────────
+    # ── Git verification ───────────────────────────────────────────────────────
 
     def _git_verify(self, directory: str) -> dict:
+        path = Path(directory)
+
+        if not (path / ".git").exists():
+            return {"ok": False, "error": "Not a git repository"}
+
+        def run(cmd: list[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd, cwd=directory,
+                capture_output=True, text=True, timeout=15,
+            )
+
+        r = run(["git", "status"])
+        if r.returncode != 0:
+            return {"ok": False, "error": f"git status failed: {r.stderr.strip()}"}
+
+        r = run(["git", "remote", "-v"])
+        if r.returncode != 0 or not r.stdout.strip():
+            return {"ok": False, "error": "No git remote configured"}
+
+        r = run(["git", "fetch", "--dry-run"])
+        if r.returncode != 0:
+            return {"ok": False, "error": f"Remote not reachable: {r.stderr.strip()}"}
+
         return {"ok": True}
 
     # ── Health check (stub — replaced in Task 6) ──────────────────────────────

@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import registry as reg_module
 import organizer as org_module
 from registry import Registry
@@ -317,3 +317,100 @@ def test_migrate_rejects_missing_parent(org, tmp_seshat):
 def test_migrate_unknown_project_raises(org):
     with pytest.raises(ValueError, match="not found"):
         org.migrate("GhostApp", "/some/path")
+
+
+# ── _git_verify ────────────────────────────────────────────────────────────
+
+def test_git_verify_no_git_dir(org, tmp_seshat):
+    path = tmp_seshat / "notarepo"
+    path.mkdir()
+    result = org._git_verify(str(path))
+    assert result["ok"] is False
+    assert "Not a git repository" in result["error"]
+
+
+def test_git_verify_passes_when_all_checks_ok(org, tmp_seshat, monkeypatch):
+    path = tmp_seshat / "myrepo"
+    path.mkdir()
+    (path / ".git").mkdir()
+
+    import subprocess as sp
+    def fake_run(cmd, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        if "remote" in cmd:
+            m.stdout = "origin\thttps://github.com/x/y.git (fetch)\n"
+        else:
+            m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    result = org._git_verify(str(path))
+    assert result["ok"] is True
+
+
+def test_git_verify_fails_if_no_remote(org, tmp_seshat, monkeypatch):
+    path = tmp_seshat / "myrepo"
+    path.mkdir()
+    (path / ".git").mkdir()
+
+    import subprocess as sp
+    def fake_run(cmd, **kwargs):
+        m = MagicMock()
+        if "remote" in cmd:
+            m.returncode = 0
+            m.stdout = ""   # empty = no remotes
+            m.stderr = ""
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    result = org._git_verify(str(path))
+    assert result["ok"] is False
+    assert "remote" in result["error"].lower()
+
+
+def test_git_verify_fails_if_status_nonzero(org, tmp_seshat, monkeypatch):
+    path = tmp_seshat / "myrepo"
+    path.mkdir()
+    (path / ".git").mkdir()
+
+    import subprocess as sp
+    def fake_run(cmd, **kwargs):
+        m = MagicMock()
+        m.returncode = 128
+        m.stdout = ""
+        m.stderr = "fatal: not a git repository"
+        return m
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    result = org._git_verify(str(path))
+    assert result["ok"] is False
+
+
+def test_git_verify_fails_if_fetch_dry_run_fails(org, tmp_seshat, monkeypatch):
+    path = tmp_seshat / "myrepo"
+    path.mkdir()
+    (path / ".git").mkdir()
+
+    import subprocess as sp
+    def fake_run(cmd, **kwargs):
+        m = MagicMock()
+        if "fetch" in cmd:
+            m.returncode = 1
+            m.stdout = ""
+            m.stderr = "fatal: unable to access"
+        else:
+            m.returncode = 0
+            m.stdout = "origin\thttps://github.com/x/y (fetch)\n" if "remote" in cmd else ""
+            m.stderr = ""
+        return m
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    result = org._git_verify(str(path))
+    assert result["ok"] is False
+    assert "reachable" in result["error"].lower()
