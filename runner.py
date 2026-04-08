@@ -38,7 +38,6 @@ _ERROR_PATTERNS = [
     "fatal error:",
 ]
 
-# Patterns that are noisy and should be ignored even if they match above
 _IGNORE_PATTERNS = [
     "DeprecationWarning",
     "ExperimentalWarning",
@@ -53,10 +52,11 @@ class Runner:
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
-    def start(self, project: dict) -> int:
+    def start(self, project: dict, extra_env: dict | None = None) -> int:
         """
         Start a project. Stdout and stderr are captured to
-        ~/.seshat/logs/<name>.log. Returns the child PID.
+        ~/.seshat/logs/<name>.log. Vault-resolved env vars are injected
+        via extra_env. Returns the child PID.
         """
         directory = Path(project["directory"]).expanduser().resolve()
         if not directory.exists():
@@ -75,19 +75,23 @@ class Runner:
         with open(log_path, "a") as f:
             f.write(separator)
 
-        log_file = open(log_path, "a")
+        # Build environment: inherit OS env, force unbuffered Python output,
+        # then layer in any vault-resolved secrets.
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        if extra_env:
+            env.update(extra_env)
 
+        log_file = open(log_path, "a")
         proc = subprocess.Popen(
             project["start"],
             shell=True,
             cwd=directory,
             stdout=log_file,
             stderr=log_file,
-            start_new_session=True,   # own process group → clean group kill
+            start_new_session=True,
             env=env,
         )
-        log_file.close()   # parent closes its copy; child keeps writing
+        log_file.close()   # parent closes; child keeps writing
         return proc.pid
 
     def stop(self, pid: int) -> None:
@@ -126,7 +130,7 @@ class Runner:
 
         lines = path.read_text(errors="replace").splitlines()
 
-        # Find the last "--- Started" separator → scope to current run
+        # Scope to current run (lines after the last separator)
         last_sep = 0
         for i in range(len(lines) - 1, -1, -1):
             if lines[i].startswith("--- Started"):
@@ -139,8 +143,7 @@ class Runner:
     def find_recent_error(self, project_name: str) -> dict | None:
         """
         Scan the current run's log for the most recent error line.
-        Returns a dict with message, context, file_ref, and short label,
-        or None if no error is found.
+        Returns {message, context, file_ref, short} or None.
         """
         lines = self.read_log_tail(project_name, n=300)
         if not lines:
