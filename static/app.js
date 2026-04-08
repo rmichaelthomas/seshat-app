@@ -1248,8 +1248,82 @@ async function moveAll() {
   }
 }
 
-// Stub — implemented in Task 13
-async function loadMoveHistory() {}
+async function loadMoveHistory() {
+  const el = $("moveHistoryContent");
+  if (!el) return;
+  try {
+    const res  = await fetch("/api/organize/history");
+    const data = await res.json();
+    el.innerHTML = renderMoveHistory(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load history.</div></div>`;
+  }
+}
+
+function renderMoveHistory(moves) {
+  if (!moves || moves.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No moves recorded yet.</div></div>`;
+  }
+  return `
+    <table class="organize-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>From</th>
+          <th>To</th>
+          <th>Date</th>
+          <th>Git</th>
+          <th>Health</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${moves.map(m => {
+          const rolledBack = m.rolled_back;
+          const date = new Date(m.timestamp).toLocaleDateString("en-US", {
+            month: "short", day: "numeric", year: "numeric",
+          });
+          const safeId = esc(m.id).replace(/&#x27;/g, "\\'");
+          return `
+            <tr class="history-row ${rolledBack ? 'history-row--rolled-back' : ''}">
+              <td>${esc(m.project)}</td>
+              <td class="mono history-path">${esc(shortPath(m.from))}</td>
+              <td class="mono history-path">${esc(shortPath(m.to))}</td>
+              <td class="history-date">${date}</td>
+              <td class="history-check">${m.git_verified ? "✓" : "✗"}</td>
+              <td class="history-check">${m.health_verified ? "✓" : "✗"}</td>
+              <td>${rolledBack
+                ? `<span class="history-status rolled-back">rolled back</span>`
+                : `<span class="history-status moved">moved</span>`}</td>
+              <td>
+                ${rolledBack
+                  ? ""
+                  : `<button class="btn btn-ghost btn-sm rollback-btn"
+                       onclick="doRollback('${safeId}')">Roll Back</button>`}
+              </td>
+            </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+}
+
+async function doRollback(moveId) {
+  if (!confirm("Roll back this move? The folder will be moved to its original location and the registry will be updated.")) return;
+  try {
+    const res  = await fetch("/api/organize/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ move_id: moveId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast("Rolled back successfully", "success");
+    await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+  } catch (e) {
+    toast(`Rollback failed: ${e.message}`, "error");
+  }
+}
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
