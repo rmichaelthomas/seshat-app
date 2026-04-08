@@ -166,7 +166,8 @@ class Organizer:
 
         r = run(["git", "fetch", "--dry-run"])
         if r.returncode != 0:
-            return {"ok": False, "error": f"Remote not reachable: {r.stderr.strip()}"}
+            detail = r.stderr.strip() or r.stdout.strip() or "(no output)"
+            return {"ok": False, "error": f"Remote not reachable: {detail}"}
 
         return {"ok": True}
 

@@ -390,6 +390,7 @@ def test_git_verify_fails_if_status_nonzero(org, tmp_seshat, monkeypatch):
     monkeypatch.setattr(sp, "run", fake_run)
     result = org._git_verify(str(path))
     assert result["ok"] is False
+    assert "git status failed" in result["error"]
 
 
 def test_git_verify_fails_if_fetch_dry_run_fails(org, tmp_seshat, monkeypatch):
