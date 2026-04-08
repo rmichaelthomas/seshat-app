@@ -270,6 +270,21 @@ async function resetHostname(projectName) {
   updateDetailPanel(projectName);
 }
 
+async function useHostnameForVaultKey(key, hostnameUrl, proj) {
+  const url  = proj
+    ? `/api/vault/overrides/${encodeURIComponent(proj)}`
+    : "/api/vault/keys";
+  const res  = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value: hostnameUrl }),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  toast("Updated to hostname URL", "success");
+  await renderVaultView();
+}
+
 async function loadHostnames() {
   try {
     const res = await fetch("/api/router/hostnames");
@@ -902,6 +917,26 @@ function renderImportSection() {
     </div>`;
 }
 
+function buildLocalhostHint(value, key, proj) {
+  // value must match http://localhost:PORT or https://localhost:PORT
+  const m = /^https?:\/\/localhost:(\d+)/.exec(value);
+  if (!m) return null;
+  const port = parseInt(m[1], 10);
+  const match = hostnames.find(h => h.port === port);
+  if (!match) return null;
+  const hostnameUrl = `http://${match.hostname}`;
+  const safeKey  = key.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const safeProj = (proj || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return `
+    <div class="vault-hostname-hint">
+      You can also use <code>${esc(hostnameUrl)}</code>
+      <button class="vault-hostname-hint-btn"
+              onclick="useHostnameForVaultKey('${safeKey}','${esc(hostnameUrl)}','${safeProj}')">
+        Use hostname
+      </button>
+    </div>`;
+}
+
 function initVaultViewEvents() {
   // Reveal shared key
   document.querySelectorAll(".reveal-key-btn").forEach(btn => {
@@ -909,12 +944,20 @@ function initVaultViewEvents() {
       const key = btn.dataset.key;
       const el  = $(`keyval-${key}`);
       if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed"); return;
+        el.textContent = "••••••••"; el.classList.remove("revealed");
+        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+        return;
       }
       try {
         const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
         const d   = await res.json();
         el.textContent = d.value; el.classList.add("revealed");
+        const hint = buildLocalhostHint(d.value, key, null);
+        if (hint) {
+          el.closest(".vault-key-row")
+            .querySelector(".vault-row-actions")
+            .insertAdjacentHTML("beforebegin", hint);
+        }
       } catch (_) { toast("Could not reveal key", "error"); }
     });
   });
@@ -941,12 +984,20 @@ function initVaultViewEvents() {
       const { proj, key } = btn.dataset;
       const el = $(`ovval-${proj}-${key}`);
       if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed"); return;
+        el.textContent = "••••••••"; el.classList.remove("revealed");
+        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+        return;
       }
       try {
         const res = await fetch(`/api/vault/overrides/${encodeURIComponent(proj)}/${encodeURIComponent(key)}`);
         const d   = await res.json();
         el.textContent = d.value; el.classList.add("revealed");
+        const hint = buildLocalhostHint(d.value, key, proj);
+        if (hint) {
+          el.closest(".vault-key-row")
+            .querySelector(".vault-row-actions")
+            .insertAdjacentHTML("beforebegin", hint);
+        }
       } catch (_) { toast("Could not reveal value", "error"); }
     });
   });
