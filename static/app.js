@@ -1104,8 +1104,105 @@ function renderFolderMap(groups) {
     </div>`).join("");
 }
 
-// Stubs — implemented in Tasks 11-13
-async function loadRecommendations() {}
+async function loadRecommendations() {
+  const el   = $("recommendationsContent");
+  const root = ($("structureRoot") || {}).value || "~/Projects";
+  if (!el) return;
+  try {
+    const res  = await fetch(`/api/organize/recommendations?root=${encodeURIComponent(root)}`);
+    const data = await res.json();
+    el.innerHTML = renderRecommendations(data);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-state-sub">Could not load recommendations.</div></div>`;
+  }
+}
+
+function renderRecommendations(recs) {
+  if (!recs || recs.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-sub">No projects to organize.</div></div>`;
+  }
+  return `
+    <table class="organize-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Current Location</th>
+          <th>Suggested Location</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${recs.map(r => {
+          const already = r.current === r.suggested;
+          return `
+            <tr class="rec-row ${already ? 'rec-row--done' : ''}" data-project="${esc(r.project_name)}">
+              <td class="rec-name">${esc(r.project_name)}</td>
+              <td class="rec-current mono">${esc(shortPath(r.current))}</td>
+              <td class="rec-dest">
+                <input class="rec-dest-input mono" type="text"
+                  value="${esc(r.suggested)}"
+                  ${already ? 'disabled' : ''}
+                  data-original="${esc(r.suggested)}">
+              </td>
+              <td class="rec-action">
+                ${already
+                  ? `<span class="rec-done-badge">✓ moved</span>`
+                  : `<button class="btn btn-ghost btn-sm move-btn"
+                       onclick="moveSingle('${esc(r.project_name.replace(/'/g, "\\'"))}', this)">
+                       Move
+                     </button>`}
+              </td>
+            </tr>`;
+        }).join("")}
+      </tbody>
+    </table>`;
+}
+
+async function moveSingle(projectName, btn) {
+  const row  = btn.closest(".rec-row");
+  const dest = row.querySelector(".rec-dest-input").value.trim();
+  if (!dest) { toast("Destination cannot be empty", "error"); return; }
+
+  // Check if project is running
+  const p = projects.find(x => x.name === projectName);
+  if (p && p.status === "running") {
+    if (!confirm(
+      `"${projectName}" is currently running. Moving it won't affect the running process, ` +
+      `but the next start will use the new location.\n\nContinue?`
+    )) return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Moving…";
+
+  const result = await _doMigrate(projectName, dest, true);
+  if (!result) {
+    btn.disabled = false;
+    btn.textContent = "Move";
+    return;
+  }
+
+  toast(`${projectName} moved`, "success");
+  await Promise.all([loadFolderMap(), loadRecommendations()]);
+}
+
+async function _doMigrate(projectName, destination, force) {
+  try {
+    const res  = await fetch("/api/organize/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: projectName, destination, force }),
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "Migration failed", "error"); return null; }
+    return data;
+  } catch (e) {
+    toast(`Migration error: ${e.message}`, "error");
+    return null;
+  }
+}
+
+// Stubs — implemented in Tasks 12-13
 async function loadMoveHistory()     {}
 async function moveAll()             {}
 
