@@ -99,3 +99,72 @@ def test_all_hostnames_project_without_port(rtr):
     result = rtr.all_hostnames()
     assert result[0]["port"] is None
     assert result[0]["hostname"] == "docs.seshat"
+
+
+# ── set_hostname ───────────────────────────────────────────────────────────
+
+def test_set_hostname_persists_override(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("Vault", "vault.seshat")
+    assert rtr._load_hostnames()["Vault"] == "vault.seshat"
+
+def test_set_hostname_calls_reload(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    calls = []
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: calls.append(1) or {"ok": True})
+    rtr.set_hostname("Vault", "vault.seshat")
+    assert len(calls) == 1
+
+def test_set_hostname_rejects_missing_seshat_suffix(rtr, monkeypatch):
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    with pytest.raises(ValueError, match="invalid_hostname"):
+        rtr.set_hostname("Vault", "vault.local")
+
+def test_set_hostname_rejects_bad_chars(rtr, monkeypatch):
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    with pytest.raises(ValueError, match="invalid_hostname"):
+        rtr.set_hostname("Vault", "my vault.seshat")
+
+def test_set_hostname_rejects_leading_hyphen(rtr, monkeypatch):
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    with pytest.raises(ValueError, match="invalid_hostname"):
+        rtr.set_hostname("Vault", "-vault.seshat")
+
+def test_set_hostname_rejects_duplicate(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    rtr.registry.add({"name": "API",   "directory": "/tmp/a", "port": 3000})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("Vault", "vault.seshat")
+    with pytest.raises(ValueError, match="hostname_taken"):
+        rtr.set_hostname("API", "vault.seshat")
+
+def test_set_hostname_allows_overwriting_own(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("Vault", "vault.seshat")
+    rtr.set_hostname("Vault", "vault.seshat")   # must not raise
+
+
+# ── reset_hostname ─────────────────────────────────────────────────────────
+
+def test_reset_hostname_removes_override(rtr, monkeypatch):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("Vault", "vault.seshat")
+    rtr.reset_hostname("Vault")
+    assert "Vault" not in rtr._load_hostnames()
+
+def test_reset_hostname_calls_reload(rtr, monkeypatch):
+    calls = []
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: calls.append(1) or {"ok": True})
+    rtr.reset_hostname("NonExistent")
+    assert len(calls) == 1
+
+def test_reset_hostname_reverts_to_auto_slug(rtr, monkeypatch):
+    rtr.registry.add({"name": "My Vault", "directory": "/tmp/v", "port": 5001})
+    monkeypatch.setattr(rtr, "_reload_caddy", lambda: {"ok": True})
+    rtr.set_hostname("My Vault", "vault.seshat")
+    rtr.reset_hostname("My Vault")
+    result = rtr.all_hostnames()
+    assert result[0]["hostname"] == "my-vault.seshat"

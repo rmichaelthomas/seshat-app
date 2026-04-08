@@ -57,3 +57,36 @@ class Router:
                 "port":         p.get("port"),
             })
         return result
+
+    def set_hostname(self, project_name: str, hostname: str) -> dict:
+        """Validate and persist a hostname override, then reload Caddy."""
+        if not hostname.endswith(".seshat"):
+            raise ValueError("invalid_hostname")
+        subdomain = hostname[: -len(".seshat")]
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9\-]*[a-z0-9])?|[a-z0-9]", subdomain):
+            raise ValueError("invalid_hostname")
+
+        saved = self._load_hostnames()
+        for proj, h in saved.items():
+            if proj != project_name and h == hostname:
+                raise ValueError("hostname_taken")
+
+        saved[project_name] = hostname
+        self._write_hostnames(saved)
+        return self._reload_caddy()
+
+    def reset_hostname(self, project_name: str) -> dict:
+        """Remove hostname override and reload Caddy (reverts to auto-generated slug)."""
+        saved = self._load_hostnames()
+        saved.pop(project_name, None)
+        self._write_hostnames(saved)
+        return self._reload_caddy()
+
+    def _reload_caddy(self) -> dict:
+        """Signal Caddy to reload its configuration."""
+        result = subprocess.run(
+            ["caddy", "reload", "--config", str(CADDYFILE)],
+            capture_output=True,
+            text=True,
+        )
+        return {"ok": result.returncode == 0, "stderr": result.stderr}
