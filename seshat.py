@@ -5,6 +5,7 @@ Runs at http://localhost:9000
 """
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from registry import Registry
 from scanner  import Scanner
 from runner   import Runner
 from vault    import Vault
+import deps as deps_module
 
 app = Flask(__name__)
 
@@ -26,8 +28,52 @@ vault    = Vault()
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+def _enrich_deps_with_vault(deps_config: list, project_name: str) -> list:
+    """Resolve vault-held URLs into dep configs before health-checking.
+
+    Supports:
+      - supabase  → SUPABASE_URL
+      - postgres  → DATABASE_URL
+      - http/api  → <LABEL>_URL  (e.g. label="stripe" → STRIPE_URL)
+    """
+    enriched = []
+    for dep in deps_config:
+        d = dict(dep)
+        provider = d.get("provider", "").lower()
+
+        if provider == "supabase" and not d.get("url"):
+            resolved = vault.resolve_for_project(project_name, ["SUPABASE_URL"])
+            if "SUPABASE_URL" in resolved:
+                d["url"] = resolved["SUPABASE_URL"]
+
+        elif provider == "postgres" and not d.get("url"):
+            resolved = vault.resolve_for_project(project_name, ["DATABASE_URL"])
+            if "DATABASE_URL" in resolved:
+                d["url"] = resolved["DATABASE_URL"]
+
+        elif provider in ("http", "api") and not d.get("url"):
+            label = (d.get("label") or "").upper()
+            key   = f"{label}_URL" if label else None
+            if key:
+                resolved = vault.resolve_for_project(project_name, [key])
+                if key in resolved:
+                    d["url"] = resolved[key]
+
+        enriched.append(d)
+    return enriched
+
+
+def _compute_composite_status(status: str, dep_results: list) -> str:
+    """Compute composite status: running + any dep disconnected = degraded."""
+    if status != "running":
+        return status
+    if any(d.get("status") == "disconnected" for d in (dep_results or [])):
+        return "degraded"
+    return status
+
+
 def build_project_view(project: dict, scan: dict, state: dict) -> dict:
-    """Merge registry data + live port scan + log errors into one view object."""
+    """Merge registry data + live port scan + log errors + dep status into one view object."""
     port        = project["port"]
     name        = project["name"]
     managed_pid = state.get(name, {}).get("pid")
@@ -59,6 +105,15 @@ def build_project_view(project: dict, scan: dict, state: dict) -> dict:
         view["recent_error"] = recent_error
         if status == "running":
             view["has_error"] = True
+
+    # Attach dep status from cache; kick off async check if cache is cold
+    dep_status = deps_module.get_cached(name) or []
+    if not dep_status and project.get("dependencies"):
+        enriched = _enrich_deps_with_vault(project.get("dependencies", []), name)
+        deps_module.check_all_async(name, enriched)
+
+    view["dep_status"]       = dep_status
+    view["composite_status"] = _compute_composite_status(status, dep_status)
 
     return view
 
@@ -122,7 +177,8 @@ def remove_project(name):
     try:
         registry.remove(name)
         registry.clear_pid(name)
-        vault.clear_project(name)   # remove any vault overrides
+        vault.clear_project(name)       # remove any vault overrides
+        deps_module.invalidate(name)    # clear dep cache
         return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
@@ -152,6 +208,10 @@ def start_project(name):
         extra_env = vault.resolve_for_project(name, project.get("env", []))
         pid       = runner.start(project, extra_env=extra_env)
         registry.set_pid(name, pid)
+        # Kick off first dep check asynchronously once the project is live
+        if project.get("dependencies"):
+            enriched = _enrich_deps_with_vault(project.get("dependencies", []), name)
+            deps_module.check_all_async(name, enriched)
         return jsonify({"ok": True, "pid": pid})
     except (ValueError, OSError) as e:
         return jsonify({"error": str(e)}), 400
@@ -185,6 +245,19 @@ def get_project_logs(name):
     lines = runner.read_log_tail(name, n=150)
     error = runner.find_recent_error(name)
     return jsonify({"lines": lines, "recent_error": error})
+
+
+# ── Dependency health (force-refresh) ──────────────────────────────────────
+
+
+@app.route("/api/projects/<name>/deps", methods=["GET"])
+def get_project_deps(name):
+    project = registry.get(name)
+    if not project:
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+    enriched = _enrich_deps_with_vault(project.get("dependencies", []), name)
+    results  = deps_module.check_all(name, enriched)
+    return jsonify(results)
 
 
 # ── Orphans ────────────────────────────────────────────────────────────────
@@ -320,6 +393,9 @@ def start_group(name):
             pid       = runner.start(project, extra_env=extra_env)
             registry.set_pid(proj_name, pid)
             results.append({"name": proj_name, "status": "started", "pid": pid})
+            if project.get("dependencies"):
+                enriched = _enrich_deps_with_vault(project.get("dependencies", []), proj_name)
+                deps_module.check_all_async(proj_name, enriched)
             time.sleep(0.4)
             scan = scanner.scan()
         except Exception as e:
@@ -474,9 +550,33 @@ def open_path():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Background dep checker ─────────────────────────────────────────────────
+
+
+def _dep_checker_loop() -> None:
+    """Daemon thread: re-check deps for all running projects every 30 seconds."""
+    time.sleep(10)          # brief warm-up pause before first sweep
+    while True:
+        try:
+            state = registry.get_state()
+            for project in registry.list():
+                if not project.get("dependencies"):
+                    continue
+                name        = project["name"]
+                managed_pid = state.get(name, {}).get("pid")
+                if managed_pid and runner.is_running(managed_pid):
+                    enriched = _enrich_deps_with_vault(project["dependencies"], name)
+                    deps_module.check_all(name, enriched)
+        except Exception:
+            pass            # never crash the daemon
+        time.sleep(30)
+
+
 # ── Entry point ────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
+    _checker = threading.Thread(target=_dep_checker_loop, daemon=True, name="dep-checker")
+    _checker.start()
     print("⊕  Seshat is running at http://localhost:9000")
     app.run(host="127.0.0.1", port=9000, debug=False)
