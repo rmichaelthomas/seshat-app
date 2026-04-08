@@ -22,7 +22,7 @@ The stack: **dnsmasq** resolves all `*.seshat` names to `127.0.0.1`; **Caddy** r
 - `router.py` — all routing business logic (`Router` class)
 
 **Modified files:**
-- `seshat.py` — six new API routes under `# ── Router ──` block
+- `seshat.py` — seven new API routes under `# ── Router ──` block; also calls `router._reload_caddy()` after any project registration or deletion so the Caddyfile stays current automatically
 - `templates/index.html` — hostname chip on shelf row, hostname field in detail view, setup banner, setup modal
 - `static/app.js` — hostname display/edit/setup logic, vault hint
 - `static/style.css` — hostname chip and setup modal styles
