@@ -228,6 +228,48 @@ async function restartRouterServices() {
   renderShelf();
 }
 
+function editHostname(projectName) {
+  const field = $(`hostname-field-${projectName}`);
+  if (!field) return;
+  const h       = hostnames.find(x => x.project_name === projectName);
+  const current = h ? h.hostname : _slugify(projectName);
+  const safeN   = projectName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  field.querySelector(".hostname-field-view").outerHTML = `
+    <div class="hostname-field-edit">
+      <input class="hostname-edit-input" id="hostname-input-${esc(projectName)}"
+             value="${esc(current)}" spellcheck="false">
+      <button class="btn btn-primary btn-sm" onclick="saveHostname('${safeN}')">Save</button>
+      <button class="btn btn-ghost  btn-sm" onclick="resetHostname('${safeN}')">Reset to default</button>
+    </div>`;
+}
+
+async function saveHostname(projectName) {
+  const input = $(`hostname-input-${projectName}`);
+  if (!input) return;
+  const hostname = input.value.trim();
+  const res  = await fetch(`/api/router/hostnames/${encodeURIComponent(projectName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hostname }),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  await loadHostnames();
+  renderShelf();
+  updateDetailPanel(projectName);
+}
+
+async function resetHostname(projectName) {
+  const res  = await fetch(`/api/router/hostnames/${encodeURIComponent(projectName)}`, {
+    method: "DELETE",
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+  await loadHostnames();
+  renderShelf();
+  updateDetailPanel(projectName);
+}
+
 async function loadHostnames() {
   try {
     const res = await fetch("/api/router/hostnames");
@@ -412,6 +454,24 @@ function selectProject(name) {
   loadEnvStatus(name);
 }
 
+function _slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") + ".seshat";
+}
+
+function _hostnameDetailFieldHTML(projectName) {
+  const h = hostnames.find(x => x.project_name === projectName);
+  const current = h ? h.hostname : _slugify(projectName);
+  const safeN = projectName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return `
+    <div class="detail-field hostname-detail-field" id="hostname-field-${esc(projectName)}">
+      <div class="detail-label">Local Address</div>
+      <div class="hostname-field-view">
+        <span class="hostname-field-value">${esc(current)}</span>
+        <button class="detail-section-action" onclick="editHostname('${safeN}')">Edit</button>
+      </div>
+    </div>`;
+}
+
 function updateDetailPanel(name) {
   const p = projects.find(x => x.name === name);
   if (!p) return;
@@ -455,6 +515,7 @@ function updateDetailPanel(name) {
     <div class="detail-name">${esc(p.name)}</div>
     <div class="detail-url">localhost:${p.port}</div>
     <div class="detail-status ${statusCls}">${statusTxt}</div>
+    ${_hostnameDetailFieldHTML(p.name)}
     ${conflictBlock}${errorBlock}
     <div class="detail-actions">
       ${isRunning
