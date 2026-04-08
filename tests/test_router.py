@@ -275,3 +275,64 @@ def test_reload_caddy_writes_caddyfile(rtr, monkeypatch, tmp_seshat):
     assert (tmp_seshat / "Caddyfile").exists()
     content = (tmp_seshat / "Caddyfile").read_text()
     assert "vault.seshat" in content
+
+
+# ── setup_status ───────────────────────────────────────────────────────────
+
+def _make_fake_run(which_ok=True, pgrep_caddy_ok=True, pgrep_dnsmasq_ok=True):
+    """Factory for a fake subprocess.run that controls which/pgrep returns."""
+    def fake_run(cmd, **_):
+        m = MagicMock()
+        if cmd[0] == "which":
+            m.returncode = 0 if which_ok else 1
+        elif cmd[0] == "pgrep" and "caddy" in cmd:
+            m.returncode = 0 if pgrep_caddy_ok else 1
+        elif cmd[0] == "pgrep" and "dnsmasq" in cmd:
+            m.returncode = 0 if pgrep_dnsmasq_ok else 1
+        else:
+            m.returncode = 0
+        return m
+    return fake_run
+
+
+def test_setup_status_all_installed_and_running(rtr, monkeypatch, tmp_seshat):
+    (tmp_seshat / "Caddyfile").write_text("# caddy")
+    monkeypatch.setattr(router_module.subprocess, "run",
+                        _make_fake_run(which_ok=True, pgrep_caddy_ok=True, pgrep_dnsmasq_ok=True))
+    monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
+    status = rtr.setup_status()
+    assert status["caddy_installed"]   is True
+    assert status["dnsmasq_installed"] is True
+    assert status["caddy_running"]     is True
+    assert status["dnsmasq_running"]   is True
+    assert status["caddyfile_exists"]  is True
+    # resolver_configured will be False in CI (can't write /etc/resolver/seshat in tests)
+    assert "resolver_configured" in status
+
+
+def test_setup_status_caddy_not_installed(rtr, monkeypatch, tmp_seshat):
+    monkeypatch.setattr(router_module.subprocess, "run",
+                        _make_fake_run(which_ok=False))
+    monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
+    status = rtr.setup_status()
+    assert status["caddy_installed"]   is False
+    assert status["dnsmasq_installed"] is False
+
+
+def test_setup_status_caddy_not_running(rtr, monkeypatch, tmp_seshat):
+    monkeypatch.setattr(router_module.subprocess, "run",
+                        _make_fake_run(which_ok=True, pgrep_caddy_ok=False, pgrep_dnsmasq_ok=True))
+    monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
+    status = rtr.setup_status()
+    assert status["caddy_installed"] is True
+    assert status["caddy_running"]   is False
+    assert status["dnsmasq_running"] is True
+
+
+def test_setup_status_resolver_not_configured(rtr, monkeypatch, tmp_seshat):
+    monkeypatch.setattr(router_module.subprocess, "run",
+                        _make_fake_run(which_ok=True, pgrep_caddy_ok=True, pgrep_dnsmasq_ok=True))
+    monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
+    status = rtr.setup_status()
+    # /etc/resolver/seshat won't exist in the test environment
+    assert status["resolver_configured"] is False

@@ -121,3 +121,22 @@ class Router:
             if r.returncode == 0:
                 return {"ok": True}
             return {"ok": False, "error": r.stderr.strip() or "(no output)"}
+
+    # ── Setup ──────────────────────────────────────────────────────────────
+
+    def setup_status(self) -> dict:
+        """Check whether the full routing stack is installed and configured."""
+        caddy_installed    = subprocess.run(["which", "caddy"],   capture_output=True, timeout=5).returncode == 0
+        dnsmasq_installed  = subprocess.run(["which", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
+        caddy_running      = subprocess.run(["pgrep", "-x", "caddy"],   capture_output=True, timeout=5).returncode == 0
+        dnsmasq_running    = subprocess.run(["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
+        resolver_configured = Path("/etc/resolver/seshat").exists()
+        caddyfile_exists   = CADDYFILE.exists()
+        return {
+            "caddy_installed":     caddy_installed,
+            "dnsmasq_installed":   dnsmasq_installed,
+            "caddy_running":       caddy_running,
+            "dnsmasq_running":     dnsmasq_running,
+            "resolver_configured": resolver_configured,
+            "caddyfile_exists":    caddyfile_exists,
+        }
