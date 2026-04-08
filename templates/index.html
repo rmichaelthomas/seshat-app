@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seshat</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo"><span class="logo-glyph">⊕</span> Seshat</span>
+      <span class="subtitle">Local Registry</span>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
+    </div>
+  </header>
+
+  <!-- Body -->
+  <div class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-label">View</div>
+
+      <button class="filter-btn active" data-filter="all">
+        <span class="filter-left"><span class="filter-dot"></span>All Projects</span>
+        <span class="count" id="count-all">0</span>
+      </button>
+      <button class="filter-btn" data-filter="running">
+        <span class="filter-left"><span class="filter-dot green"></span>Running</span>
+        <span class="count" id="count-running">0</span>
+      </button>
+      <button class="filter-btn" data-filter="stopped">
+        <span class="filter-left"><span class="filter-dot"></span>Stopped</span>
+        <span class="count" id="count-stopped">0</span>
+      </button>
+      <button class="filter-btn" data-filter="conflict">
+        <span class="filter-left"><span class="filter-dot red"></span>Conflicts</span>
+        <span class="count" id="count-conflict">0</span>
+      </button>
+      <button class="filter-btn" data-filter="orphans">
+        <span class="filter-left"><span class="filter-dot orange"></span>Orphans</span>
+        <span class="count" id="count-orphans">0</span>
+      </button>
+    </aside>
+
+    <!-- Main shelf -->
+    <main class="main">
+
+      <!-- Column headers -->
+      <div class="shelf-header">
+        <div></div>
+        <div class="shelf-header-cell">Project</div>
+        <div class="shelf-header-cell">Port</div>
+        <div class="shelf-header-cell">Directory</div>
+        <div class="shelf-header-cell" style="text-align:right">Actions</div>
+      </div>
+
+      <!-- Project rows -->
+      <div class="project-shelf" id="projectShelf">
+        <div class="empty-state">
+          <div class="empty-state-title">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Orphan section -->
+      <div id="orphanSection" style="display:none">
+        <div class="section-header">
+          <span class="filter-dot orange"></span>
+          Unknown Processes
+          <span class="tag">not in registry</span>
+        </div>
+        <div id="orphanList"></div>
+      </div>
+
+    </main>
+
+    <!-- Detail panel -->
+    <aside class="detail-panel" id="detailPanel">
+      <div class="detail-inner" id="detailInner">
+        <div class="empty-state" style="padding:60px 20px">
+          <div class="empty-state-sub">Select a project to view details</div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- Add Project Modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Register Project</h2>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <form id="addProjectForm" autocomplete="off">
+      <div class="form-group">
+        <label>Name <span class="required">*</span></label>
+        <input type="text" name="name" placeholder="e.g. VAULT" required>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Port <span class="required">*</span></label>
+          <input type="number" name="port" placeholder="e.g. 5001" min="1" max="65535" required>
+        </div>
+        <div class="form-group">
+          <label>URL <span class="label-hint">(optional)</span></label>
+          <input type="text" name="url" placeholder="Auto-filled from port">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Directory <span class="required">*</span></label>
+        <input type="text" name="directory" placeholder="e.g. ~/Projects/vault" required>
+      </div>
+      <div class="form-group">
+        <label>Start Command <span class="required">*</span></label>
+        <input type="text" name="start" placeholder="e.g. flask run --port 5001" required>
+      </div>
+      <div class="form-group">
+        <label>Tags <span class="label-hint">(comma separated)</span></label>
+        <input type="text" name="tags" placeholder="e.g. infrastructure, api">
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <textarea name="notes" rows="2" placeholder="Optional notes about this project"></textarea>
+      </div>
+      <div class="form-error" id="formError"></div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary">Register</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
