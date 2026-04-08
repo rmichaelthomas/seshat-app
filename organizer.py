@@ -142,6 +142,35 @@ class Organizer:
             "health_result": health_result,
         }
 
+    # ── Rollback ───────────────────────────────────────────────────────────────
+
+    def rollback(self, move_id: str) -> dict:
+        moves = self._load_moves()
+        record = next((m for m in moves if m["id"] == move_id), None)
+        if not record:
+            raise ValueError(f"Move record '{move_id}' not found.")
+        if record.get("rolled_back"):
+            raise ValueError(f"Move '{move_id}' has already been rolled back.")
+
+        dest   = Path(record["to"]).expanduser().resolve()
+        origin = Path(record["from"]).expanduser().resolve()
+
+        if not dest.exists():
+            raise ValueError(f"Cannot roll back: '{dest}' no longer exists.")
+        if origin.exists():
+            raise ValueError(
+                f"Cannot roll back: original location '{origin}' is already occupied."
+            )
+
+        shutil.move(str(dest), str(origin))
+        self.registry.update(record["project"], {"directory": str(origin)})
+        git_result = self._git_verify(str(origin))
+
+        record["rolled_back"] = True
+        self._write_moves(moves)
+
+        return {"ok": True, "git_result": git_result}
+
     # ── Git verification ───────────────────────────────────────────────────────
 
     def _git_verify(self, directory: str) -> dict:

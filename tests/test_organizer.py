@@ -483,3 +483,95 @@ def test_health_check_unknown_command_passes(org, tmp_seshat):
     result = org._health_check(project)
     assert result["ok"] is True
     assert result["check_type"] == "unknown"
+
+
+# ── rollback ───────────────────────────────────────────────────────────────
+
+def test_rollback_moves_folder_back(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+    move_id = result["move_id"]
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}):
+        rb = org.rollback(move_id)
+
+    assert rb["ok"] is True
+    assert src.exists()
+    assert not dst.exists()
+
+
+def test_rollback_updates_registry(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}):
+        org.rollback(result["move_id"])
+
+    assert org.registry.get("MyApp")["directory"] == str(src)
+
+
+def test_rollback_marks_record(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}):
+        org.rollback(result["move_id"])
+
+    history = org.load_history()
+    assert history[0]["rolled_back"] is True
+
+
+def test_rollback_rejects_already_rolled_back(org, tmp_seshat):
+    src = tmp_seshat / "old" / "myapp"
+    src.mkdir(parents=True)
+    dst = tmp_seshat / "new" / "myapp"
+    dst.parent.mkdir(parents=True)
+
+    org.registry.add({"name": "MyApp", "port": 5000, "directory": str(src),
+                       "start": "python app.py", "tags": [], "url": "", "stop": "",
+                       "notes": "", "dependencies": [], "env": []})
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}), \
+         patch("organizer.Organizer._health_check", return_value={"ok": True, "check_type": "unknown"}):
+        result = org.migrate("MyApp", str(dst))
+
+    with patch("organizer.Organizer._git_verify", return_value={"ok": True}):
+        org.rollback(result["move_id"])
+
+    with pytest.raises(ValueError, match="already been rolled back"):
+        org.rollback(result["move_id"])
+
+
+def test_rollback_unknown_id_raises(org):
+    with pytest.raises(ValueError, match="not found"):
+        org.rollback("nonexistent-id")
