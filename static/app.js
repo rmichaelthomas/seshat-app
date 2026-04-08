@@ -1202,9 +1202,54 @@ async function _doMigrate(projectName, destination, force) {
   }
 }
 
-// Stubs — implemented in Tasks 12-13
-async function loadMoveHistory()     {}
-async function moveAll()             {}
+async function moveAll() {
+  const rows = document.querySelectorAll(".rec-row:not(.rec-row--done)");
+  if (rows.length === 0) { toast("Nothing to move", "info"); return; }
+
+  // Collect destinations from the editable inputs
+  const moves = [...rows].map(row => ({
+    project:     row.dataset.project,
+    destination: row.querySelector(".rec-dest-input").value.trim(),
+  })).filter(m => m.destination);
+
+  // Identify running projects
+  const runningNames = moves
+    .filter(m => projects.find(p => p.name === m.project && p.status === "running"))
+    .map(m => m.project);
+
+  if (runningNames.length > 0) {
+    if (!confirm(
+      `${runningNames.length} project${runningNames.length > 1 ? "s are" : " is"} currently running: ` +
+      `${runningNames.join(", ")}.\n\n` +
+      `Moving them won't affect running processes, but the next start will use the new locations.\n\nContinue?`
+    )) return;
+  }
+
+  const btn = $("moveAllBtn");
+  btn.disabled = true;
+  btn.textContent = "Moving…";
+
+  let succeeded = 0;
+  for (const { project, destination } of moves) {
+    const result = await _doMigrate(project, destination, true);
+    if (!result) {
+      // _doMigrate already toasted the error; stop on hard failure
+      break;
+    }
+    succeeded++;
+  }
+
+  btn.disabled = false;
+  btn.textContent = "Move All";
+
+  if (succeeded > 0) {
+    toast(`${succeeded} project${succeeded > 1 ? "s" : ""} moved`, "success");
+    await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+  }
+}
+
+// Stub — implemented in Task 13
+async function loadMoveHistory() {}
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
