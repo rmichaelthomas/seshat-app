@@ -219,3 +219,33 @@ def test_scan_returns_structured_results(importer, tmp_path):
     assert r["tags"] == ["obsidian", "python"]
     assert r["registered"] is False
     assert r["is_fork"] is False
+
+
+def test_scan_registered_by_name(importer):
+    repos = [{
+        "name": "vault", "full_name": "u/vault",
+        "clone_url": "https://github.com/u/vault.git",
+        "description": "", "language": "Python",
+        "topics": [], "fork": False,
+        "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main",
+    }]
+    with patch.object(importer, "fetch_repos", return_value=repos), \
+         patch.object(importer, "fetch_readme", return_value=None), \
+         patch.object(importer, "detect_local_path", return_value=None):
+        results = importer.scan(registered_names={"VAULT"})  # case-insensitive
+    assert results[0]["registered"] is True
+
+
+def test_scan_registered_by_local_path(importer):
+    repos = [{
+        "name": "vault", "full_name": "u/vault",
+        "clone_url": "https://github.com/u/vault.git",
+        "description": "", "language": "Python",
+        "topics": [], "fork": False,
+        "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main",
+    }]
+    with patch.object(importer, "fetch_repos", return_value=repos), \
+         patch.object(importer, "fetch_readme", return_value=None), \
+         patch.object(importer, "detect_local_path", return_value="/Users/u/vault"):
+        results = importer.scan(registered_names={"/users/u/vault"})  # case-insensitive
+    assert results[0]["registered"] is True
