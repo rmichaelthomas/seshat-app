@@ -97,6 +97,8 @@ class Router:
     def _reload_caddy(self) -> dict:
         """Write Caddyfile and reload (or start) Caddy."""
         content = self._generate_caddyfile()
+        if not content:
+            return {"ok": True}
         SESHAT_DIR.mkdir(exist_ok=True)
         CADDYFILE.write_text(content)
 
