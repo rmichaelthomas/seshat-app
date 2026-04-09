@@ -691,5 +691,6 @@ def _dep_checker_loop() -> None:
 if __name__ == "__main__":
     _checker = threading.Thread(target=_dep_checker_loop, daemon=True, name="dep-checker")
     _checker.start()
+    router._reload_caddy()   # auto-start/reload Caddy on boot if routes are configured
     print("⊕  Seshat is running at http://localhost:9000")
     app.run(host="127.0.0.1", port=9000, debug=False)
