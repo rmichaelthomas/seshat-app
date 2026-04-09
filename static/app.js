@@ -570,7 +570,7 @@ function updateDetailPanel(name) {
       <div class="detail-section-title">Danger Zone</div>
       <button class="detail-btn danger" onclick="removeProject('${safeN}')">Remove from Registry</button>
     </div>`;
-  if (prevLog && !prevLog.includes("Loading")) $("logViewer").innerHTML = prevLog;
+  if (prevLog && prevLog !== '<div class="log-empty">Loading\u2026</div>') $("logViewer").innerHTML = prevLog;
 }
 
 function renderErrorBlock(err) {
