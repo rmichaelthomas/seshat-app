@@ -66,6 +66,20 @@ def test_detect_local_path_not_found(importer, tmp_path):
     assert result is None
 
 
+def test_detect_local_path_ssh_clone(importer, tmp_path):
+    # Repo was cloned via SSH but GitHub API returns HTTPS clone_url
+    repo_dir = tmp_path / "my-repo"
+    repo_dir.mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[remote \"origin\"]\n\turl = git@github.com:u/my-repo.git\n"
+    )
+    with patch("github._LOCAL_SEARCH_ROOTS", [tmp_path]):
+        result = importer.detect_local_path("my-repo", "https://github.com/u/my-repo.git")
+    assert result == str(repo_dir)
+
+
 def test_detect_local_path_name_variations(importer, tmp_path):
     # repo name is "my-app" but cloned as "my_app"
     repo_dir = tmp_path / "my_app"

@@ -62,8 +62,13 @@ class GitHubImporter:
             for name in variations:
                 candidate = root / name
                 config_file = candidate / ".git" / "config"
-                if config_file.exists() and clone_url.rstrip(".git") in config_file.read_text():
-                    candidates.append(candidate)
+                if config_file.exists():
+                    config_text = config_file.read_text(encoding="utf-8", errors="replace")
+                    https_url = clone_url.removesuffix(".git")
+                    # Derive SSH form: https://github.com/owner/repo -> git@github.com:owner/repo
+                    ssh_url = clone_url.removesuffix(".git").replace("https://github.com/", "git@github.com:", 1)
+                    if https_url in config_text or ssh_url in config_text:
+                        candidates.append(candidate)
         if not candidates:
             return None
         # Return the most recently modified candidate
