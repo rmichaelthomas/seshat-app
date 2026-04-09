@@ -705,8 +705,8 @@ def local_scan():
     directory = (data.get("directory") or "").strip()
     if not directory:
         return jsonify({"error": "directory is required"}), 400
-    registered_names = {p["name"] for p in registry.list()} | \
-                       {p["directory"] for p in registry.list()}
+    projects = registry.list()
+    registered_names = {p["name"] for p in projects} | {p["directory"] for p in projects}
     try:
         results = LocalScanner().scan(directory, registered_names=registered_names)
         return jsonify(results)
