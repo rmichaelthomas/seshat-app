@@ -163,10 +163,13 @@ def add_project():
     }
     try:
         result = registry.add(project)
-        router._reload_caddy()
-        return jsonify(result), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
+    try:
+        router._reload_caddy()
+    except Exception:
+        pass  # Caddy reload failure is non-fatal for registration
+    return jsonify(result), 201
 
 
 @app.route("/api/projects/<name>", methods=["PUT"])
@@ -185,10 +188,13 @@ def remove_project(name):
         registry.clear_pid(name)
         vault.clear_project(name)       # remove any vault overrides
         deps_module.invalidate(name)    # clear dep cache
-        router._reload_caddy()
-        return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    try:
+        router._reload_caddy()
+    except Exception:
+        pass  # Caddy reload failure is non-fatal for removal
+    return jsonify({"ok": True})
 
 
 # ── Start / Stop ───────────────────────────────────────────────────────────
