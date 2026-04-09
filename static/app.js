@@ -80,26 +80,25 @@ function showProjectView() {
 }
 
 async function installVaultDeps() {
-  const btn = document.querySelector(".vault-enc-badge.warn button");
+  const badge = document.querySelector(".vault-enc-badge.warn");
+  const btn   = badge && badge.querySelector("button");
   if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
   try {
     const res  = await fetch("/api/vault/install-deps", { method: "POST" });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(res.status + " — " + text.slice(0, 120));
+    }
     const data = await res.json();
     if (!data.ok) {
       toast("Install failed: " + (data.error || "unknown error"), "error");
       if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
       return;
     }
-    toast("Deps installed — Seshat is restarting…", "info");
-    // Wait for server to come back then reload the page
-    setTimeout(async () => {
-      for (let i = 0; i < 20; i++) {
-        try { await fetch("/api/vault"); location.reload(); return; } catch (_) {}
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }, 1000);
+    if (badge) badge.innerHTML =
+      `<span style="color:var(--yellow)">✓ Installed — restart Seshat to activate encryption</span>`;
   } catch (e) {
-    toast("Network error: " + e.message, "error");
+    toast("Install failed: " + e.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
   }
 }
@@ -196,7 +195,11 @@ async function runVaultEncSetup() {
   updateStepStatus("vault-enc", false, true);
   $("step-vault-enc-body").innerHTML = `<span style="color:var(--text-muted);font-size:13px">Installing keyring + cryptography…</span>`;
   try {
-    const res  = await fetch("/api/vault/install-deps", { method: "POST" });
+    const res = await fetch("/api/vault/install-deps", { method: "POST" });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(res.status + " — " + text.slice(0, 120));
+    }
     const data = await res.json();
     if (!data.ok) {
       $("step-vault-enc-body").innerHTML =
@@ -206,16 +209,12 @@ async function runVaultEncSetup() {
       return;
     }
     updateStepStatus("vault-enc", true);
-    $("step-vault-enc-body").innerHTML = `<span style="color:var(--text-muted);font-size:13px">Restarting Seshat…</span>`;
-    // Wait for server restart then reload
-    await new Promise(r => setTimeout(r, 1200));
-    for (let i = 0; i < 20; i++) {
-      try { await fetch("/api/vault"); location.reload(); return; } catch (_) {}
-      await new Promise(r => setTimeout(r, 500));
-    }
+    $("step-vault-enc-body").innerHTML =
+      `<span style="color:var(--text-muted);font-size:13px">Restart Seshat to activate encryption, then re-open Set Up.</span>`;
   } catch (e) {
     $("step-vault-enc-body").innerHTML =
-      `<span style="color:var(--red);font-size:13px">Error: ${esc(e.message)}</span>`;
+      `<span style="color:var(--red);font-size:13px">Error: ${esc(e.message)}</span>
+       <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="runVaultEncSetup()">Retry</button>`;
     updateStepStatus("vault-enc", false);
   }
 }

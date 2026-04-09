@@ -449,20 +449,15 @@ def get_vault_summary():
 
 @app.route("/api/vault/install-deps", methods=["POST"])
 def vault_install_deps():
-    """Install keyring + cryptography and restart seshat to activate encryption."""
-    import subprocess, sys, os, signal
+    """Install keyring + cryptography. Seshat must be manually restarted to activate."""
+    import sys
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "keyring", "cryptography"],
         capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:
         return jsonify({"ok": False, "error": result.stderr.strip() or result.stdout.strip()}), 500
-    # Schedule a restart after the response is sent
-    def _restart():
-        import time; time.sleep(0.5)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    threading.Thread(target=_restart, daemon=True).start()
-    return jsonify({"ok": True, "restarting": True})
+    return jsonify({"ok": True})
 
 
 @app.route("/api/vault/keys", methods=["GET"])
