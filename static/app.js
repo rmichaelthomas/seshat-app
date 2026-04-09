@@ -125,7 +125,7 @@ function updateRouterBanner() {
   if (!routerStatus) return;
   const fullySetup = routerStatus.caddy_installed && routerStatus.dnsmasq_installed &&
                      routerStatus.caddy_running    && routerStatus.dnsmasq_running &&
-                     routerStatus.resolver_configured;
+                     routerStatus.resolver_configured && routerStatus.caddy_ca_trusted;
   if (fullySetup) {
     banner.style.display = "none";
     return;
@@ -150,10 +150,43 @@ let _resolverPollTimer = null;
 
 async function runSetupWizard() {
   if (!routerStatus) await loadSetupStatus();
-  updateStepStatus("caddy",   routerStatus.caddy_installed);
-  updateStepStatus("dnsmasq", routerStatus.dnsmasq_installed);
-  if (routerStatus.caddy_installed && routerStatus.dnsmasq_installed) {
-    await runDnsmasqConfig();
+  updateStepStatus("caddy",        routerStatus.caddy_installed);
+  updateStepStatus("dnsmasq",      routerStatus.dnsmasq_installed);
+  updateStepStatus("dnsmasq-cfg",  routerStatus.dnsmasq_running);
+  updateStepStatus("resolver",     routerStatus.resolver_configured);
+  updateStepStatus("caddy-trust",  routerStatus.caddy_ca_trusted);
+  if (!routerStatus.caddy_installed || !routerStatus.dnsmasq_installed) return;
+  if (!routerStatus.dnsmasq_running)      { await runDnsmasqConfig();  return; }
+  if (!routerStatus.resolver_configured)  { await runResolverConfig(); return; }
+  if (!routerStatus.caddy_ca_trusted)     { await runCaddyTrust();     return; }
+  $("routerModalDoneBtn").style.display = "";
+}
+
+async function runResolverConfig() {
+  updateStepStatus("resolver", false, true);
+  try {
+    const res  = await fetch("/api/router/setup/resolver", { method: "POST" });
+    const data = await res.json();
+    updateStepStatus("resolver", data.ok);
+    if (data.ok) await runCaddyTrust();
+    else $("routerModalError").textContent = data.error || "Resolver configuration failed";
+  } catch (e) {
+    updateStepStatus("resolver", false);
+    $("routerModalError").textContent = e.message;
+  }
+}
+
+async function runCaddyTrust() {
+  updateStepStatus("caddy-trust", false, true);
+  try {
+    const res  = await fetch("/api/router/setup/caddy-trust", { method: "POST" });
+    const data = await res.json();
+    updateStepStatus("caddy-trust", data.ok);
+    if (data.ok) $("routerModalDoneBtn").style.display = "";
+    else $("routerModalError").textContent = data.error || "Failed to trust Caddy CA";
+  } catch (e) {
+    updateStepStatus("caddy-trust", false);
+    $("routerModalError").textContent = e.message;
   }
 }
 
@@ -187,25 +220,12 @@ async function runDnsmasqConfig() {
     const res  = await fetch("/api/router/setup/dnsmasq", { method: "POST" });
     const data = await res.json();
     updateStepStatus("dnsmasq-cfg", data.ok);
-    if (data.ok) startResolverPolling();
+    if (data.ok) await runResolverConfig();
     else $("routerModalError").textContent = data.error || "dnsmasq configuration failed";
   } catch (e) {
     updateStepStatus("dnsmasq-cfg", false);
     $("routerModalError").textContent = e.message;
   }
-}
-
-function startResolverPolling() {
-  updateStepStatus("resolver", false);
-  _resolverPollTimer = setInterval(async () => {
-    await loadSetupStatus();
-    if (routerStatus.resolver_configured) {
-      clearInterval(_resolverPollTimer);
-      _resolverPollTimer = null;
-      updateStepStatus("resolver", true);
-      $("routerModalDoneBtn").style.display = "";
-    }
-  }, 2000);
 }
 
 async function finishSetup() {

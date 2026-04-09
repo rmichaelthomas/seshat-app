@@ -325,11 +325,21 @@
           <span class="router-step-status" id="step-resolver-status"></span>
         </div>
         <div class="router-step-body" id="step-resolver-body">
-          <p style="font-size:13px;margin:0 0 8px">
-            Run these two commands in your Terminal, then wait — Seshat will detect when it's done.
+          <p style="font-size:13px;margin:0">
+            Seshat will prompt for your Mac password to write <code>/etc/resolver/seshat</code>.
           </p>
-          <pre class="router-cmd">sudo mkdir -p /etc/resolver
-sudo tee /etc/resolver/seshat &lt;&lt;&lt; "nameserver 127.0.0.1"</pre>
+        </div>
+      </li>
+
+      <li class="router-step" id="step-caddy-trust">
+        <div class="router-step-header">
+          <span class="router-step-label">Trust Caddy local CA</span>
+          <span class="router-step-status" id="step-caddy-trust-status"></span>
+        </div>
+        <div class="router-step-body" id="step-caddy-trust-body">
+          <p style="font-size:13px;margin:0">
+            Seshat will prompt for your Mac password to install Caddy's local certificate authority so browsers trust <code>.seshat</code> addresses over HTTPS.
+          </p>
         </div>
       </li>
 

@@ -126,6 +126,25 @@ class Router:
 
     # ── Setup ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _run_as_admin(shell_cmd: str, timeout: int = 60) -> dict:
+        """Run a shell command with macOS admin privileges via osascript."""
+        # Include common brew paths so commands are found when running as admin
+        path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        escaped = shell_cmd.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'do shell script "PATH={path} {escaped}" with administrator privileges'
+        try:
+            r = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "timed out waiting for admin privileges"}
+        if r.returncode != 0:
+            err = r.stderr.strip() or r.stdout.strip() or "(no output)"
+            return {"ok": False, "error": err}
+        return {"ok": True}
+
     def configure_dnsmasq(self) -> dict:
         """Append *.seshat wildcard to dnsmasq config and restart the service."""
         r = subprocess.run(["brew", "--prefix"], capture_output=True, text=True, timeout=5)
@@ -145,13 +164,19 @@ class Router:
         if line not in content:
             conf_path.write_text(content.rstrip() + f"\n{line}\n")
 
-        r2 = subprocess.run(
-            ["brew", "services", "restart", "dnsmasq"],
-            capture_output=True, text=True, timeout=30,
+        return self._run_as_admin("brew services restart dnsmasq")
+
+    def configure_resolver(self) -> dict:
+        """Create /etc/resolver/seshat to route .seshat DNS queries to dnsmasq."""
+        if Path("/etc/resolver/seshat").exists():
+            return {"ok": True}
+        return self._run_as_admin(
+            'mkdir -p /etc/resolver && printf "nameserver 127.0.0.1\\n" > /etc/resolver/seshat'
         )
-        if r2.returncode != 0:
-            return {"ok": False, "error": r2.stderr.strip() or "(no output)"}
-        return {"ok": True}
+
+    def trust_caddy_ca(self) -> dict:
+        """Install Caddy's local CA into the system keychain so browsers trust it."""
+        return self._run_as_admin("caddy trust")
 
     def start_caddy(self) -> dict:
         """Generate Caddyfile and start (or reload) Caddy."""
@@ -164,7 +189,11 @@ class Router:
         caddy_running      = subprocess.run(["pgrep", "-x", "caddy"],   capture_output=True, timeout=5).returncode == 0
         dnsmasq_running    = subprocess.run(["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
         resolver_configured = Path("/etc/resolver/seshat").exists()
-        caddyfile_exists   = CADDYFILE.exists()
+        caddyfile_exists    = CADDYFILE.exists()
+        # Caddy's local CA lives here once 'caddy trust' has been run
+        caddy_ca_trusted    = Path.home().joinpath(
+            ".local/share/caddy/pki/authorities/local/root.crt"
+        ).exists()
         # If no hostnames have ports assigned, Caddy doesn't need to run yet.
         has_routes = any(h["port"] is not None for h in self.all_hostnames())
         caddy_running = caddy_running or not has_routes
@@ -174,5 +203,6 @@ class Router:
             "caddy_running":       caddy_running,
             "dnsmasq_running":     dnsmasq_running,
             "resolver_configured": resolver_configured,
+            "caddy_ca_trusted":    caddy_ca_trusted,
             "caddyfile_exists":    caddyfile_exists,
         }

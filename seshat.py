@@ -604,9 +604,19 @@ def setup_dnsmasq():
     return jsonify(router.configure_dnsmasq())
 
 
+@app.route("/api/router/setup/resolver", methods=["POST"])
+def setup_resolver():
+    return jsonify(router.configure_resolver())
+
+
 @app.route("/api/router/setup/caddy-start", methods=["POST"])
 def setup_caddy_start():
     return jsonify(router.start_caddy())
+
+
+@app.route("/api/router/setup/caddy-trust", methods=["POST"])
+def setup_caddy_trust():
+    return jsonify(router.trust_caddy_ca())
 
 
 @app.route("/api/router/hostnames", methods=["GET"])
