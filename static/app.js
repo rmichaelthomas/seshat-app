@@ -1682,7 +1682,134 @@ async function saveGitHubToken() {
   }
 }
 
-function runGitHubScan() {
-  // Placeholder — implemented in Task 7
-  console.log("runGitHubScan called (not yet implemented)");
+let _githubScanResults = [];
+
+function closeGitHubImportModal() {
+  $("githubImportOverlay").style.display = "none";
+  _githubScanResults = [];
+}
+
+async function runGitHubScan() {
+  $("githubImportOverlay").style.display = "flex";
+  $("githubImportLoading").style.display = "block";
+  $("githubImportTable").style.display   = "none";
+  $("githubImportBtn").style.display     = "none";
+  $("githubImportBanner").style.display  = "none";
+
+  try {
+    const res  = await fetch("/api/github/scan");
+    const data = await res.json();
+    if (!res.ok) {
+      $("githubImportBanner").textContent    = data.error || "Scan failed.";
+      $("githubImportBanner").style.display  = "block";
+      $("githubImportLoading").style.display = "none";
+      return;
+    }
+    _githubScanResults = data;
+    renderGitHubTable(data);
+  } catch (e) {
+    $("githubImportBanner").textContent    = "Network error: " + e.message;
+    $("githubImportBanner").style.display  = "block";
+    $("githubImportLoading").style.display = "none";
+  }
+}
+
+function renderGitHubTable(rows) {
+  $("githubImportLoading").style.display = "none";
+  $("githubImportTable").style.display   = "table";
+  const newRows = rows.filter(r => !r.registered);
+  $("githubImportBtn").style.display = newRows.length ? "" : "none";
+
+  $("githubImportRows").innerHTML = rows.map((r, i) => {
+    const greyStyle = r.registered ? "opacity:0.4;pointer-events:none" : "";
+    const amber     = v => !v ? "background:rgba(255,180,0,0.15)" : "";
+    const checked   = !r.registered ? "checked" : "";
+    const disabled  = r.registered ? "disabled" : "";
+    return `<tr data-idx="${i}" style="${greyStyle};border-bottom:1px solid var(--border)">
+      <td style="padding:6px 4px"><input type="checkbox" class="gh-check" data-idx="${i}" ${checked} ${disabled}></td>
+      <td style="padding:6px 4px"><strong>${esc(r.name)}</strong>${r.is_fork ? ' <span style="font-size:11px;color:var(--text-muted)">(fork)</span>' : ""}</td>
+      <td style="padding:6px 4px;${amber(r.local_path)}">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:200px" value="${esc(r.local_path||"")}" data-field="local_path" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px;${amber(r.port)}">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:60px" value="${esc(r.port||"")}" data-field="port" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px;${amber(r.start)}">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:180px" value="${esc(r.start||"")}" data-field="start" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:120px" value="${esc((r.tags||[]).join(", "))}" data-field="tags" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px" id="gh-status-${i}">
+        ${r.registered ? '<span style="font-size:11px;color:var(--text-muted)">Registered</span>' : '<span style="font-size:11px;color:var(--text-muted)">New</span>'}
+      </td>
+    </tr>`;
+  }).join("");
+
+  // Sync edits back to _githubScanResults
+  $("githubImportRows").querySelectorAll("input[data-field]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const idx   = parseInt(inp.dataset.idx);
+      const field = inp.dataset.field;
+      _githubScanResults[idx][field] = inp.value;
+    });
+  });
+}
+
+function githubToggleAll(checked) {
+  document.querySelectorAll(".gh-check:not(:disabled)").forEach(cb => cb.checked = checked);
+}
+
+async function importSelectedRepos() {
+  const checked = [...document.querySelectorAll(".gh-check:checked:not(:disabled)")]
+    .map(cb => parseInt(cb.dataset.idx));
+  if (!checked.length) return;
+
+  $("githubImportBtn").disabled = true;
+
+  for (const idx of checked) {
+    const r      = _githubScanResults[idx];
+    const status = $(`gh-status-${idx}`);
+    const tags   = typeof r.tags === "string"
+      ? r.tags.split(",").map(t => t.trim()).filter(Boolean)
+      : (r.tags || []);
+    const port = parseInt(r.port);
+
+    if (!r.local_path || !r.port || !r.start) {
+      status.innerHTML = '<span style="color:var(--error,#e53935)">Missing fields</span>';
+      continue;
+    }
+    if (isNaN(port)) {
+      status.innerHTML = '<span style="color:var(--error,#e53935)">Invalid port</span>';
+      continue;
+    }
+
+    status.innerHTML = "⏳";
+    try {
+      const res  = await fetch("/api/projects", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name:      r.name,
+          port:      r.port,
+          directory: r.local_path,
+          start:     r.start,
+          tags,
+          notes:     r.notes || "",
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        status.innerHTML = '<span style="color:#4caf50">✓ Imported</span>';
+        _githubScanResults[idx].registered = true;
+      } else {
+        status.innerHTML = `<span style="color:var(--error,#e53935)">${esc(data.error || "Error")}</span>`;
+      }
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--error,#e53935)">${esc(e.message)}</span>`;
+    }
+  }
+
+  $("githubImportBtn").disabled = false;
+  await refresh();
 }
