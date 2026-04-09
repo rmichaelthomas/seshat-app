@@ -165,6 +165,9 @@ class Router:
         dnsmasq_running    = subprocess.run(["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
         resolver_configured = Path("/etc/resolver/seshat").exists()
         caddyfile_exists   = CADDYFILE.exists()
+        # If no hostnames have ports assigned, Caddy doesn't need to run yet.
+        has_routes = any(h["port"] is not None for h in self.all_hostnames())
+        caddy_running = caddy_running or not has_routes
         return {
             "caddy_installed":     caddy_installed,
             "dnsmasq_installed":   dnsmasq_installed,
