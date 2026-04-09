@@ -320,6 +320,7 @@ def test_setup_status_caddy_not_installed(rtr, monkeypatch, tmp_seshat):
 
 
 def test_setup_status_caddy_not_running(rtr, monkeypatch, tmp_seshat):
+    rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
     monkeypatch.setattr(router_module.subprocess, "run",
                         _make_fake_run(which_ok=True, pgrep_caddy_ok=False, pgrep_dnsmasq_ok=True))
     monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
@@ -333,8 +334,8 @@ def test_setup_status_resolver_not_configured(rtr, monkeypatch, tmp_seshat):
     monkeypatch.setattr(router_module.subprocess, "run",
                         _make_fake_run(which_ok=True, pgrep_caddy_ok=True, pgrep_dnsmasq_ok=True))
     monkeypatch.setattr(router_module, "CADDYFILE", tmp_seshat / "Caddyfile")
+    monkeypatch.setattr(router_module, "RESOLVER_FILE", tmp_seshat / "resolver_seshat")
     status = rtr.setup_status()
-    # /etc/resolver/seshat won't exist in the test environment
     assert status["resolver_configured"] is False
 
 
@@ -404,9 +405,10 @@ def test_configure_dnsmasq_restarts_service(rtr, monkeypatch, tmp_path):
 
     monkeypatch.setattr(router_module.subprocess, "run", fake_run)
     rtr.configure_dnsmasq()
-    restart_calls = [c for c in calls if "restart" in c]
+    # _run_as_admin calls: ["osascript", "-e", "...brew services restart dnsmasq..."]
+    restart_calls = [c for c in calls if any("restart" in str(arg) for arg in c)]
     assert len(restart_calls) == 1
-    assert "dnsmasq" in restart_calls[0]
+    assert any("dnsmasq" in str(arg) for arg in restart_calls[0])
 
 
 # ── start_caddy ────────────────────────────────────────────────────────────

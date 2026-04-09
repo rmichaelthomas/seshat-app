@@ -12,6 +12,7 @@ from registry import Registry, SESHAT_DIR
 
 HOSTNAMES_FILE = SESHAT_DIR / "hostnames.yaml"
 CADDYFILE      = SESHAT_DIR / "Caddyfile"
+RESOLVER_FILE  = Path("/etc/resolver/seshat")
 
 _YAML_OPTS = dict(default_flow_style=False, allow_unicode=True, sort_keys=True)
 
@@ -168,7 +169,7 @@ class Router:
 
     def configure_resolver(self) -> dict:
         """Create /etc/resolver/seshat to route .seshat DNS queries to dnsmasq."""
-        if Path("/etc/resolver/seshat").exists():
+        if RESOLVER_FILE.exists():
             return {"ok": True}
         return self._run_as_admin(
             'mkdir -p /etc/resolver && printf "nameserver 127.0.0.1\\n" > /etc/resolver/seshat'
@@ -188,7 +189,7 @@ class Router:
         dnsmasq_installed  = subprocess.run(["which", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
         caddy_running      = subprocess.run(["pgrep", "-x", "caddy"],   capture_output=True, timeout=5).returncode == 0
         dnsmasq_running    = subprocess.run(["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
-        resolver_configured = Path("/etc/resolver/seshat").exists()
+        resolver_configured = RESOLVER_FILE.exists()
         caddyfile_exists    = CADDYFILE.exists()
         # Caddy's local CA lives here once 'caddy trust' has been run
         caddy_ca_trusted    = Path.home().joinpath(
