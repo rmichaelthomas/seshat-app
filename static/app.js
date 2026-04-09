@@ -1723,7 +1723,7 @@ function renderGitHubTable(rows) {
   $("githubImportRows").innerHTML = rows.map((r, i) => {
     const greyStyle = r.registered ? "opacity:0.4;pointer-events:none" : "";
     const amber     = v => !v ? "background:rgba(255,180,0,0.15)" : "";
-    const checked   = !r.registered ? "checked" : "";
+    const checked   = (!r.registered && r.local_path) ? "checked" : "";
     const disabled  = r.registered ? "disabled" : "";
     return `<tr data-idx="${i}" style="${greyStyle};border-bottom:1px solid var(--border)">
       <td style="padding:6px 4px"><input type="checkbox" class="gh-check" data-idx="${i}" ${checked} ${disabled}></td>
@@ -1791,7 +1791,7 @@ async function importSelectedRepos() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name:      r.name,
-          port:      r.port,
+          port:      port,
           directory: r.local_path,
           start:     r.start,
           tags,
