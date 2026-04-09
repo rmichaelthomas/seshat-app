@@ -19,6 +19,7 @@
     <div class="header-right">
       <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
       <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
+      <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
     </div>
   </header>
@@ -350,6 +351,32 @@
       <button class="btn btn-ghost" onclick="closeSetupModal()">Cancel</button>
       <button class="btn btn-primary" id="routerModalDoneBtn"
               style="display:none" onclick="finishSetup()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── GitHub token setup modal ─────────────────────────────────────────── -->
+<div class="modal-overlay" id="githubTokenOverlay" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <h2>Connect GitHub</h2>
+      <button class="icon-btn" onclick="closeGitHubTokenModal()">✕</button>
+    </div>
+    <div style="padding:0 24px 24px">
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px">
+        Create a Personal Access Token at GitHub with the <code>repo</code> scope
+        (or <code>public_repo</code> for public repos only), then paste it below.
+      </p>
+      <div class="form-group">
+        <label>Personal Access Token</label>
+        <input class="form-control" id="githubTokenInput" type="password"
+               placeholder="ghp_..." autocomplete="off">
+      </div>
+      <div class="form-error" id="githubTokenError"></div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" onclick="closeGitHubTokenModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveGitHubToken()">Test &amp; Save</button>
+      </div>
     </div>
   </div>
 </div>

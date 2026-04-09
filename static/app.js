@@ -1633,3 +1633,48 @@ function toast(msg, type="info") {
   t.className = `toast ${type}`; t.textContent = msg;
   c.appendChild(t); setTimeout(() => t.remove(), 3800);
 }
+
+// ── GitHub import ──────────────────────────────────────────────────────────
+
+async function openGitHubImport() {
+  const res  = await fetch("/api/github/status");
+  const data = await res.json();
+  if (data.configured) {
+    runGitHubScan();
+  } else {
+    $("githubTokenOverlay").style.display = "flex";
+    $("githubTokenInput").value = "";
+    $("githubTokenError").textContent = "";
+    setTimeout(() => $("githubTokenInput").focus(), 50);
+  }
+}
+
+function closeGitHubTokenModal() {
+  $("githubTokenOverlay").style.display = "none";
+}
+
+async function saveGitHubToken() {
+  const token = $("githubTokenInput").value.trim();
+  $("githubTokenError").textContent = "";
+  if (!token) {
+    $("githubTokenError").textContent = "Token is required.";
+    return;
+  }
+  const res  = await fetch("/api/github/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    $("githubTokenError").textContent = data.error || "Invalid token.";
+    return;
+  }
+  closeGitHubTokenModal();
+  runGitHubScan();
+}
+
+function runGitHubScan() {
+  // Placeholder — implemented in Task 7
+  console.log("runGitHubScan called (not yet implemented)");
+}
