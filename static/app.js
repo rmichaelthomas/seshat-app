@@ -400,7 +400,7 @@ function projectRowHTML(p) {
         ${conflictLine}${errorLine}
       </div>
       <div class="project-port">:${p.port}</div>
-      ${_hostnameChipHTML(p.name)}
+      <div>${_hostnameChipHTML(p.name)}</div>
       <div class="project-dir">${esc(shortPath(p.directory))}</div>
       <div class="project-actions">
         <button class="action-btn start-stop-btn ${ssCls}" title="${isRunning?"Stop":"Start"}">${ssIcon}</button>

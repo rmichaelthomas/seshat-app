@@ -137,7 +137,7 @@ html, body {
 .main { flex: 1; overflow-y: auto; min-width: 0; }
 
 .shelf-header {
-  display: grid; grid-template-columns: 28px 1fr 72px 1fr 168px;
+  display: grid; grid-template-columns: 28px 1fr 72px auto 1fr 168px;
   gap: 12px; padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--bg); z-index: 10;
@@ -150,7 +150,7 @@ html, body {
 /* ── Project rows ─────────────────────────────────────────────────────────── */
 
 .project-row {
-  display: grid; grid-template-columns: 28px 1fr 72px 1fr 168px;
+  display: grid; grid-template-columns: 28px 1fr 72px auto 1fr 168px;
   gap: 12px; align-items: center; padding: 9px 16px;
   border-bottom: 1px solid var(--border); cursor: pointer;
   transition: background 0.1s; user-select: none;
