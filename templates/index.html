@@ -19,6 +19,7 @@
     <div class="header-right">
       <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
       <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
+      <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
       <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
     </div>
@@ -362,6 +363,67 @@
       <button class="btn btn-ghost" onclick="closeSetupModal()">Cancel</button>
       <button class="btn btn-primary" id="routerModalDoneBtn"
               style="display:none" onclick="finishSetup()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Discover local projects modal ────────────────────────────────────── -->
+<div class="modal-overlay" id="discoverOverlay" style="display:none">
+  <div class="modal" style="max-width:800px;width:95vw;max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-header" style="flex-shrink:0">
+      <h2>Discover Local Projects</h2>
+      <button class="icon-btn" onclick="closeDiscover()">✕</button>
+    </div>
+
+    <div style="flex-shrink:0;padding:16px 24px 0">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input id="discoverDirInput" class="form-control" type="text"
+               value="~/Projects" style="flex:1"
+               placeholder="~/Projects">
+        <button class="btn btn-primary btn-sm" onclick="runLocalScan()">Scan</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+        <span style="font-size:12px;color:var(--text-muted);align-self:center">Quick:</span>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~')">~</button>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~/Projects')">~/Projects</button>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~/Developer')">~/Developer</button>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~/Code')">~/Code</button>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~/dev')">~/dev</button>
+        <button class="btn btn-ghost btn-sm discover-chip" onclick="setDiscoverDir('~/src')">~/src</button>
+      </div>
+    </div>
+
+    <div id="discoverBanner" class="form-error" style="display:none;margin:8px 24px 0"></div>
+
+    <div id="discoverBody" style="flex:1;overflow-y:auto;padding:12px 24px 8px">
+      <div id="discoverHint" style="padding:32px;text-align:center;color:var(--text-muted);font-size:13px">
+        Enter a directory above and click Scan.
+      </div>
+      <div id="discoverLoading" style="display:none;padding:32px;text-align:center;color:var(--text-muted)">
+        Scanning…
+      </div>
+      <table id="discoverTable" style="display:none;width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="padding:8px 4px;text-align:left;width:32px">
+              <input type="checkbox" id="discoverSelectAll" onchange="discoverToggleAll(this.checked)">
+            </th>
+            <th style="padding:8px 4px;text-align:left">Name</th>
+            <th style="padding:8px 4px;text-align:left">Directory</th>
+            <th style="padding:8px 4px;text-align:left;width:80px">Port</th>
+            <th style="padding:8px 4px;text-align:left">Start Command</th>
+            <th style="padding:8px 4px;text-align:left;width:80px">Status</th>
+          </tr>
+        </thead>
+        <tbody id="discoverRows"></tbody>
+      </table>
+    </div>
+
+    <div style="flex-shrink:0;padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn btn-ghost" onclick="closeDiscover()">Close</button>
+      <button class="btn btn-primary" id="discoverImportBtn" onclick="importDiscovered()" style="display:none">
+        Import Selected
+      </button>
     </div>
   </div>
 </div>
