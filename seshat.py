@@ -17,7 +17,8 @@ from runner    import Runner
 from vault     import Vault
 from organizer import Organizer
 from router    import Router
-from github    import GitHubImporter
+from github        import GitHubImporter
+from local_scanner import LocalScanner
 import deps as deps_module
 
 app = Flask(__name__)
@@ -691,6 +692,26 @@ def github_scan():
     try:
         results = GitHubImporter(token).scan(registered_names=registered_names)
         return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Local project discovery ────────────────────────────────────────────────
+
+
+@app.route("/api/local-scan", methods=["POST"])
+def local_scan():
+    data      = request.json or {}
+    directory = (data.get("directory") or "").strip()
+    if not directory:
+        return jsonify({"error": "directory is required"}), 400
+    registered_names = {p["name"] for p in registry.list()} | \
+                       {p["directory"] for p in registry.list()}
+    try:
+        results = LocalScanner().scan(directory, registered_names=registered_names)
+        return jsonify(results)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
