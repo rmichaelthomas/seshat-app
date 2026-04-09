@@ -86,13 +86,13 @@ class Router:
 
     def _generate_caddyfile(self) -> str:
         """Build Caddyfile content from all registered projects."""
-        blocks = []
+        blocks = ["{\n    auto_https off\n}"]
         for h in self.all_hostnames():
             if h["port"] is not None:
                 blocks.append(
                     f"http://{h['hostname']} {{\n    reverse_proxy localhost:{h['port']}\n}}"
                 )
-        return "\n\n".join(blocks) + ("\n" if blocks else "")
+        return "\n\n".join(blocks) + "\n"
 
     def _reload_caddy(self) -> dict:
         """Write Caddyfile and reload (or start) Caddy."""
