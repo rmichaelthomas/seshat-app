@@ -92,3 +92,65 @@ def test_detect_local_path_name_variations(importer, tmp_path):
     with patch("github._LOCAL_SEARCH_ROOTS", [tmp_path]):
         result = importer.detect_local_path("my-app", "https://github.com/u/my-app.git")
     assert result == str(repo_dir)
+
+
+from base64 import b64encode
+
+def _readme_response(text):
+    encoded = b64encode(text.encode()).decode()
+    return {"content": encoded + "\n", "encoding": "base64"}
+
+
+def test_extract_port_from_env_line(importer):
+    readme = "Run with:\n```\nPORT=6100 python3 app.py\n```"
+    result = importer._extract_fields(readme)
+    assert result["port"] == "6100"
+
+
+def test_extract_port_from_localhost(importer):
+    readme = "Visit http://localhost:8080 in your browser."
+    result = importer._extract_fields(readme)
+    assert result["port"] == "8080"
+
+
+def test_extract_start_command_python(importer):
+    readme = "## Running\n```\npython3 app.py\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] == "python3 app.py"
+
+
+def test_extract_start_command_npm(importer):
+    readme = "## Running\n```\nnpm start\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] == "npm start"
+
+
+def test_extract_notes_first_paragraph(importer):
+    readme = "# My App\n\nThis is a tool for managing things. It does stuff.\n\n## Install"
+    result = importer._extract_fields(readme)
+    assert result["notes"] == "This is a tool for managing things. It does stuff."
+
+
+def test_extract_fields_missing(importer):
+    readme = "# My App\n\nNo useful info here."
+    result = importer._extract_fields(readme)
+    assert result["port"] is None
+    assert result["start"] is None
+
+
+def test_fetch_readme_decodes(importer):
+    readme_text = "# Hello\n\nport 3000"
+    encoded = b64encode(readme_text.encode()).decode()
+    api_response = {"content": encoded + "\n", "encoding": "base64"}
+    with patch("urllib.request.urlopen", return_value=_mock_response(api_response)):
+        result = importer.fetch_readme("owner/repo")
+    assert "port 3000" in result
+
+
+def test_fetch_readme_returns_none_on_404(importer):
+    import urllib.error
+    with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+        None, 404, "Not Found", {}, None
+    )):
+        result = importer.fetch_readme("owner/repo")
+    assert result is None
