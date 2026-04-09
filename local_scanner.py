@@ -41,6 +41,7 @@ class LocalScanner:
         except PermissionError:
             raise ValueError(f"Cannot read directory: {directory}")
 
+        lower_names = {n.lower() for n in registered_names}
         results = []
         for child in sorted(children):
             if not child.is_dir():
@@ -49,8 +50,8 @@ class LocalScanner:
                 continue
             name = child.name
             registered = (
-                name.lower() in {n.lower() for n in registered_names}
-                or str(child).lower() in {n.lower() for n in registered_names}
+                name.lower() in lower_names
+                or str(child).lower() in lower_names
             )
             results.append({
                 "name":       name,
