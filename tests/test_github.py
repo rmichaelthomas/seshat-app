@@ -169,6 +169,18 @@ def test_extract_port_no_false_positive(importer):
     assert result["port"] is None
 
 
+def test_extract_start_command_make_run(importer):
+    readme = "## Running\n```\nmake run\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] == "make run"
+
+
+def test_extract_start_command_make_install_not_matched(importer):
+    readme = "## Install\n```\nmake install\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] is None
+
+
 def test_extract_notes_skips_badges(importer):
     readme = "# My App\n\n![CI](https://img.shields.io/badge/CI-passing)\n\nThis is the real description."
     result = importer._extract_fields(readme)
