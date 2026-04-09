@@ -107,22 +107,22 @@ class Router:
             return {"ok": False, "error": "caddy not installed"}
 
         running = subprocess.run(["pgrep", "-x", "caddy"], capture_output=True, timeout=5)
-        if running.returncode == 0:
-            r = subprocess.run(
-                ["caddy", "reload", "--config", str(CADDYFILE)],
-                capture_output=True, text=True, timeout=15,
-            )
-            if r.returncode == 0:
-                return {"ok": True}
-            return {"ok": False, "error": r.stderr.strip() or "(no output)"}
-        else:
-            r = subprocess.run(
-                ["caddy", "start", "--config", str(CADDYFILE)],
-                capture_output=True, text=True, timeout=15,
-            )
-            if r.returncode == 0:
-                return {"ok": True}
-            return {"ok": False, "error": r.stderr.strip() or "(no output)"}
+        try:
+            if running.returncode == 0:
+                r = subprocess.run(
+                    ["caddy", "reload", "--config", str(CADDYFILE)],
+                    capture_output=True, text=True, timeout=15,
+                )
+            else:
+                r = subprocess.run(
+                    ["caddy", "start", "--config", str(CADDYFILE)],
+                    capture_output=True, text=True, timeout=15,
+                )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "caddy timed out — it may already be starting"}
+        if r.returncode == 0:
+            return {"ok": True}
+        return {"ok": False, "error": r.stderr.strip() or "(no output)"}
 
     # ── Setup ──────────────────────────────────────────────────────────────
 
