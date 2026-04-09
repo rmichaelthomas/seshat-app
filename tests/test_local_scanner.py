@@ -82,3 +82,94 @@ def test_tilde_expansion(scanner, tmp_path, monkeypatch):
     (proj / "package.json").write_text("{}")
     results = scanner.scan("~", registered_names=set())
     assert any(r["name"] == "my-app" for r in results)
+
+
+import json
+
+
+def _make_project(tmp_path, name, files: dict) -> Path:
+    """Helper: create a project dir with given file contents."""
+    proj = tmp_path / name
+    proj.mkdir()
+    for fname, content in files.items():
+        (proj / fname).write_text(content)
+    return proj
+
+
+def test_extract_port_from_dotenv(scanner, tmp_path):
+    _make_project(tmp_path, "app", {".env": "PORT=4321\nDEBUG=true\n"})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] == "4321"
+
+
+def test_extract_port_from_dotenv_local(scanner, tmp_path):
+    _make_project(tmp_path, "app", {".env.local": "PORT=5555\n"})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] == "5555"
+
+
+def test_extract_port_from_package_json_scripts(scanner, tmp_path):
+    pkg = json.dumps({"scripts": {"dev": "next dev -p 3100", "start": "node index.js"}})
+    _make_project(tmp_path, "app", {"package.json": pkg})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] == "3100"
+
+
+def test_extract_start_from_package_json_dev(scanner, tmp_path):
+    pkg = json.dumps({"scripts": {"dev": "npm run dev", "start": "node index.js"}})
+    _make_project(tmp_path, "app", {"package.json": pkg})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start"] == "npm run dev"
+
+
+def test_extract_start_from_package_json_start_fallback(scanner, tmp_path):
+    pkg = json.dumps({"scripts": {"start": "node server.js"}})
+    _make_project(tmp_path, "app", {"package.json": pkg})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start"] == "node server.js"
+
+
+def test_extract_port_from_readme(scanner, tmp_path):
+    readme = "# My App\n\nRuns on PORT=7777 by default.\n"
+    _make_project(tmp_path, "app", {"requirements.txt": "", "README.md": readme})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] == "7777"
+
+
+def test_extract_start_from_readme_code_block(scanner, tmp_path):
+    readme = "# My App\n\n```\npython3 app.py\n```\n"
+    _make_project(tmp_path, "app", {"requirements.txt": "", "README.md": readme})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start"] == "python3 app.py"
+
+
+def test_no_extraction_when_no_signals(scanner, tmp_path):
+    _make_project(tmp_path, "app", {"go.mod": "module app\n"})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] is None
+    assert results[0]["start"] is None
+
+
+def test_dotenv_takes_priority_over_readme(scanner, tmp_path):
+    _make_project(tmp_path, "app", {
+        ".env": "PORT=1111\n",
+        "README.md": "PORT=9999",
+        "requirements.txt": "",
+    })
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["port"] == "1111"
+
+
+def test_unreadable_file_skipped(scanner, tmp_path):
+    import os
+    proj = _make_project(tmp_path, "app", {
+        "requirements.txt": "",
+        ".env": "PORT=9000\n",
+    })
+    os.chmod(proj / ".env", 0o000)
+    try:
+        results = scanner.scan(str(tmp_path), registered_names=set())
+        # Should still return the candidate, just with no port
+        assert len(results) == 1
+    finally:
+        os.chmod(proj / ".env", 0o644)
