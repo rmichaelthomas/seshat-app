@@ -2015,6 +2015,8 @@ async function importDiscovered() {
       if (res.ok) {
         status.innerHTML = '<span style="color:#4caf50">✓ Imported</span>';
         _discoverResults[idx].registered = true;
+        const cb = document.querySelector(`.disc-check[data-idx="${idx}"]`);
+        if (cb) cb.disabled = true;
       } else {
         status.innerHTML = `<span style="color:var(--error,#e53935)">${esc(data.error || "Error")}</span>`;
       }
