@@ -79,6 +79,31 @@ function showProjectView() {
   render();
 }
 
+async function installVaultDeps() {
+  const btn = document.querySelector(".vault-enc-badge.warn button");
+  if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
+  try {
+    const res  = await fetch("/api/vault/install-deps", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      toast("Install failed: " + (data.error || "unknown error"), "error");
+      if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
+      return;
+    }
+    toast("Deps installed — Seshat is restarting…", "info");
+    // Wait for server to come back then reload the page
+    setTimeout(async () => {
+      for (let i = 0; i < 20; i++) {
+        try { await fetch("/api/vault"); location.reload(); return; } catch (_) {}
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }, 1000);
+  } catch (e) {
+    toast("Network error: " + e.message, "error");
+    if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
+  }
+}
+
 async function showVaultView() {
   activeView = "vault";
   $("projectView").style.display  = "none";
@@ -150,16 +175,49 @@ let _resolverPollTimer = null;
 
 async function runSetupWizard() {
   if (!routerStatus) await loadSetupStatus();
+  // Fetch vault status for the encryption step
+  let vaultEncrypted = false;
+  try { const r = await fetch("/api/vault"); vaultEncrypted = (await r.json()).encrypted; } catch (_) {}
+  updateStepStatus("vault-enc",    vaultEncrypted);
   updateStepStatus("caddy",        routerStatus.caddy_installed);
   updateStepStatus("dnsmasq",      routerStatus.dnsmasq_installed);
   updateStepStatus("dnsmasq-cfg",  routerStatus.dnsmasq_running);
   updateStepStatus("resolver",     routerStatus.resolver_configured);
   updateStepStatus("caddy-trust",  routerStatus.caddy_ca_trusted);
+  if (!vaultEncrypted)                     { await runVaultEncSetup();  return; }
   if (!routerStatus.caddy_installed || !routerStatus.dnsmasq_installed) return;
-  if (!routerStatus.dnsmasq_running)      { await runDnsmasqConfig();  return; }
-  if (!routerStatus.resolver_configured)  { await runResolverConfig(); return; }
-  if (!routerStatus.caddy_ca_trusted)     { await runCaddyTrust();     return; }
+  if (!routerStatus.dnsmasq_running)       { await runDnsmasqConfig();  return; }
+  if (!routerStatus.resolver_configured)   { await runResolverConfig(); return; }
+  if (!routerStatus.caddy_ca_trusted)      { await runCaddyTrust();     return; }
   $("routerModalDoneBtn").style.display = "";
+}
+
+async function runVaultEncSetup() {
+  updateStepStatus("vault-enc", false, true);
+  $("step-vault-enc-body").innerHTML = `<span style="color:var(--text-muted);font-size:13px">Installing keyring + cryptography…</span>`;
+  try {
+    const res  = await fetch("/api/vault/install-deps", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      $("step-vault-enc-body").innerHTML =
+        `<span style="color:var(--red);font-size:13px">Install failed: ${esc(data.error || "unknown error")}</span>
+         <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="runVaultEncSetup()">Retry</button>`;
+      updateStepStatus("vault-enc", false);
+      return;
+    }
+    updateStepStatus("vault-enc", true);
+    $("step-vault-enc-body").innerHTML = `<span style="color:var(--text-muted);font-size:13px">Restarting Seshat…</span>`;
+    // Wait for server restart then reload
+    await new Promise(r => setTimeout(r, 1200));
+    for (let i = 0; i < 20; i++) {
+      try { await fetch("/api/vault"); location.reload(); return; } catch (_) {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } catch (e) {
+    $("step-vault-enc-body").innerHTML =
+      `<span style="color:var(--red);font-size:13px">Error: ${esc(e.message)}</span>`;
+    updateStepStatus("vault-enc", false);
+  }
 }
 
 async function runResolverConfig() {
@@ -783,7 +841,7 @@ async function renderVaultView() {
 
     const encBadge = summary.encrypted
       ? `<span class="vault-enc-badge">🔒 Encrypted · Keychain</span>`
-      : `<span class="vault-enc-badge warn">⚠ Unencrypted (install keyring + cryptography)</span>`;
+      : `<span class="vault-enc-badge warn">⚠ Unencrypted &nbsp;<button class="btn btn-sm" style="font-size:11px;padding:2px 8px;vertical-align:middle" onclick="installVaultDeps()">Fix: Install deps</button></span>`;
 
     const missingAudit = audit.filter(a => a.missing_from.length > 0);
     const unusedAudit  = audit.filter(a => a.unused);

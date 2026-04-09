@@ -283,11 +283,21 @@
     </div>
 
     <p class="router-modal-intro">
-      This wizard installs Caddy and dnsmasq so every project gets a
-      friendly <code>.seshat</code> address in your browser.
+      This wizard sets up vault encryption and installs Caddy and dnsmasq
+      so every project gets a friendly <code>.seshat</code> address in your browser.
     </p>
 
     <ol class="router-setup-steps">
+
+      <li class="router-step" id="step-vault-enc">
+        <div class="router-step-header">
+          <span class="router-step-label">Vault encryption</span>
+          <span class="router-step-status" id="step-vault-enc-status"></span>
+        </div>
+        <div class="router-step-body" id="step-vault-enc-body">
+          <span style="color:var(--text-muted);font-size:13px">Installing keyring + cryptography…</span>
+        </div>
+      </li>
 
       <li class="router-step" id="step-caddy">
         <div class="router-step-header">
