@@ -17,6 +17,7 @@ from runner    import Runner
 from vault     import Vault
 from organizer import Organizer
 from router    import Router
+from github    import GitHubImporter
 import deps as deps_module
 
 app = Flask(__name__)
@@ -644,6 +645,41 @@ def reset_hostname(project):
 @app.route("/api/router/reload", methods=["POST"])
 def reload_caddy():
     return jsonify(router._reload_caddy())
+
+
+# ── GitHub import ──────────────────────────────────────────────────────────
+
+
+@app.route("/api/github/status", methods=["GET"])
+def github_status():
+    token = vault.get("__github_token__")
+    return jsonify({"configured": token is not None})
+
+
+@app.route("/api/github/token", methods=["POST"])
+def github_save_token():
+    data  = request.json or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return jsonify({"error": "token is required"}), 400
+    result = GitHubImporter(token).validate_token()
+    if not result["ok"]:
+        return jsonify({"error": result["error"]}), 400
+    vault.set("__github_token__", token)
+    return jsonify({"ok": True, "login": result["login"]})
+
+
+@app.route("/api/github/scan", methods=["GET"])
+def github_scan():
+    token = vault.get("__github_token__")
+    if not token:
+        return jsonify({"error": "GitHub token not configured"}), 400
+    registered_names = {p["name"] for p in registry.list()}
+    try:
+        results = GitHubImporter(token).scan(registered_names=registered_names)
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Open in Finder / Terminal / Browser ────────────────────────────────────
