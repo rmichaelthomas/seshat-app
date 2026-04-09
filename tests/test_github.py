@@ -45,3 +45,36 @@ def test_fetch_repos_paginates(importer):
     assert len(repos) == 101
     assert repos[0]["name"] == "repo-0"
     assert repos[100]["name"] == "repo-100"
+
+
+def test_detect_local_path_found(importer, tmp_path):
+    repo_dir = tmp_path / "my-repo"
+    repo_dir.mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[remote \"origin\"]\n\turl = https://github.com/u/my-repo.git\n"
+    )
+    with patch("github._LOCAL_SEARCH_ROOTS", [tmp_path]):
+        result = importer.detect_local_path("my-repo", "https://github.com/u/my-repo.git")
+    assert result == str(repo_dir)
+
+
+def test_detect_local_path_not_found(importer, tmp_path):
+    with patch("github._LOCAL_SEARCH_ROOTS", [tmp_path]):
+        result = importer.detect_local_path("nonexistent", "https://github.com/u/nonexistent.git")
+    assert result is None
+
+
+def test_detect_local_path_name_variations(importer, tmp_path):
+    # repo name is "my-app" but cloned as "my_app"
+    repo_dir = tmp_path / "my_app"
+    repo_dir.mkdir()
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text(
+        "[remote \"origin\"]\n\turl = https://github.com/u/my-app.git\n"
+    )
+    with patch("github._LOCAL_SEARCH_ROOTS", [tmp_path]):
+        result = importer.detect_local_path("my-app", "https://github.com/u/my-app.git")
+    assert result == str(repo_dir)

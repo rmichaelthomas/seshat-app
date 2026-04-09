@@ -46,6 +46,29 @@ class GitHubImporter:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def detect_local_path(self, repo_name: str, clone_url: str) -> str | None:
+        """Search common local directories for a clone of this repo."""
+        # Build name variations to try (my-repo, my_repo, myrepo)
+        variations = {
+            repo_name,
+            repo_name.replace("-", "_"),
+            repo_name.replace("_", "-"),
+            repo_name.replace("-", "").replace("_", ""),
+        }
+        candidates = []
+        for root in _LOCAL_SEARCH_ROOTS:
+            if not root.exists():
+                continue
+            for name in variations:
+                candidate = root / name
+                config_file = candidate / ".git" / "config"
+                if config_file.exists() and clone_url.rstrip(".git") in config_file.read_text():
+                    candidates.append(candidate)
+        if not candidates:
+            return None
+        # Return the most recently modified candidate
+        return str(max(candidates, key=lambda p: p.stat().st_mtime))
+
     def fetch_repos(self) -> list[dict]:
         """Fetch all repos owned by the authenticated user (paginated)."""
         repos, page = [], 1
