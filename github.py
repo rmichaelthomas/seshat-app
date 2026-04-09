@@ -11,13 +11,13 @@ from urllib.parse import urlencode
 
 _API = "https://api.github.com"
 _START_PATTERNS = re.compile(
-    r"^\s*(python3?|npm|node|uvicorn|flask|yarn|cargo run|go run|\.\/gradlew|make)\b.*",
+    r"^\s*(python3?|npm|node|uvicorn|flask|yarn|cargo run|go run|\.\/gradlew|make\s+(?:run|start|serve|dev|up))\b.*",
     re.MULTILINE,
 )
 _PORT_PATTERNS = [
     re.compile(r"PORT[=\s:]+(\d{4,5})"),
     re.compile(r"localhost:(\d{4,5})"),
-    re.compile(r":\s*(\d{4,5})"),
+    re.compile(r"(?i)(?:port|listen|bind)[=:\s]+(\d{4,5})"),
 ]
 _LOCAL_SEARCH_ROOTS = [
     Path.home(),
@@ -124,7 +124,7 @@ class GitHubImporter:
         notes = None
         for para in re.split(r"\n{2,}", readme):
             para = para.strip()
-            if para and not para.startswith("#") and not para.startswith("```"):
+            if para and not para.startswith("#") and not para.startswith("```") and not para.startswith("!") and not para.startswith("[!["):
                 notes = para[:300]
                 break
 

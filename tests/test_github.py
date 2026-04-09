@@ -154,3 +154,29 @@ def test_fetch_readme_returns_none_on_404(importer):
     )):
         result = importer.fetch_readme("owner/repo")
     assert result is None
+
+
+def test_extract_port_contextual_keyword(importer):
+    readme = "The server listens on listen: 8000"
+    result = importer._extract_fields(readme)
+    assert result["port"] == "8000"
+
+
+def test_extract_port_no_false_positive(importer):
+    # Generic colon-number should NOT match
+    readme = "Set timeout: 30000 for the connection."
+    result = importer._extract_fields(readme)
+    assert result["port"] is None
+
+
+def test_extract_notes_skips_badges(importer):
+    readme = "# My App\n\n![CI](https://img.shields.io/badge/CI-passing)\n\nThis is the real description."
+    result = importer._extract_fields(readme)
+    assert result["notes"] == "This is the real description."
+
+
+def test_extract_fields_empty_readme(importer):
+    result = importer._extract_fields("")
+    assert result["port"] is None
+    assert result["start"] is None
+    assert result["notes"] is None
