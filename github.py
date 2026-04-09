@@ -150,3 +150,39 @@ class GitHubImporter:
                 break
             page += 1
         return repos
+
+    def scan(self, registered_names: set[str] | None = None) -> list[dict]:
+        """
+        Fetch all owned repos, detect local paths, extract metadata.
+        Returns a list of dicts ready for the frontend import table.
+        """
+        registered_names = registered_names or set()
+        repos = self.fetch_repos()
+        results = []
+        for repo in repos:
+            name       = repo["name"]
+            full_name  = repo["full_name"]
+            clone_url  = repo["clone_url"]
+            readme     = self.fetch_readme(full_name)
+            extracted  = self._extract_fields(readme) if readme else {"port": None, "start": None, "notes": None}
+            local_path = self.detect_local_path(name, clone_url)
+            tags = list({(repo.get("language") or "").lower()} | set(repo.get("topics") or []))
+            tags = [t for t in tags if t]  # remove empty strings
+            description = repo.get("description") or ""
+            notes = extracted["notes"] or description or ""
+            results.append({
+                "name":        name,
+                "full_name":   full_name,
+                "clone_url":   clone_url,
+                "local_path":  local_path,
+                "port":        extracted["port"],
+                "start":       extracted["start"],
+                "tags":        sorted(tags),
+                "notes":       notes[:300],
+                "is_fork":     repo.get("fork", False),
+                "pushed_at":   repo.get("pushed_at", ""),
+                "registered":  name.lower() in {n.lower() for n in registered_names}
+                               or (local_path is not None and local_path.lower() in
+                                   {n.lower() for n in registered_names}),
+            })
+        return results

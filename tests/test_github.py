@@ -192,3 +192,30 @@ def test_extract_fields_empty_readme(importer):
     assert result["port"] is None
     assert result["start"] is None
     assert result["notes"] is None
+
+
+def test_scan_returns_structured_results(importer, tmp_path):
+    repos = [{
+        "name": "vault", "full_name": "u/vault",
+        "clone_url": "https://github.com/u/vault.git",
+        "description": "My vault app", "language": "Python",
+        "topics": ["obsidian"], "fork": False,
+        "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main",
+    }]
+    readme = "# Vault\n\nA vault tool.\n\n```\npython3 app.py\n```\n\nRuns on PORT=6100."
+    registered_names = {"seshat"}
+
+    with patch.object(importer, "fetch_repos", return_value=repos), \
+         patch.object(importer, "fetch_readme", return_value=readme), \
+         patch.object(importer, "detect_local_path", return_value="/Users/u/vault"):
+        results = importer.scan(registered_names=registered_names)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["name"] == "vault"
+    assert r["local_path"] == "/Users/u/vault"
+    assert r["port"] == "6100"
+    assert r["start"] == "python3 app.py"
+    assert r["tags"] == ["obsidian", "python"]
+    assert r["registered"] is False
+    assert r["is_fork"] is False
