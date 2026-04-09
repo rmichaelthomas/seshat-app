@@ -67,6 +67,15 @@ def _extract(project_dir: Path) -> dict:
     port = None
     start = None
 
+    # Parse package.json once for use in both port and start extraction
+    pkg_scripts = {}
+    pkg_text = _read(project_dir / "package.json")
+    if pkg_text:
+        try:
+            pkg_scripts = json.loads(pkg_text).get("scripts", {})
+        except Exception:
+            pass
+
     # ── Port extraction ────────────────────────────────────────────────────
     # 1. .env files
     for env_name in (".env", ".env.local", ".env.example"):
@@ -79,20 +88,13 @@ def _extract(project_dir: Path) -> dict:
                 port = m.group(1)
 
     # 2. package.json scripts
-    if not port:
-        text = _read(project_dir / "package.json")
-        if text:
-            try:
-                pkg = json.loads(text)
-                scripts = pkg.get("scripts", {})
-                for key in ("dev", "start"):
-                    val = scripts.get(key, "")
-                    p = _find_port(val)
-                    if p:
-                        port = p
-                        break
-            except Exception:
-                pass
+    if not port and pkg_scripts:
+        for key in ("dev", "start"):
+            val = pkg_scripts.get(key, "")
+            p = _find_port(val)
+            if p:
+                port = p
+                break
 
     # 3. Makefile
     if not port:
@@ -121,18 +123,12 @@ def _extract(project_dir: Path) -> dict:
 
     # ── Start command extraction ───────────────────────────────────────────
     # 1. package.json scripts.dev then scripts.start
-    text = _read(project_dir / "package.json")
-    if text:
-        try:
-            pkg = json.loads(text)
-            scripts = pkg.get("scripts", {})
-            for key in ("dev", "start"):
-                val = scripts.get(key, "").strip()
-                if val:
-                    start = val
-                    break
-        except Exception:
-            pass
+    if pkg_scripts:
+        for key in ("dev", "start"):
+            val = pkg_scripts.get(key, "").strip()
+            if val:
+                start = val
+                break
 
     # 2. Makefile
     if not start:

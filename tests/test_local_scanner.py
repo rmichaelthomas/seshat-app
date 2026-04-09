@@ -171,5 +171,6 @@ def test_unreadable_file_skipped(scanner, tmp_path):
         results = scanner.scan(str(tmp_path), registered_names=set())
         # Should still return the candidate, just with no port
         assert len(results) == 1
+        assert results[0]["port"] is None
     finally:
         os.chmod(proj / ".env", 0o644)
