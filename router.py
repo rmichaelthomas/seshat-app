@@ -90,7 +90,7 @@ class Router:
         for h in self.all_hostnames():
             if h["port"] is not None:
                 blocks.append(
-                    f"{h['hostname']} {{\n    reverse_proxy localhost:{h['port']}\n}}"
+                    f"http://{h['hostname']} {{\n    reverse_proxy localhost:{h['port']}\n}}"
                 )
         return "\n\n".join(blocks) + ("\n" if blocks else "")
 
