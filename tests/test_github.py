@@ -32,12 +32,16 @@ def test_validate_token_bad(importer):
 
 
 def test_fetch_repos_paginates(importer):
-    page1 = [{"name": "repo-a", "full_name": "u/repo-a", "clone_url": "https://github.com/u/repo-a.git",
-               "description": "A repo", "language": "Python", "topics": ["tool"],
-               "fork": False, "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main"}]
-    page2 = []
+    def _make_repo(name):
+        return {"name": name, "full_name": f"u/{name}", "clone_url": f"https://github.com/u/{name}.git",
+                "description": "", "language": "Python", "topics": [],
+                "fork": False, "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main"}
+
+    page1 = [_make_repo(f"repo-{i}") for i in range(100)]
+    page2 = [_make_repo("repo-100")]
     responses = iter([_mock_response(page1), _mock_response(page2)])
     with patch("urllib.request.urlopen", side_effect=lambda *a, **k: next(responses)):
         repos = importer.fetch_repos()
-    assert len(repos) == 1
-    assert repos[0]["name"] == "repo-a"
+    assert len(repos) == 101
+    assert repos[0]["name"] == "repo-0"
+    assert repos[100]["name"] == "repo-100"

@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 from base64 import b64decode
 from pathlib import Path
+from urllib.parse import urlencode
 
 _API = "https://api.github.com"
 _LOCAL_SEARCH_ROOTS = [
@@ -27,7 +28,7 @@ class GitHubImporter:
         """Make an authenticated GET request; return parsed JSON."""
         url = f"{_API}{path}"
         if params:
-            qs = "&".join(f"{k}={v}" for k, v in params.items())
+            qs = urlencode(params)
             url = f"{url}?{qs}"
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self._token}",
@@ -56,6 +57,8 @@ class GitHubImporter:
                 "per_page": "100",
                 "page": str(page),
             })
+            if not isinstance(page_data, list):
+                raise TypeError(f"Expected list from GitHub API, got {type(page_data).__name__}: {page_data!r}")
             if not page_data:
                 break
             repos.extend(page_data)
