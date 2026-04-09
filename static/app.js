@@ -1637,15 +1637,19 @@ function toast(msg, type="info") {
 // ── GitHub import ──────────────────────────────────────────────────────────
 
 async function openGitHubImport() {
-  const res  = await fetch("/api/github/status");
-  const data = await res.json();
-  if (data.configured) {
-    runGitHubScan();
-  } else {
-    $("githubTokenOverlay").style.display = "flex";
-    $("githubTokenInput").value = "";
-    $("githubTokenError").textContent = "";
-    setTimeout(() => $("githubTokenInput").focus(), 50);
+  try {
+    const res  = await fetch("/api/github/status");
+    const data = await res.json();
+    if (data.configured) {
+      runGitHubScan();
+    } else {
+      $("githubTokenOverlay").style.display = "flex";
+      $("githubTokenInput").value = "";
+      $("githubTokenError").textContent = "";
+      setTimeout(() => $("githubTokenInput").focus(), 50);
+    }
+  } catch (e) {
+    toast("Could not reach GitHub status endpoint.", "error");
   }
 }
 
@@ -1660,18 +1664,22 @@ async function saveGitHubToken() {
     $("githubTokenError").textContent = "Token is required.";
     return;
   }
-  const res  = await fetch("/api/github/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  const data = await res.json();
-  if (!data.ok) {
-    $("githubTokenError").textContent = data.error || "Invalid token.";
-    return;
+  try {
+    const res  = await fetch("/api/github/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      $("githubTokenError").textContent = data.error || "Invalid token.";
+      return;
+    }
+    closeGitHubTokenModal();
+    runGitHubScan();
+  } catch (e) {
+    $("githubTokenError").textContent = "Network error — could not save token.";
   }
-  closeGitHubTokenModal();
-  runGitHubScan();
 }
 
 function runGitHubScan() {
