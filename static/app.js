@@ -490,6 +490,8 @@ function _hostnameDetailFieldHTML(projectName) {
 function updateDetailPanel(name) {
   const p = projects.find(x => x.name === name);
   if (!p) return;
+  // Preserve log content across re-renders so the 5s refresh doesn't wipe it
+  const prevLog = $("logViewer") ? $("logViewer").innerHTML : null;
   const isRunning  = p.status === "running";
   const isConflict = p.status === "conflict";
   const hasError   = isRunning && p.has_error && p.recent_error;
@@ -568,6 +570,7 @@ function updateDetailPanel(name) {
       <div class="detail-section-title">Danger Zone</div>
       <button class="detail-btn danger" onclick="removeProject('${safeN}')">Remove from Registry</button>
     </div>`;
+  if (prevLog && !prevLog.includes("Loading")) $("logViewer").innerHTML = prevLog;
 }
 
 function renderErrorBlock(err) {
