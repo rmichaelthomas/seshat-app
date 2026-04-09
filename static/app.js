@@ -1870,3 +1870,159 @@ async function importSelectedRepos() {
   $("githubImportBtn").disabled = false;
   await refresh();
 }
+
+// ── Local project discovery ────────────────────────────────────────────────
+
+let _discoverResults = [];
+
+function openDiscover() {
+  $("discoverOverlay").style.display = "flex";
+}
+
+function closeDiscover() {
+  $("discoverOverlay").style.display = "none";
+  _discoverResults = [];
+  $("discoverTable").style.display   = "none";
+  $("discoverHint").style.display    = "block";
+  $("discoverLoading").style.display = "none";
+  $("discoverImportBtn").style.display = "none";
+  $("discoverBanner").style.display  = "none";
+  $("discoverRows").innerHTML = "";
+}
+
+function setDiscoverDir(dir) {
+  $("discoverDirInput").value = dir;
+}
+
+async function runLocalScan() {
+  const dir = $("discoverDirInput").value.trim();
+  if (!dir) return;
+
+  $("discoverHint").style.display    = "none";
+  $("discoverLoading").style.display = "block";
+  $("discoverTable").style.display   = "none";
+  $("discoverImportBtn").style.display = "none";
+  $("discoverBanner").style.display  = "none";
+
+  try {
+    const res  = await fetch("/api/local-scan", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ directory: dir }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      $("discoverBanner").textContent   = data.error || "Scan failed.";
+      $("discoverBanner").style.display = "block";
+      $("discoverLoading").style.display = "none";
+      return;
+    }
+    _discoverResults = data;
+    renderDiscoverTable(data, dir);
+  } catch (e) {
+    $("discoverBanner").textContent   = "Network error: " + e.message;
+    $("discoverBanner").style.display = "block";
+    $("discoverLoading").style.display = "none";
+  }
+}
+
+function renderDiscoverTable(rows, dir) {
+  $("discoverLoading").style.display = "none";
+
+  if (rows.length === 0) {
+    $("discoverHint").textContent   = `No new projects found in ${esc(dir)}.`;
+    $("discoverHint").style.display = "block";
+    return;
+  }
+
+  $("discoverTable").style.display = "table";
+  const newRows = rows.filter(r => !r.registered);
+  $("discoverImportBtn").style.display = newRows.length ? "" : "none";
+
+  $("discoverRows").innerHTML = rows.map((r, i) => {
+    const greyStyle = r.registered ? "opacity:0.4;pointer-events:none" : "";
+    const amber     = v => !v ? "background:rgba(255,180,0,0.15)" : "";
+    const checked   = (!r.registered && r.port) ? "checked" : "";
+    const disabled  = r.registered ? "disabled" : "";
+    return `<tr data-idx="${i}" style="${greyStyle};border-bottom:1px solid var(--border)">
+      <td style="padding:6px 4px"><input type="checkbox" class="disc-check" data-idx="${i}" ${checked} ${disabled}></td>
+      <td style="padding:6px 4px"><strong>${esc(r.name)}</strong></td>
+      <td style="padding:6px 4px;font-size:12px;color:var(--text-muted)">${esc(shortPath(r.directory))}</td>
+      <td style="padding:6px 4px;${amber(r.port)}">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:60px"
+               value="${esc(r.port||"")}" data-field="port" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px;${amber(r.start)}">
+        <input class="form-control" style="font-size:12px;padding:2px 6px;width:220px"
+               value="${esc(r.start||"")}" data-field="start" data-idx="${i}" ${disabled}>
+      </td>
+      <td style="padding:6px 4px" id="disc-status-${i}">
+        ${r.registered
+          ? '<span style="font-size:11px;color:var(--text-muted)">Registered</span>'
+          : '<span style="font-size:11px;color:var(--text-muted)">New</span>'}
+      </td>
+    </tr>`;
+  }).join("");
+
+  // Sync edits back to _discoverResults
+  $("discoverRows").querySelectorAll("input[data-field]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      _discoverResults[parseInt(inp.dataset.idx)][inp.dataset.field] = inp.value;
+    });
+  });
+}
+
+function discoverToggleAll(checked) {
+  document.querySelectorAll(".disc-check:not(:disabled)").forEach(cb => cb.checked = checked);
+}
+
+async function importDiscovered() {
+  const checked = [...document.querySelectorAll(".disc-check:checked:not(:disabled)")]
+    .map(cb => parseInt(cb.dataset.idx));
+  if (!checked.length) return;
+
+  $("discoverImportBtn").disabled = true;
+
+  for (const idx of checked) {
+    const r      = _discoverResults[idx];
+    const status = $(`disc-status-${idx}`);
+    const port   = parseInt(r.port);
+
+    if (!r.port || !r.start) {
+      status.innerHTML = '<span style="color:var(--error,#e53935)">Missing fields</span>';
+      continue;
+    }
+    if (isNaN(port)) {
+      status.innerHTML = '<span style="color:var(--error,#e53935)">Invalid port</span>';
+      continue;
+    }
+
+    status.innerHTML = "⏳";
+    try {
+      const res  = await fetch("/api/projects", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name:      r.name,
+          port:      port,
+          directory: r.directory,
+          start:     r.start,
+          notes:     "",
+          tags:      [],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        status.innerHTML = '<span style="color:#4caf50">✓ Imported</span>';
+        _discoverResults[idx].registered = true;
+      } else {
+        status.innerHTML = `<span style="color:var(--error,#e53935)">${esc(data.error || "Error")}</span>`;
+      }
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--error,#e53935)">${esc(e.message)}</span>`;
+    }
+  }
+
+  $("discoverImportBtn").disabled = false;
+  await refresh();
+}
