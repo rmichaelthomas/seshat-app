@@ -183,6 +183,27 @@ class Router:
         """Generate Caddyfile and start (or reload) Caddy."""
         return self._reload_caddy()
 
+    @staticmethod
+    def _caddy_ca_trusted() -> bool:
+        """Return True if Caddy's local CA cert exists (location varies by OS)."""
+        # Ask caddy where it stores data, parse AppDataDir from output
+        try:
+            r = subprocess.run(["caddy", "environ"], capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                if line.startswith("caddy.AppDataDir="):
+                    data_dir = Path(line.split("=", 1)[1].strip())
+                    return (data_dir / "pki" / "authorities" / "local" / "root.crt").exists()
+        except Exception:
+            pass
+        # Fallback: check both common locations
+        for candidate in [
+            Path.home() / "Library" / "Application Support" / "Caddy",
+            Path.home() / ".local" / "share" / "caddy",
+        ]:
+            if (candidate / "pki" / "authorities" / "local" / "root.crt").exists():
+                return True
+        return False
+
     def setup_status(self) -> dict:
         """Check whether the full routing stack is installed and configured."""
         caddy_installed    = subprocess.run(["which", "caddy"],   capture_output=True, timeout=5).returncode == 0
@@ -191,10 +212,8 @@ class Router:
         dnsmasq_running    = subprocess.run(["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=5).returncode == 0
         resolver_configured = RESOLVER_FILE.exists()
         caddyfile_exists    = CADDYFILE.exists()
-        # Caddy's local CA lives here once 'caddy trust' has been run
-        caddy_ca_trusted    = Path.home().joinpath(
-            ".local/share/caddy/pki/authorities/local/root.crt"
-        ).exists()
+        # Caddy's local CA — location varies by OS/version; ask caddy for it
+        caddy_ca_trusted = self._caddy_ca_trusted()
         # If no hostnames have ports assigned, Caddy doesn't need to run yet.
         has_routes = any(h["port"] is not None for h in self.all_hostnames())
         caddy_running = caddy_running or not has_routes
