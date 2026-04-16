@@ -76,8 +76,10 @@ class Runner:
             f.write(separator)
 
         # Build environment: inherit OS env, force unbuffered Python output,
-        # then layer in any vault-resolved secrets.
+        # inject the Seshat-configured port, then layer in vault secrets.
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        if project.get("port"):
+            env["PORT"] = str(project["port"])
         if extra_env:
             env.update(extra_env)
 
