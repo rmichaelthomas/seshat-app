@@ -33,3 +33,6 @@ moves.log
 .vscode/
 *.swp
 *.swo
+
+# Git worktrees
+.worktrees/
