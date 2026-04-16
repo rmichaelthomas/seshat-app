@@ -1035,3 +1035,21 @@ textarea { resize: vertical; }
   padding: 7px 16px; border-radius: var(--radius); font-size: 13px; cursor: pointer;
 }
 .btn-danger:hover { opacity: 0.9; }
+
+/* ── Config inline edit ──────────────────────────────────────────────────── */
+
+.config-edit-input {
+  width: 100%; padding: 4px 6px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  font-size: 12px; font-family: var(--mono); outline: none;
+  transition: border-color 0.15s;
+}
+.config-edit-input:focus { border-color: var(--blue); }
+.config-edit-port {
+  width: 90px;
+}
+.config-edit-notes {
+  resize: vertical;
+  min-height: 40px;
+}

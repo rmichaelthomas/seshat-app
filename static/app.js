@@ -596,12 +596,6 @@ function updateDetailPanel(name) {
       Stop that process or reassign this project's port.
     </div>` : "";
   const errorBlock = hasError ? renderErrorBlock(p.recent_error) : "";
-  const tagsBlock  = (p.tags&&p.tags.length) ? `
-    <div class="detail-field"><div class="detail-label">Tags</div>
-    <div class="detail-value">${p.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(" ")}</div></div>` : "";
-  const notesBlock = p.notes ? `
-    <div class="detail-field"><div class="detail-label">Notes</div>
-    <div class="detail-value notes">${esc(p.notes)}</div></div>` : "";
   const pidBlock = (p.pid&&isRunning) ? `
     <div class="detail-field"><div class="detail-label">PID</div>
     <div class="detail-value mono">${p.pid}</div></div>` : "";
@@ -628,12 +622,25 @@ function updateDetailPanel(name) {
       <button class="detail-btn" onclick="apiOpen('${safeD}','terminal')">⌘ Open in Terminal</button>
     </div>
     <div class="detail-section">
-      <div class="detail-section-title">Configuration</div>
+      <div class="detail-section-header">
+        <div class="detail-section-title" style="margin:0;border:none;padding:0">Configuration</div>
+        <button class="detail-section-action" id="configEditBtn" onclick="toggleConfigEdit('${safeN}')">Edit</button>
+      </div>
       <div class="detail-field"><div class="detail-label">Directory</div>
-        <div class="detail-value mono">${esc(p.directory)}</div></div>
+        <div class="detail-value mono" id="cfg-directory">${esc(p.directory)}</div></div>
       <div class="detail-field"><div class="detail-label">Start Command</div>
-        <div class="detail-value mono">${esc(p.start)}</div></div>
-      ${tagsBlock}${notesBlock}${pidBlock}
+        <div class="detail-value mono" id="cfg-start">${esc(p.start)}</div></div>
+      <div class="detail-field"><div class="detail-label">Port</div>
+        <div class="detail-value mono" id="cfg-port">${p.port}</div></div>
+      <div class="detail-field"><div class="detail-label">Stop Command</div>
+        <div class="detail-value mono" id="cfg-stop">${esc(p.stop || "")}</div></div>
+      <div class="detail-field"><div class="detail-label">URL</div>
+        <div class="detail-value mono" id="cfg-url">${esc(p.url || "")}</div></div>
+      <div class="detail-field"><div class="detail-label">Tags</div>
+        <div class="detail-value" id="cfg-tags">${(p.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join(" ") || '<span style="color:var(--text-muted)">—</span>'}</div></div>
+      <div class="detail-field"><div class="detail-label">Notes</div>
+        <div class="detail-value" id="cfg-notes">${esc(p.notes || "") || '<span style="color:var(--text-muted)">—</span>'}</div></div>
+      ${pidBlock}
     </div>
     ${depsBlock}
     ${(p.env&&p.env.length) ? `
@@ -656,6 +663,92 @@ function updateDetailPanel(name) {
       <button class="detail-btn danger" onclick="removeProject('${safeN}')">Remove from Registry</button>
     </div>`;
   if (prevLog && prevLog !== '<div class="log-empty">Loading\u2026</div>') $("logViewer").innerHTML = prevLog;
+}
+
+function toggleConfigEdit(projectName) {
+  const p = projects.find(x => x.name === projectName);
+  if (!p) return;
+  const btn = $("configEditBtn");
+
+  if (btn.textContent === "Save") {
+    saveConfig(projectName);
+    return;
+  }
+
+  uiState.editingConfig = projectName;
+  uiState.dirtyFields = {
+    directory: p.directory,
+    start: p.start,
+    port: p.port,
+    stop: p.stop || "",
+    url: p.url || "",
+    tags: (p.tags || []).join(", "),
+    notes: p.notes || "",
+  };
+
+  btn.textContent = "Save";
+
+  $("cfg-directory").innerHTML = `<input class="config-edit-input" id="cfg-input-directory" value="${esc(p.directory)}" spellcheck="false">`;
+  $("cfg-start").innerHTML     = `<input class="config-edit-input" id="cfg-input-start" value="${esc(p.start)}" spellcheck="false">`;
+  $("cfg-port").innerHTML      = `<input class="config-edit-input config-edit-port" id="cfg-input-port" type="number" value="${p.port}" min="1" max="65535">`;
+  $("cfg-stop").innerHTML      = `<input class="config-edit-input" id="cfg-input-stop" value="${esc(p.stop || "")}" spellcheck="false" placeholder="Optional stop command">`;
+  $("cfg-url").innerHTML       = `<input class="config-edit-input" id="cfg-input-url" value="${esc(p.url || "")}" spellcheck="false" placeholder="http://localhost:${p.port}">`;
+  $("cfg-tags").innerHTML      = `<input class="config-edit-input" id="cfg-input-tags" value="${esc((p.tags||[]).join(", "))}" spellcheck="false" placeholder="Comma-separated tags">`;
+  $("cfg-notes").innerHTML     = `<textarea class="config-edit-input config-edit-notes" id="cfg-input-notes" rows="2" spellcheck="false" placeholder="Optional notes">${esc(p.notes || "")}</textarea>`;
+
+  // Add Cancel button after Save if not already present
+  if (!$("configCancelBtn")) {
+    btn.insertAdjacentHTML("afterend",
+      ` <button class="detail-section-action" id="configCancelBtn" onclick="cancelConfigEdit('${projectName.replace(/\\/g,"\\\\").replace(/'/g,"\\'")}')">Cancel</button>`);
+  }
+}
+
+async function saveConfig(projectName) {
+  const p = projects.find(x => x.name === projectName);
+  if (!p) return;
+
+  const updates = {};
+  const fields = {
+    directory: $("cfg-input-directory")?.value.trim(),
+    start:     $("cfg-input-start")?.value.trim(),
+    port:      parseInt($("cfg-input-port")?.value, 10),
+    stop:      $("cfg-input-stop")?.value.trim() || "",
+    url:       $("cfg-input-url")?.value.trim() || "",
+    tags:      ($("cfg-input-tags")?.value || "").split(",").map(t => t.trim()).filter(Boolean),
+    notes:     $("cfg-input-notes")?.value.trim() || "",
+  };
+
+  if (fields.directory !== p.directory)              updates.directory = fields.directory;
+  if (fields.start     !== p.start)                  updates.start     = fields.start;
+  if (fields.port      !== p.port)                   updates.port      = fields.port;
+  if (fields.stop      !== (p.stop || ""))           updates.stop      = fields.stop;
+  if (fields.url       !== (p.url || ""))            updates.url       = fields.url;
+  if (JSON.stringify(fields.tags) !== JSON.stringify(p.tags || [])) updates.tags = fields.tags;
+  if (fields.notes     !== (p.notes || ""))          updates.notes     = fields.notes;
+
+  if (Object.keys(updates).length === 0) {
+    cancelConfigEdit(projectName);
+    return;
+  }
+
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, "error"); return; }
+
+  uiState.editingConfig = null;
+  uiState.dirtyFields = {};
+  toast("Configuration saved", "success");
+  await refresh();
+}
+
+function cancelConfigEdit(projectName) {
+  uiState.editingConfig = null;
+  uiState.dirtyFields = {};
+  updateDetailPanel(projectName);
 }
 
 function renderErrorBlock(err) {
