@@ -1126,3 +1126,9 @@ textarea { resize: vertical; }
 
 .audit-row-missing:hover { background: rgba(239,68,68,0.06); border-radius: var(--radius); }
 .audit-row-unused        { opacity: 0.7; }
+
+/* ── Dirty edit indicator ────────────────────────────────────────────────── */
+
+.detail-section-action.dirty {
+  color: var(--orange);
+}

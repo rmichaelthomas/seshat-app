@@ -89,7 +89,7 @@ async function refresh() {
 
     if (activeView === "projects") {
       render();
-      if (selectedName) updateDetailPanel(selectedName);
+      if (selectedName && !uiState.editingConfig) updateDetailPanel(selectedName);
     } else {
       renderGroups();   // keep sidebar counts fresh
       renderCounts();
@@ -595,7 +595,18 @@ function renderGroups() {
 
 // ── Detail panel ───────────────────────────────────────────────────────────
 
-function selectProject(name) {
+async function selectProject(name) {
+  if (uiState.editingConfig && _isConfigDirty()) {
+    const yes = await confirmAction({
+      title: "Discard changes?",
+      message: "You have unsaved configuration edits.",
+      confirmText: "Discard",
+      danger: false,
+    });
+    if (!yes) return;
+    uiState.editingConfig = null;
+    uiState.dirtyFields = {};
+  }
   selectedName = name;
   document.querySelectorAll(".project-row").forEach(r =>
     r.classList.toggle("selected", r.dataset.name === name)
@@ -753,6 +764,18 @@ function toggleConfigEdit(projectName) {
     btn.insertAdjacentHTML("afterend",
       ` <button class="detail-section-action" id="configCancelBtn" onclick="cancelConfigEdit('${projectName.replace(/\\/g,"\\\\").replace(/'/g,"\\'")}')">Cancel</button>`);
   }
+
+  // Toggle dirty indicator on Save button when inputs change
+  const cfgInputs = [
+    $("cfg-input-directory"), $("cfg-input-start"), $("cfg-input-port"),
+    $("cfg-input-stop"), $("cfg-input-url"), $("cfg-input-tags"), $("cfg-input-notes"),
+  ];
+  cfgInputs.forEach(el => {
+    if (el) el.addEventListener("input", () => {
+      const dirty = _isConfigDirty();
+      $("configEditBtn")?.classList.toggle("dirty", dirty);
+    });
+  });
 }
 
 async function saveConfig(projectName) {
@@ -801,6 +824,27 @@ function cancelConfigEdit(projectName) {
   uiState.editingConfig = null;
   uiState.dirtyFields = {};
   updateDetailPanel(projectName);
+}
+
+function _isConfigDirty() {
+  if (!uiState.editingConfig) return false;
+  const orig = uiState.dirtyFields;
+  const cur = {
+    directory: $("cfg-input-directory")?.value.trim() ?? "",
+    start:     $("cfg-input-start")?.value.trim() ?? "",
+    port:      parseInt($("cfg-input-port")?.value, 10) || 0,
+    stop:      $("cfg-input-stop")?.value.trim() ?? "",
+    url:       $("cfg-input-url")?.value.trim() ?? "",
+    tags:      $("cfg-input-tags")?.value.trim() ?? "",
+    notes:     $("cfg-input-notes")?.value.trim() ?? "",
+  };
+  return orig.directory !== cur.directory
+      || orig.start     !== cur.start
+      || String(orig.port) !== String(cur.port)
+      || orig.stop      !== cur.stop
+      || orig.url       !== cur.url
+      || orig.tags      !== cur.tags
+      || orig.notes     !== cur.notes;
 }
 
 function renderErrorBlock(err) {
@@ -878,7 +922,18 @@ function renderDependencies(deps, depStatus, name) {
     </div>`;
 }
 
-function closeDetail() {
+async function closeDetail() {
+  if (uiState.editingConfig && _isConfigDirty()) {
+    const yes = await confirmAction({
+      title: "Discard changes?",
+      message: "You have unsaved configuration edits.",
+      confirmText: "Discard",
+      danger: false,
+    });
+    if (!yes) return;
+    uiState.editingConfig = null;
+    uiState.dirtyFields = {};
+  }
   selectedName = null;
   document.querySelectorAll(".project-row").forEach(r => r.classList.remove("selected"));
   $("detailPanel").classList.remove("open");
