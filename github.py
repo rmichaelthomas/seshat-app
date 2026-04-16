@@ -14,6 +14,18 @@ _START_PATTERNS = re.compile(
     r"^\s*(python3?|npm|node|uvicorn|flask|yarn|cargo run|go run|\.\/gradlew|make\s+(?:run|start|serve|dev|up))\b.*",
     re.MULTILINE,
 )
+_SETUP_COMMANDS = re.compile(
+    r"^\s*("
+    r"npm\s+(?:install|ci|init|link|uninstall)"
+    r"|yarn\s+(?:add|install)"
+    r"|pip3?\s+install"
+    r"|cargo\s+build"
+    r"|go\s+(?:get|install)"
+    r"|make\s+(?:install|build)"
+    r"|bundle\s+install"
+    r")\b",
+    re.MULTILINE,
+)
 _PORT_PATTERNS = [
     re.compile(r"PORT[=\s:]+(\d{4,5})"),
     re.compile(r"localhost:(\d{4,5})"),
@@ -111,14 +123,19 @@ class GitHubImporter:
         start = None
         code_blocks = re.findall(r"```[^\n]*\n(.*?)```", readme, re.DOTALL)
         for block in code_blocks:
-            m = _START_PATTERNS.search(block)
-            if m:
-                start = m.group(0).strip()
+            for m in _START_PATTERNS.finditer(block):
+                candidate = m.group(0).strip()
+                if not _SETUP_COMMANDS.match(candidate):
+                    start = candidate
+                    break
+            if start:
                 break
         if not start:
-            m = _START_PATTERNS.search(readme)
-            if m:
-                start = m.group(0).strip()
+            for m in _START_PATTERNS.finditer(readme):
+                candidate = m.group(0).strip()
+                if not _SETUP_COMMANDS.match(candidate):
+                    start = candidate
+                    break
 
         # Notes — first non-heading, non-empty paragraph
         notes = None

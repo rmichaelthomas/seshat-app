@@ -249,3 +249,27 @@ def test_scan_registered_by_local_path(importer):
          patch.object(importer, "detect_local_path", return_value="/Users/u/vault"):
         results = importer.scan(registered_names={"/users/u/vault"})  # case-insensitive
     assert results[0]["registered"] is True
+
+
+def test_extract_start_skips_npm_install(importer):
+    readme = "## Setup\n```\nnpm install\n```\n## Run\n```\nnpm run dev\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] == "npm run dev"
+
+
+def test_extract_start_skips_npm_ci(importer):
+    readme = "## Setup\n```\nnpm ci\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] is None
+
+
+def test_extract_start_skips_yarn_install(importer):
+    readme = "## Setup\n```\nyarn install\n```\n## Run\n```\nyarn dev\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] == "yarn dev"
+
+
+def test_extract_start_skips_yarn_add(importer):
+    readme = "```\nyarn add express\n```"
+    result = importer._extract_fields(readme)
+    assert result["start"] is None
