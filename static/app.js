@@ -127,7 +127,6 @@ function showProjectView() {
   $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "";
   $("searchSortBar").style.display = "";
-  closeDetail();
   render();
 }
 
@@ -156,6 +155,7 @@ async function installVaultDeps() {
 }
 
 async function showVaultView() {
+  if (await closeDetail() === false) return;
   activeView = "vault";
   $("projectView").style.display  = "none";
   $("vaultView").style.display    = "block";
@@ -164,11 +164,11 @@ async function showVaultView() {
   $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
-  closeDetail();
   await renderVaultView();
 }
 
 async function showOrganizeView() {
+  if (await closeDetail() === false) return;
   activeView = "organize";
   $("projectView").style.display  = "none";
   $("vaultView").style.display    = "none";
@@ -177,7 +177,6 @@ async function showOrganizeView() {
   $("vaultBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
-  closeDetail();
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
 }
 
@@ -936,7 +935,7 @@ async function closeDetail() {
       confirmText: "Discard",
       danger: false,
     });
-    if (!yes) return;
+    if (!yes) return false;
     uiState.editingConfig = null;
     uiState.dirtyFields = {};
   }
