@@ -78,6 +78,19 @@
       <!-- ── Projects view ──────────────────────────────────────────────── -->
       <div id="projectView">
 
+        <div class="search-sort-bar" id="searchSortBar">
+          <div class="search-wrapper">
+            <span class="search-icon">⌕</span>
+            <input type="text" class="search-input" id="searchInput"
+                   placeholder="Search projects…" spellcheck="false">
+            <button class="search-clear" id="searchClear" style="display:none">✕</button>
+          </div>
+          <div class="sort-control" id="sortControl">
+            <span class="sort-label">Sort:</span>
+            <button class="sort-field-btn" id="sortFieldBtn" onclick="cycleSortField()">Name</button>
+            <button class="sort-dir-btn" id="sortDirBtn" onclick="toggleSortDir()">↑</button>
+          </div>
+        </div>
         <div class="shelf-header">
           <div></div>
           <div class="shelf-header-cell">Project</div>

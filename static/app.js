@@ -21,6 +21,7 @@ const uiState = {
 
 document.addEventListener("DOMContentLoaded", () => {
   initFilters();
+  initSearchSort();
   initProjectModal();
   initGroupModal();
   initVaultKeyModal();
@@ -407,13 +408,18 @@ function renderShelf() {
       </div>`;
     return;
   }
-  const visible = (activeFilter === "all" || activeFilter === "orphans")
+  let visible = (activeFilter === "all" || activeFilter === "orphans")
     ? projects
     : projects.filter(p => p.status === activeFilter);
 
+  visible = visible.filter(p => _matchesSearch(p, uiState.searchQuery));
+  visible = _sortProjects(visible);
+
   if (visible.length === 0) {
-    const label = { running: "running", stopped: "stopped", conflict: "in conflict" }[activeFilter] ?? activeFilter;
-    shelf.innerHTML = `<div class="empty-state"><div class="empty-state-title">No ${label} projects</div></div>`;
+    const msg = uiState.searchQuery
+      ? `No projects matching "${esc(uiState.searchQuery)}"`
+      : `No ${({ running: "running", stopped: "stopped", conflict: "in conflict" }[activeFilter] ?? activeFilter)} projects`;
+    shelf.innerHTML = `<div class="empty-state"><div class="empty-state-title">${msg}</div></div>`;
     return;
   }
   shelf.innerHTML = visible.map(projectRowHTML).join("");
@@ -1439,6 +1445,63 @@ async function deleteGroup(name) {
     toast(`Group "${name}" removed`, "success");
     await refresh();
   } catch (e) { toast(e.message, "error"); }
+}
+
+// ── Search & Sort ─────────────────────────────────────────────────────────
+
+function initSearchSort() {
+  const input = $("searchInput");
+  const clear = $("searchClear");
+
+  input.addEventListener("input", () => {
+    uiState.searchQuery = input.value;
+    clear.style.display = input.value ? "block" : "none";
+    renderShelf();
+    renderOrphans();
+  });
+
+  clear.addEventListener("click", () => {
+    input.value = "";
+    uiState.searchQuery = "";
+    clear.style.display = "none";
+    renderShelf();
+    renderOrphans();
+  });
+}
+
+function cycleSortField() {
+  const fields = ["name", "status", "port"];
+  const i = fields.indexOf(uiState.sortField);
+  uiState.sortField = fields[(i + 1) % fields.length];
+  $("sortFieldBtn").textContent = uiState.sortField.charAt(0).toUpperCase() + uiState.sortField.slice(1);
+  renderShelf();
+}
+
+function toggleSortDir() {
+  uiState.sortDir = uiState.sortDir === "asc" ? "desc" : "asc";
+  $("sortDirBtn").textContent = uiState.sortDir === "asc" ? "↑" : "↓";
+  renderShelf();
+}
+
+function _matchesSearch(p, query) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return p.name.toLowerCase().includes(q)
+      || (p.directory || "").toLowerCase().includes(q)
+      || (p.notes || "").toLowerCase().includes(q)
+      || (p.tags || []).some(t => t.toLowerCase().includes(q));
+}
+
+function _sortProjects(list) {
+  const statusOrder = { running: 0, conflict: 1, stopped: 2 };
+  const dir = uiState.sortDir === "asc" ? 1 : -1;
+  return [...list].sort((a, b) => {
+    switch (uiState.sortField) {
+      case "status": return dir * ((statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3));
+      case "port":   return dir * (a.port - b.port);
+      default:       return dir * a.name.localeCompare(b.name);
+    }
+  });
 }
 
 // ── Filters ────────────────────────────────────────────────────────────────
