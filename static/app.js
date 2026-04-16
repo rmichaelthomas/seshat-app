@@ -1059,7 +1059,13 @@ function initVaultViewEvents() {
   document.querySelectorAll(".delete-key-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const key = btn.dataset.key;
-      if (!confirm(`Delete "${key}" from the vault?\n\nProjects that depend on it will lose access.`)) return;
+      const yes = await confirmAction({
+        title: "Delete key?",
+        message: `Remove "${key}" from the vault. Projects using it will lose access.`,
+        confirmText: "Delete",
+        danger: true,
+      });
+      if (!yes) return;
       await fetch(`/api/vault/keys/${encodeURIComponent(key)}`, { method: "DELETE" });
       toast(`${key} deleted`, "success");
       await renderVaultView();
@@ -1099,7 +1105,13 @@ function initVaultViewEvents() {
   document.querySelectorAll(".delete-ov-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const { proj, key } = btn.dataset;
-      if (!confirm(`Remove override for "${key}" from "${proj}"?`)) return;
+      const yes = await confirmAction({
+        title: "Delete override?",
+        message: `Remove override for "${key}" from "${proj}".`,
+        confirmText: "Delete",
+        danger: true,
+      });
+      if (!yes) return;
       await fetch(`/api/vault/overrides/${encodeURIComponent(proj)}/${encodeURIComponent(key)}`, { method: "DELETE" });
       toast(`Override removed`, "success");
       await renderVaultView();
@@ -1237,7 +1249,13 @@ async function stopProject(name) {
 }
 
 async function removeProject(name) {
-  if (!confirm(`Remove "${name}" from the registry?\n\nThis will not delete any files.`)) return;
+  const yes = await confirmAction({
+    title: "Remove project?",
+    message: `This removes "${name}" from the registry. The project files are not deleted.`,
+    confirmText: "Remove",
+    danger: true,
+  });
+  if (!yes) return;
   try {
     const res  = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
     const data = await res.json();
@@ -1249,7 +1267,13 @@ async function removeProject(name) {
 }
 
 async function stopOrphan(port) {
-  if (!confirm(`Stop the process on port ${port}?`)) return;
+  const yes = await confirmAction({
+    title: "Stop process?",
+    message: `This will kill the process on port ${port}.`,
+    confirmText: "Stop",
+    danger: true,
+  });
+  if (!yes) return;
   try {
     const res  = await fetch(`/api/orphans/${port}/stop`, { method: "POST" });
     const data = await res.json();
@@ -1308,7 +1332,13 @@ async function stopGroup(name) {
 }
 
 async function deleteGroup(name) {
-  if (!confirm(`Remove group "${name}"?\n\nProjects will not be affected.`)) return;
+  const yes = await confirmAction({
+    title: "Delete group?",
+    message: `Remove the group "${name}". Projects in it are not affected.`,
+    confirmText: "Delete",
+    danger: true,
+  });
+  if (!yes) return;
   try {
     const res  = await fetch(`/api/groups/${encodeURIComponent(name)}`, { method: "DELETE" });
     const data = await res.json();
