@@ -5,7 +5,9 @@ A local project registry and process manager for developers running multiple ser
 ## What it does
 
 - **Registry** — register projects by name, port, and directory. Seshat remembers them across reboots.
-- **Process manager** — start and stop projects from the dashboard without touching a terminal.
+- **Process manager** — start and stop projects from the dashboard without touching a terminal. Projects requiring multiple processes (e.g. an API server + frontend) are launched together as a single unit.
+- **GitHub import** — scan your GitHub repos and import them with port, start command, and tags pre-filled from the README.
+- **Local discovery** — scan a directory for local projects and register them in one click.
 - **Port scanner** — detects what's actually running on each registered port and shows live status.
 - **Groups** — organize projects into named groups (e.g. "Backend", "Tools").
 - **Log viewer** — tail live output and catch errors without opening a separate terminal window.
@@ -53,6 +55,8 @@ After setup, every registered project is reachable at `http://<project-name>.ses
 | `vault.py` | Encrypted secrets vault |
 | `organizer.py` | Folder move, health checks, rollback |
 | `router.py` | Caddy + dnsmasq management, `.seshat` hostnames |
+| `github.py` | GitHub API client, README metadata extraction |
+| `local_scanner.py` | Local directory project discovery |
 | `deps.py` | Dependency detection |
 | `templates/` | Dashboard HTML |
 | `static/` | CSS and JavaScript |
@@ -64,7 +68,8 @@ Seshat stores its data in `~/.seshat/`:
 
 | File | Contents |
 |---|---|
-| `projects.yaml` | Registered projects |
+| `registry.yaml` | Registered projects |
+| `state.json` | Runtime PIDs for managed processes |
 | `groups.yaml` | Group assignments |
 | `hostnames.yaml` | Custom hostname overrides |
 | `Caddyfile` | Generated reverse proxy config |
