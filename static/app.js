@@ -75,8 +75,6 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Data ───────────────────────────────────────────────────────────────────
 
 async function refresh() {
-  const bar = $("refreshBar");
-  bar?.classList.add("active");
   try {
     const [projRes, orphanRes, groupRes, hostnamesRes] = await Promise.all([
       fetch("/api/projects"),
@@ -97,7 +95,6 @@ async function refresh() {
       renderCounts();
     }
   } catch (_) { /* server may be restarting */ }
-  setTimeout(() => bar?.classList.remove("active"), 400);
 }
 
 // ── View switching ─────────────────────────────────────────────────────────
