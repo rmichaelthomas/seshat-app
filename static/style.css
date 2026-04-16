@@ -134,7 +134,7 @@ html, body {
 
 /* ── Main content ─────────────────────────────────────────────────────────── */
 
-.main { flex: 1; overflow-y: auto; min-width: 0; }
+.main { flex: 1; overflow-y: auto; min-width: 0; position: relative; }
 
 .shelf-header {
   display: grid; grid-template-columns: 28px 1fr 72px auto 1fr 168px;
@@ -1131,4 +1131,28 @@ textarea { resize: vertical; }
 
 .detail-section-action.dirty {
   color: var(--orange);
+}
+
+/* ── Refresh loading bar ─────────────────────────────────────────────────── */
+
+.refresh-bar {
+  height: 2px;
+  background: var(--blue);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  opacity: 0;
+  transition: opacity .2s;
+  z-index: 10;
+}
+.refresh-bar.active {
+  opacity: 1;
+  width: 100%;
+  animation: refreshPulse .8s ease-in-out;
+}
+@keyframes refreshPulse {
+  0%   { width: 0; opacity: 0.6; }
+  50%  { width: 60%; opacity: 1; }
+  100% { width: 100%; opacity: 0; }
 }

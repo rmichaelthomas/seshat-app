@@ -75,6 +75,8 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Data ───────────────────────────────────────────────────────────────────
 
 async function refresh() {
+  const bar = $("refreshBar");
+  bar?.classList.add("active");
   try {
     const [projRes, orphanRes, groupRes, hostnamesRes] = await Promise.all([
       fetch("/api/projects"),
@@ -91,10 +93,11 @@ async function refresh() {
       render();
       if (selectedName && !uiState.editingConfig) updateDetailPanel(selectedName);
     } else {
-      renderGroups();   // keep sidebar counts fresh
+      renderGroups();
       renderCounts();
     }
   } catch (_) { /* server may be restarting */ }
+  setTimeout(() => bar?.classList.remove("active"), 400);
 }
 
 // ── View switching ─────────────────────────────────────────────────────────
@@ -1441,6 +1444,8 @@ function closeVaultKeyModal() {
 // ── Project actions ────────────────────────────────────────────────────────
 
 async function startProject(name) {
+  const btn = document.querySelector(`.project-row[data-name="${CSS.escape(name)}"] .start-btn`);
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
   try {
     const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/start`, { method: "POST" });
     const data = await res.json();
@@ -1449,9 +1454,12 @@ async function startProject(name) {
     await refresh();
     if (selectedName === name) loadLogs(name);
   } catch (e) { toast(e.message, "error"); }
+  if (btn) { btn.disabled = false; btn.textContent = "▶"; }
 }
 
 async function stopProject(name) {
+  const btn = document.querySelector(`.project-row[data-name="${CSS.escape(name)}"] .stop-btn`);
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
   try {
     const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/stop`, { method: "POST" });
     const data = await res.json();
@@ -1459,6 +1467,7 @@ async function stopProject(name) {
     toast(`${name} stopped`, "success");
     await refresh();
   } catch (e) { toast(e.message, "error"); }
+  if (btn) { btn.disabled = false; btn.textContent = "■"; }
 }
 
 async function removeProject(name) {
