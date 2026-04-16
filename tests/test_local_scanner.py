@@ -174,3 +174,32 @@ def test_unreadable_file_skipped(scanner, tmp_path):
         assert results[0]["port"] is None
     finally:
         os.chmod(proj / ".env", 0o644)
+
+
+def test_extract_start_skips_npm_install_in_readme(scanner, tmp_path):
+    readme = "## Setup\n```\nnpm install\n```\n## Run\n```\nnpm run dev\n```"
+    _make_project(tmp_path, "app", {"package.json": "{}", "README.md": readme})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    # package.json has no scripts, so falls through to README
+    assert results[0]["start"] is None or results[0]["start"] == "npm run dev"
+
+
+def test_extract_start_all_from_readme(scanner, tmp_path):
+    readme = "## Usage\n```\nnpm run server\nnpm run dev\n```"
+    _make_project(tmp_path, "app", {"requirements.txt": "", "README.md": readme})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start_all"] == ["npm run server", "npm run dev"]
+
+
+def test_extract_start_all_from_package_json(scanner, tmp_path):
+    pkg = json.dumps({"scripts": {"dev": "next dev", "start": "node index.js"}})
+    _make_project(tmp_path, "app", {"package.json": pkg})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start"] == "next dev"
+    assert results[0]["start_all"] == ["next dev", "node index.js"]
+
+
+def test_extract_start_all_empty_when_none(scanner, tmp_path):
+    _make_project(tmp_path, "app", {"go.mod": "module app\n"})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start_all"] == []

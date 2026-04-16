@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from github import _PORT_PATTERNS, _START_PATTERNS
+from github import _PORT_PATTERNS, _START_PATTERNS, _SETUP_COMMANDS, _extract_start_commands
 
 _SIGNAL_FILES = {
     "package.json", "pyproject.toml", "setup.py", "setup.cfg",
@@ -56,10 +56,14 @@ def _find_port(text: str) -> str | None:
     return None
 
 
-def _find_start(text: str) -> str | None:
-    """Apply _START_PATTERNS to text, return first match stripped."""
-    m = _START_PATTERNS.search(text)
-    return m.group(0).strip() if m else None
+def _find_starts(text: str) -> list[str]:
+    """Apply _START_PATTERNS to text, return all matches excluding setup commands."""
+    results = []
+    for m in _START_PATTERNS.finditer(text):
+        cmd = m.group(0).strip()
+        if not _SETUP_COMMANDS.match(cmd) and cmd not in results:
+            results.append(cmd)
+    return results
 
 
 def _extract(project_dir: Path) -> dict:
@@ -122,34 +126,33 @@ def _extract(project_dir: Path) -> dict:
                     break
 
     # ── Start command extraction ───────────────────────────────────────────
+    start_all: list[str] = []
+
     # 1. package.json scripts.dev then scripts.start
     if pkg_scripts:
         for key in ("dev", "start"):
             val = pkg_scripts.get(key, "").strip()
             if val:
-                start = val
-                break
+                start_all.append(val)
 
     # 2. Makefile
-    if not start:
+    if not start_all:
         text = _read(project_dir / "Makefile")
         if text:
-            start = _find_start(text)
+            start_all = _find_starts(text)
 
-    # 3. README code block
-    if not start:
+    # 3. README — use section-aware extraction
+    if not start_all:
         for readme_name in ("README.md", "README.rst", "README"):
             text = _read(project_dir / readme_name)
             if text:
-                code_blocks = re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL)
-                for block in code_blocks:
-                    start = _find_start(block)
-                    if start:
-                        break
-            if start:
-                break
+                start_all = _extract_start_commands(text)
+                if start_all:
+                    break
 
-    return {"port": port, "start": start}
+    start = start_all[0] if start_all else None
+
+    return {"port": port, "start": start, "start_all": start_all}
 
 
 class LocalScanner:
@@ -185,6 +188,7 @@ class LocalScanner:
                 "directory":  str(child),
                 "port":       extracted["port"],
                 "start":      extracted["start"],
+                "start_all":  extracted["start_all"],
                 "registered": registered,
             })
         return results
