@@ -1694,8 +1694,13 @@ function statusLabel(s) {
 }
 // ── Styled confirm dialog ─────────────────────────────────────────────────
 
+let _confirmCleanup = null;
+
 function confirmAction({ title, message, confirmText, danger }) {
   return new Promise(resolve => {
+    // Dismiss any previous dialog before opening a new one
+    if (_confirmCleanup) { _confirmCleanup(false); }
+
     $("confirmTitle").textContent   = title || "Are you sure?";
     $("confirmMessage").textContent = message || "";
     const okBtn = $("confirmOk");
@@ -1705,12 +1710,14 @@ function confirmAction({ title, message, confirmText, danger }) {
     okBtn.focus();
 
     function cleanup(result) {
+      _confirmCleanup = null;
       $("confirmOverlay").classList.remove("open");
       okBtn.removeEventListener("click", onOk);
       $("confirmCancel").removeEventListener("click", onCancel);
       document.removeEventListener("keydown", onKey);
       resolve(result);
     }
+    _confirmCleanup = cleanup;
     function onOk()     { cleanup(true); }
     function onCancel() { cleanup(false); }
     function onKey(e) {
