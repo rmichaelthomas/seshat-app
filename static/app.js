@@ -520,10 +520,16 @@ function renderOrphans() {
         <div class="orphan-cmd">${esc(o.cmdline || "—")}</div>
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0">
-        <button class="action-btn" onclick="adoptOrphan(${o.port}, '${esc(o.name||"").replace(/'/g,"\\'")}', '${esc(o.cmdline||"").replace(/'/g,"\\'")}' )" title="Register this process">+</button>
+        <button class="action-btn adopt-btn" data-port="${o.port}" data-name="${esc(o.name||"")}" data-cmdline="${esc(o.cmdline||"")}" title="Register this process">+</button>
         <button class="action-btn stop-btn" onclick="stopOrphan(${o.port})" title="Stop process">■</button>
       </div>
     </div>`).join("");
+  // Wire adopt buttons via delegation (avoids inline JS string escaping issues)
+  list.querySelectorAll(".adopt-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      adoptOrphan(parseInt(btn.dataset.port, 10), btn.dataset.name, btn.dataset.cmdline);
+    });
+  });
 }
 
 function renderGroups() {
