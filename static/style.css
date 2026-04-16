@@ -1121,3 +1121,8 @@ textarea { resize: vertical; }
   cursor: pointer;
 }
 .sort-field-btn:hover, .sort-dir-btn:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* ── Vault audit row enhancements ────────────────────────────────────────── */
+
+.audit-row-missing:hover { background: rgba(239,68,68,0.06); border-radius: var(--radius); }
+.audit-row-unused        { opacity: 0.7; }

@@ -963,6 +963,16 @@ async function renderVaultView() {
           <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
         </div>
 
+        <!-- Audit findings -->
+        ${missingAudit.length || unusedAudit.length ? `
+        <div class="vault-section">
+          <div class="vault-section-header">
+            <div class="vault-section-title">Audit</div>
+            <button class="btn btn-ghost btn-sm" onclick="renderVaultView()">Re-audit</button>
+          </div>
+          <div>${renderAuditRows(missingAudit, unusedAudit)}</div>
+        </div>` : ""}
+
         <!-- Shared keys -->
         <div class="vault-section">
           <div class="vault-section-header">
@@ -979,15 +989,6 @@ async function renderVaultView() {
           </div>
           <div id="overridesList">${renderOverrideGroups(summary.project_overrides, audit)}</div>
         </div>
-
-        <!-- Audit: missing keys -->
-        ${missingAudit.length || unusedAudit.length ? `
-        <div class="vault-section">
-          <div class="vault-section-header">
-            <div class="vault-section-title">Audit</div>
-          </div>
-          <div>${renderAuditRows(missingAudit, unusedAudit)}</div>
-        </div>` : ""}
 
         <!-- Import from .env -->
         <div class="vault-section">
@@ -1063,15 +1064,16 @@ function renderOverrideGroups(overrides, audit) {
 function renderAuditRows(missing, unused) {
   const rows = [];
   missing.forEach(a => {
+    const safeKey = a.key.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     rows.push(`
-      <div class="audit-row">
+      <div class="audit-row audit-row-missing" onclick="openVaultKeyModal('shared', null, null); setTimeout(()=>{const i=document.querySelector('#vaultKeyForm [name=key]');if(i){i.value='${safeKey}';i.readOnly=false;}},100);" style="cursor:pointer" title="Click to add this key">
         <div class="audit-key">${esc(a.key)}</div>
         <div class="audit-status warn">⚠ Missing for: ${esc(a.missing_from.join(", "))}</div>
       </div>`);
   });
   unused.forEach(a => {
     rows.push(`
-      <div class="audit-row">
+      <div class="audit-row audit-row-unused">
         <div class="audit-key">${esc(a.key)}</div>
         <div class="audit-status unused">No project declares this key</div>
       </div>`);
