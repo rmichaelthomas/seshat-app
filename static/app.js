@@ -1064,9 +1064,8 @@ function renderOverrideGroups(overrides, audit) {
 function renderAuditRows(missing, unused) {
   const rows = [];
   missing.forEach(a => {
-    const safeKey = a.key.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     rows.push(`
-      <div class="audit-row audit-row-missing" onclick="openVaultKeyModal('shared', null, null); setTimeout(()=>{const i=document.querySelector('#vaultKeyForm [name=key]');if(i){i.value='${safeKey}';i.readOnly=false;}},100);" style="cursor:pointer" title="Click to add this key">
+      <div class="audit-row audit-row-missing" data-missing-key="${esc(a.key)}" style="cursor:pointer" title="Click to add this key">
         <div class="audit-key">${esc(a.key)}</div>
         <div class="audit-status warn">⚠ Missing for: ${esc(a.missing_from.join(", "))}</div>
       </div>`);
@@ -1216,6 +1215,18 @@ function initVaultViewEvents() {
       await fetch(`/api/vault/overrides/${encodeURIComponent(proj)}/${encodeURIComponent(key)}`, { method: "DELETE" });
       toast(`Override removed`, "success");
       await renderVaultView();
+    });
+  });
+
+  // Clickable audit rows — open add-key modal pre-filled
+  document.querySelectorAll(".audit-row-missing").forEach(row => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.missingKey;
+      openVaultKeyModal("shared", null, null);
+      setTimeout(() => {
+        const input = document.querySelector("#vaultKeyForm [name=key]");
+        if (input) { input.value = key; input.readOnly = false; }
+      }, 100);
     });
   });
 }
