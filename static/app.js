@@ -17,6 +17,44 @@ const uiState = {
   dirtyFields: {},
 };
 
+// ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+function initKeyboard() {
+  document.addEventListener("keydown", e => {
+    const tag = e.target.tagName;
+    const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+
+    // Escape: cascading dismiss (innermost first)
+    if (e.key === "Escape") {
+      if ($("confirmOverlay").classList.contains("open")) return; // handled by confirmAction itself
+      if ($("discoverOverlay")?.style.display !== "none" && $("discoverOverlay")?.style.display) { closeDiscover(); return; }
+      if ($("githubImportOverlay")?.style.display !== "none" && $("githubImportOverlay")?.style.display) { closeGitHubImportModal(); return; }
+      if ($("githubTokenOverlay")?.style.display !== "none" && $("githubTokenOverlay")?.style.display) { closeGitHubTokenModal(); return; }
+      if ($("routerModalOverlay")?.style.display !== "none" && $("routerModalOverlay")?.style.display) { closeSetupModal(); return; }
+      if ($("modalOverlay").classList.contains("open"))         { closeProjectModal(); return; }
+      if ($("groupModalOverlay").classList.contains("open"))    { closeGroupModal();   return; }
+      if ($("vaultKeyModalOverlay")?.classList.contains("open")) { closeVaultKeyModal(); return; }
+      if (uiState.editingConfig) { cancelConfigEdit(uiState.editingConfig); return; }
+      if ($("detailPanel").classList.contains("open")) { closeDetail(); return; }
+      return;
+    }
+
+    // Enter in config edit mode (not in textarea): save
+    if (e.key === "Enter" && uiState.editingConfig && inInput && tag !== "TEXTAREA") {
+      e.preventDefault();
+      saveConfig(uiState.editingConfig);
+      return;
+    }
+
+    // / key (not in input): focus search bar
+    if (e.key === "/" && !inInput) {
+      e.preventDefault();
+      $("searchInput")?.focus();
+      return;
+    }
+  });
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -25,6 +63,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initProjectModal();
   initGroupModal();
   initVaultKeyModal();
+  initKeyboard();
   $("vaultBtn").addEventListener("click", toggleVaultView);
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
   refresh();
