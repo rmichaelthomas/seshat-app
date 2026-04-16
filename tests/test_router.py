@@ -180,6 +180,7 @@ def test_generate_caddyfile_single_project(rtr):
     cf = rtr._generate_caddyfile()
     assert "vault.seshat" in cf
     assert "reverse_proxy localhost:5001" in cf
+    assert "header_up Host localhost:5001" in cf
 
 def test_generate_caddyfile_multi_project(rtr):
     rtr.registry.add({"name": "Vault", "directory": "/tmp/v", "port": 5001})
