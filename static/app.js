@@ -711,7 +711,7 @@ async function saveConfig(projectName) {
   const fields = {
     directory: $("cfg-input-directory")?.value.trim(),
     start:     $("cfg-input-start")?.value.trim(),
-    port:      parseInt($("cfg-input-port")?.value, 10),
+    port:      parseInt($("cfg-input-port")?.value, 10) || p.port,
     stop:      $("cfg-input-stop")?.value.trim() || "",
     url:       $("cfg-input-url")?.value.trim() || "",
     tags:      ($("cfg-input-tags")?.value || "").split(",").map(t => t.trim()).filter(Boolean),
