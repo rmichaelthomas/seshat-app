@@ -590,12 +590,22 @@ function renderGroups() {
         <span class="group-name">${esc(g.name)}</span>
         <span style="font-size:10px;color:var(--text-muted);margin-right:4px">${count}</span>
         <div class="group-actions">
-          <button class="group-btn start"  onclick="startGroup('${esc(g.name)}')"  title="Start all">▶</button>
-          <button class="group-btn stop"   onclick="stopGroup('${esc(g.name)}')"   title="Stop all">■</button>
-          <button class="group-btn delete" onclick="deleteGroup('${esc(g.name)}')" title="Remove group">✕</button>
+          <button class="group-btn start"  data-action="start-group"  data-name="${esc(g.name)}" title="Start all">▶</button>
+          <button class="group-btn stop"   data-action="stop-group"   data-name="${esc(g.name)}" title="Stop all">■</button>
+          <button class="group-btn delete" data-action="delete-group" data-name="${esc(g.name)}" title="Remove group">✕</button>
         </div>
       </div>`;
   }).join("");
+  // Wire group action buttons via delegation (avoids inline JS string escaping issues)
+  list.querySelectorAll(".group-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      const name = btn.dataset.name;
+      if (btn.dataset.action === "start-group")  startGroup(name);
+      else if (btn.dataset.action === "stop-group")  stopGroup(name);
+      else if (btn.dataset.action === "delete-group") deleteGroup(name);
+    });
+  });
 }
 
 // ── Detail panel ───────────────────────────────────────────────────────────
@@ -672,8 +682,6 @@ function updateDetailPanel(name) {
 
   const safeN = p.name.replace(/\\/g,"\\\\").replace(/'/g,"\\'");
   const safeD = (p.directory||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'");
-  const urlVal = esc(p.url||`http://localhost:${p.port}`);
-
   $("detailInner").innerHTML = `
     <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
     <div class="detail-name">${esc(p.name)}</div>
@@ -685,7 +693,7 @@ function updateDetailPanel(name) {
       ${isRunning
         ? `<button class="detail-btn stop"  onclick="stopProject('${safeN}')">■ Stop</button>`
         : `<button class="detail-btn start" onclick="startProject('${safeN}')">▶ Start</button>`}
-      <button class="detail-btn" onclick="window.open('${urlVal}','_blank')">↗ Open in Browser</button>
+      <button class="detail-btn" id="openBrowserBtn" data-url="${esc(p.url||`http://localhost:${p.port}`)}">↗ Open in Browser</button>
       <button class="detail-btn" onclick="apiOpen('${safeD}','finder')">📁 Open in Finder</button>
       <button class="detail-btn" onclick="apiOpen('${safeD}','terminal')">⌘ Open in Terminal</button>
     </div>
@@ -730,6 +738,7 @@ function updateDetailPanel(name) {
       <div class="detail-section-title">Danger Zone</div>
       <button class="detail-btn danger" onclick="removeProject('${safeN}')">Remove from Registry</button>
     </div>`;
+  $("openBrowserBtn").addEventListener("click", () => window.open($("openBrowserBtn").dataset.url, "_blank"));
   if (prevLog && prevLog !== '<div class="log-empty">Loading\u2026</div>') $("logViewer").innerHTML = prevLog;
 }
 
@@ -1160,7 +1169,7 @@ function renderOverrideGroups(overrides, audit) {
       <div class="vault-override-project">
         <div class="vault-override-project-header">
           <span>${esc(proj)}</span>
-          <button class="vault-row-btn" onclick="openVaultKeyModal('override','${esc(proj)}')" title="Add override for this project" style="font-size:12px">+ Add</button>
+          <button class="vault-row-btn add-override-btn" data-proj="${esc(proj)}" title="Add override for this project" style="font-size:12px">+ Add</button>
         </div>
         ${rows}
       </div>`;
@@ -1300,6 +1309,11 @@ function initVaultViewEvents() {
         }
       } catch (_) { toast("Could not reveal value", "error"); }
     });
+  });
+
+  // Add override
+  document.querySelectorAll(".add-override-btn").forEach(btn => {
+    btn.addEventListener("click", () => openVaultKeyModal("override", btn.dataset.proj));
   });
 
   // Edit override
