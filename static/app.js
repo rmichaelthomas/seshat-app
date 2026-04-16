@@ -126,6 +126,7 @@ function showProjectView() {
   $("vaultBtn").classList.remove("active");
   $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "";
+  $("searchSortBar").style.display = "";
   closeDetail();
   render();
 }
@@ -162,6 +163,7 @@ async function showVaultView() {
   $("vaultBtn").classList.add("active");
   $("organizeBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
+  $("searchSortBar").style.display = "none";
   closeDetail();
   await renderVaultView();
 }
@@ -174,6 +176,7 @@ async function showOrganizeView() {
   $("organizeBtn").classList.add("active");
   $("vaultBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
+  $("searchSortBar").style.display = "none";
   closeDetail();
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
 }
