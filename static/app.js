@@ -520,6 +520,7 @@ function renderOrphans() {
         <div class="orphan-cmd">${esc(o.cmdline || "—")}</div>
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0">
+        <button class="action-btn" onclick="adoptOrphan(${o.port}, '${esc(o.name||"").replace(/'/g,"\\'")}', '${esc(o.cmdline||"").replace(/'/g,"\\'")}' )" title="Register this process">+</button>
         <button class="action-btn stop-btn" onclick="stopOrphan(${o.port})" title="Stop process">■</button>
       </div>
     </div>`).join("");
@@ -1395,6 +1396,15 @@ async function stopOrphan(port) {
   } catch (e) { toast(e.message, "error"); }
 }
 
+function adoptOrphan(port, name, cmdline) {
+  openProjectModal({
+    name: name || "",
+    port: port,
+    start: cmdline || "",
+    directory: "",
+  });
+}
+
 function copyError(btn) {
   const block   = btn.closest(".error-block");
   const message = block?.querySelector(".error-block-message")?.textContent || "";
@@ -1534,7 +1544,7 @@ function initFilters() {
 // ── Project modal ──────────────────────────────────────────────────────────
 
 function initProjectModal() {
-  $("addProjectBtn").addEventListener("click", openProjectModal);
+  $("addProjectBtn").addEventListener("click", () => openProjectModal());
   $("modalClose").addEventListener("click",   closeProjectModal);
   $("cancelBtn").addEventListener("click",    closeProjectModal);
   $("modalOverlay").addEventListener("click", e => { if (e.target===$("modalOverlay")) closeProjectModal(); });
@@ -1567,9 +1577,17 @@ function initProjectModal() {
   });
 }
 
-function openProjectModal() {
+function openProjectModal(prefill) {
+  const form = $("addProjectForm");
+  if (prefill) {
+    if (prefill.name)  form.querySelector("[name='name']").value  = prefill.name;
+    if (prefill.port)  form.querySelector("[name='port']").value  = prefill.port;
+    if (prefill.start) form.querySelector("[name='start']").value = prefill.start;
+    if (prefill.directory !== undefined) form.querySelector("[name='directory']").value = prefill.directory;
+  }
   $("modalOverlay").classList.add("open");
-  setTimeout(() => $("addProjectForm").querySelector("[name='name']").focus(), 60);
+  const focusField = (prefill && prefill.name) ? "directory" : "name";
+  setTimeout(() => form.querySelector(`[name='${focusField}']`).focus(), 60);
 }
 function closeProjectModal() {
   $("modalOverlay").classList.remove("open");
