@@ -9,6 +9,14 @@ let activeView   = "projects";   // "projects" | "vault" | "organize"
 let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 
+const uiState = {
+  searchQuery: "",
+  sortField: "name",
+  sortDir: "asc",
+  editingConfig: null,
+  dirtyFields: {},
+};
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -1684,6 +1692,37 @@ function shortPath(p) { return (p||"").replace(/^\/Users\/[^/]+/,"~"); }
 function statusLabel(s) {
   return { running:"● Running", stopped:"○ Stopped", conflict:"⚠ Conflict" }[s] ?? s;
 }
+// ── Styled confirm dialog ─────────────────────────────────────────────────
+
+function confirmAction({ title, message, confirmText, danger }) {
+  return new Promise(resolve => {
+    $("confirmTitle").textContent   = title || "Are you sure?";
+    $("confirmMessage").textContent = message || "";
+    const okBtn = $("confirmOk");
+    okBtn.textContent = confirmText || "Confirm";
+    okBtn.className   = danger ? "btn btn-danger" : "btn btn-primary";
+    $("confirmOverlay").classList.add("open");
+    okBtn.focus();
+
+    function cleanup(result) {
+      $("confirmOverlay").classList.remove("open");
+      okBtn.removeEventListener("click", onOk);
+      $("confirmCancel").removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    }
+    function onOk()     { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onKey(e) {
+      if (e.key === "Enter")  { e.preventDefault(); cleanup(true); }
+      if (e.key === "Escape") { e.preventDefault(); cleanup(false); }
+    }
+    okBtn.addEventListener("click", onOk);
+    $("confirmCancel").addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKey);
+  });
+}
+
 function toast(msg, type="info") {
   const c = $("toastContainer");
   const t = document.createElement("div");

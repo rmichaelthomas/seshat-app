@@ -1004,3 +1004,34 @@ textarea { resize: vertical; }
 }
 
 .vault-hostname-hint-btn:hover { background: var(--accent-hover, #bae6fd); }
+
+/* ── Confirm dialog ──────────────────────────────────────────────────────── */
+
+.confirm-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1100;
+  opacity: 0; pointer-events: none;
+  transition: opacity .15s;
+}
+.confirm-overlay.open { opacity: 1; pointer-events: auto; }
+
+.confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 360px;
+  max-width: 90vw;
+}
+.confirm-title   { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.confirm-message { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.btn-danger {
+  background: var(--red); color: #fff; border: none;
+  padding: 7px 16px; border-radius: var(--radius); font-size: 13px; cursor: pointer;
+}
+.btn-danger:hover { opacity: 0.9; }
