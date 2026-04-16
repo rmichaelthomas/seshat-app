@@ -136,6 +136,7 @@ def test_extract_fields_missing(importer):
     result = importer._extract_fields(readme)
     assert result["port"] is None
     assert result["start"] is None
+    assert result["start_all"] == []
 
 
 def test_fetch_readme_decodes(importer):
@@ -191,6 +192,7 @@ def test_extract_fields_empty_readme(importer):
     result = importer._extract_fields("")
     assert result["port"] is None
     assert result["start"] is None
+    assert result["start_all"] == []
     assert result["notes"] is None
 
 
@@ -216,6 +218,7 @@ def test_scan_returns_structured_results(importer, tmp_path):
     assert r["local_path"] == "/Users/u/vault"
     assert r["port"] == "6100"
     assert r["start"] == "python3 app.py"
+    assert r["start_all"] == ["python3 app.py"]
     assert r["tags"] == ["obsidian", "python"]
     assert r["registered"] is False
     assert r["is_fork"] is False
@@ -273,3 +276,52 @@ def test_extract_start_skips_yarn_add(importer):
     readme = "```\nyarn add express\n```"
     result = importer._extract_fields(readme)
     assert result["start"] is None
+
+
+from github import _extract_start_commands
+
+
+def test_extract_start_commands_prefers_run_section():
+    readme = "## Setup\n```\nnpm run build\n```\n## Running\n```\nnpm run dev\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["npm run dev"]
+
+
+def test_extract_start_commands_falls_back_to_unclassified():
+    readme = "## About\n```\npython3 app.py\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["python3 app.py"]
+
+
+def test_extract_start_commands_falls_back_to_setup_section():
+    readme = "## Install\n```\npython3 setup.py\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["python3 setup.py"]
+
+
+def test_extract_start_commands_collects_multiple():
+    readme = "## Usage\n```\nnpm run server\nnpm run dev\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["npm run server", "npm run dev"]
+
+
+def test_extract_start_commands_empty_readme():
+    assert _extract_start_commands("") == []
+
+
+def test_extract_start_commands_no_headings():
+    readme = "Run this:\n```\nnode server.js\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["node server.js"]
+
+
+def test_extract_start_commands_getting_started_heading():
+    readme = "## Getting Started\n```\nnpm run dev\n```\n## Build\n```\nnpm run build\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["npm run dev"]
+
+
+def test_extract_start_commands_filters_setup_in_run_section():
+    readme = "## Usage\n```\nnpm install\nnpm run dev\n```"
+    result = _extract_start_commands(readme)
+    assert result == ["npm run dev"]

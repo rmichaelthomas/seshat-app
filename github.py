@@ -26,6 +26,79 @@ _SETUP_COMMANDS = re.compile(
     r")\b",
     re.MULTILINE,
 )
+_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)", re.MULTILINE)
+
+_RUN_HEADINGS = re.compile(
+    r"(?:run|start|usage|develop|launch|getting.started|quick.start)",
+    re.IGNORECASE,
+)
+_SETUP_HEADINGS = re.compile(
+    r"(?:setup|install|prerequisites|requirements|build|dependencies)",
+    re.IGNORECASE,
+)
+
+
+def _split_sections(readme: str) -> list[tuple[str, str]]:
+    """Split README into (heading, body) tuples. Preamble gets heading ''."""
+    splits = list(_HEADING_RE.finditer(readme))
+    sections: list[tuple[str, str]] = []
+    if not splits:
+        return [("", readme)]
+    # Preamble before first heading
+    if splits[0].start() > 0:
+        sections.append(("", readme[: splits[0].start()]))
+    for i, m in enumerate(splits):
+        heading = m.group(2).strip()
+        start = m.end()
+        end = splits[i + 1].start() if i + 1 < len(splits) else len(readme)
+        sections.append((heading, readme[start:end]))
+    return sections
+
+
+def _find_commands_in_text(text: str) -> list[str]:
+    """Find all start-pattern matches in text, excluding setup commands.
+    Searches fenced code blocks first, then bare lines."""
+    commands: list[str] = []
+    seen = set()
+    code_blocks = re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL)
+    for block in code_blocks:
+        for m in _START_PATTERNS.finditer(block):
+            cmd = m.group(0).strip()
+            if not _SETUP_COMMANDS.match(cmd) and cmd not in seen:
+                commands.append(cmd)
+                seen.add(cmd)
+    # Also search bare lines (outside code blocks)
+    bare = re.sub(r"```[^\n]*\n.*?```", "", text, flags=re.DOTALL)
+    for m in _START_PATTERNS.finditer(bare):
+        cmd = m.group(0).strip()
+        if not _SETUP_COMMANDS.match(cmd) and cmd not in seen:
+            commands.append(cmd)
+            seen.add(cmd)
+    return commands
+
+
+def _extract_start_commands(readme: str) -> list[str]:
+    """Extract all start commands from a README using section-aware parsing."""
+    sections = _split_sections(readme)
+
+    run_cmds: list[str] = []
+    unclassified_cmds: list[str] = []
+    setup_cmds: list[str] = []
+
+    for heading, body in sections:
+        cmds = _find_commands_in_text(body)
+        if not cmds:
+            continue
+        if _RUN_HEADINGS.search(heading):
+            run_cmds.extend(cmds)
+        elif _SETUP_HEADINGS.search(heading):
+            setup_cmds.extend(cmds)
+        else:
+            unclassified_cmds.extend(cmds)
+
+    return run_cmds or unclassified_cmds or setup_cmds
+
+
 _PORT_PATTERNS = [
     re.compile(r"PORT[=\s:]+(\d{4,5})"),
     re.compile(r"localhost:(\d{4,5})"),
@@ -119,23 +192,9 @@ class GitHubImporter:
                 port = m.group(1)
                 break
 
-        # Start command — look in fenced code blocks first, then bare lines
-        start = None
-        code_blocks = re.findall(r"```[^\n]*\n(.*?)```", readme, re.DOTALL)
-        for block in code_blocks:
-            for m in _START_PATTERNS.finditer(block):
-                candidate = m.group(0).strip()
-                if not _SETUP_COMMANDS.match(candidate):
-                    start = candidate
-                    break
-            if start:
-                break
-        if not start:
-            for m in _START_PATTERNS.finditer(readme):
-                candidate = m.group(0).strip()
-                if not _SETUP_COMMANDS.match(candidate):
-                    start = candidate
-                    break
+        # Start commands — section-aware extraction
+        commands = _extract_start_commands(readme)
+        start = commands[0] if commands else None
 
         # Notes — first non-heading, non-empty paragraph
         notes = None
@@ -145,7 +204,7 @@ class GitHubImporter:
                 notes = para[:300]
                 break
 
-        return {"port": port, "start": start, "notes": notes}
+        return {"port": port, "start": start, "start_all": commands, "notes": notes}
 
     def fetch_repos(self) -> list[dict]:
         """Fetch all repos owned by the authenticated user (paginated)."""
@@ -181,7 +240,7 @@ class GitHubImporter:
             full_name  = repo["full_name"]
             clone_url  = repo["clone_url"]
             readme     = self.fetch_readme(full_name)
-            extracted  = self._extract_fields(readme) if readme else {"port": None, "start": None, "notes": None}
+            extracted  = self._extract_fields(readme) if readme else {"port": None, "start": None, "start_all": [], "notes": None}
             local_path = self.detect_local_path(name, clone_url)
             tags = list({(repo.get("language") or "").lower()} | set(repo.get("topics") or []))
             tags = [t for t in tags if t]  # remove empty strings
@@ -194,6 +253,7 @@ class GitHubImporter:
                 "local_path":  local_path,
                 "port":        extracted["port"],
                 "start":       extracted["start"],
+                "start_all":   extracted["start_all"],
                 "tags":        sorted(tags),
                 "notes":       notes[:300],
                 "is_fork":     repo.get("fork", False),
