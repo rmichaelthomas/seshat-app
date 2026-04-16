@@ -325,3 +325,29 @@ def test_extract_start_commands_filters_setup_in_run_section():
     readme = "## Usage\n```\nnpm install\nnpm run dev\n```"
     result = _extract_start_commands(readme)
     assert result == ["npm run dev"]
+
+
+def test_scan_combines_multiple_start_commands(importer, tmp_path):
+    repos = [{
+        "name": "astroweather", "full_name": "u/astroweather",
+        "clone_url": "https://github.com/u/astroweather.git",
+        "description": "Daily signal system", "language": "JavaScript",
+        "topics": [], "fork": False,
+        "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main",
+    }]
+    readme = (
+        "# Astroweather\n\n"
+        "## Run\n"
+        "Open two terminal tabs:\n"
+        "```\nnpm run server\n```\n"
+        "```\nnpm run dev\n```\n"
+        "Open http://localhost:5173\n"
+    )
+    with patch.object(importer, "fetch_repos", return_value=repos), \
+         patch.object(importer, "fetch_readme", return_value=readme), \
+         patch.object(importer, "detect_local_path", return_value=None):
+        results = importer.scan(registered_names=set())
+
+    r = results[0]
+    assert r["start"] == "npm run server & npm run dev"
+    assert r["start_all"] == ["npm run server", "npm run dev"]

@@ -128,12 +128,12 @@ def _extract(project_dir: Path) -> dict:
     # ── Start command extraction ───────────────────────────────────────────
     start_all: list[str] = []
 
-    # 1. package.json scripts.dev then scripts.start
+    # 1. package.json scripts.dev (preferred) or scripts.start (fallback)
+    #    These are alternatives, not companions — only pick one.
     if pkg_scripts:
-        for key in ("dev", "start"):
-            val = pkg_scripts.get(key, "").strip()
-            if val:
-                start_all.append(val)
+        val = (pkg_scripts.get("dev") or pkg_scripts.get("start") or "").strip()
+        if val:
+            start_all.append(val)
 
     # 2. Makefile
     if not start_all:
@@ -187,7 +187,7 @@ class LocalScanner:
                 "name":       name,
                 "directory":  str(child),
                 "port":       extracted["port"],
-                "start":      extracted["start"],
+                "start":      " & ".join(extracted["start_all"]) if len(extracted["start_all"]) > 1 else extracted["start"],
                 "start_all":  extracted["start_all"],
                 "registered": registered,
             })

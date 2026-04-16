@@ -252,7 +252,7 @@ class GitHubImporter:
                 "clone_url":   clone_url,
                 "local_path":  local_path,
                 "port":        extracted["port"],
-                "start":       extracted["start"],
+                "start":       " & ".join(extracted["start_all"]) if len(extracted["start_all"]) > 1 else extracted["start"],
                 "start_all":   extracted["start_all"],
                 "tags":        sorted(tags),
                 "notes":       notes[:300],

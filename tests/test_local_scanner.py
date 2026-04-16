@@ -181,7 +181,7 @@ def test_extract_start_skips_npm_install_in_readme(scanner, tmp_path):
     _make_project(tmp_path, "app", {"package.json": "{}", "README.md": readme})
     results = scanner.scan(str(tmp_path), registered_names=set())
     # package.json has no scripts, so falls through to README
-    assert results[0]["start"] is None or results[0]["start"] == "npm run dev"
+    assert results[0]["start"] == "npm run dev"
 
 
 def test_extract_start_all_from_readme(scanner, tmp_path):
@@ -192,14 +192,24 @@ def test_extract_start_all_from_readme(scanner, tmp_path):
 
 
 def test_extract_start_all_from_package_json(scanner, tmp_path):
+    # package.json scripts.dev and scripts.start are alternatives, not companions
+    # only the preferred one (dev) should be picked
     pkg = json.dumps({"scripts": {"dev": "next dev", "start": "node index.js"}})
     _make_project(tmp_path, "app", {"package.json": pkg})
     results = scanner.scan(str(tmp_path), registered_names=set())
     assert results[0]["start"] == "next dev"
-    assert results[0]["start_all"] == ["next dev", "node index.js"]
+    assert results[0]["start_all"] == ["next dev"]
 
 
 def test_extract_start_all_empty_when_none(scanner, tmp_path):
     _make_project(tmp_path, "app", {"go.mod": "module app\n"})
     results = scanner.scan(str(tmp_path), registered_names=set())
     assert results[0]["start_all"] == []
+
+
+def test_scan_combines_multiple_start_commands(scanner, tmp_path):
+    readme = "## Usage\n```\nnpm run server\nnpm run dev\n```"
+    _make_project(tmp_path, "app", {"requirements.txt": "", "README.md": readme})
+    results = scanner.scan(str(tmp_path), registered_names=set())
+    assert results[0]["start"] == "npm run server & npm run dev"
+    assert results[0]["start_all"] == ["npm run server", "npm run dev"]
