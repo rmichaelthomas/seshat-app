@@ -511,7 +511,7 @@ function projectRowHTML(p) {
         ${tags ? `<div class="project-tags">${tags}</div>` : ""}
         ${conflictLine}${errorLine}
       </div>
-      <div class="project-port">:${p.port}</div>
+      <div class="project-port">:${p.port}${(p.child_ports||[]).map(cp=>`<span class="child-port"> :${cp}</span>`).join("")}</div>
       <div>${_hostnameChipHTML(p.name)}</div>
       <div class="project-dir">${esc(shortPath(p.directory))}</div>
       <div class="project-actions">
@@ -707,6 +707,8 @@ function updateDetailPanel(name) {
         <div class="detail-value mono" id="cfg-start">${esc(p.start)}</div></div>
       <div class="detail-field"><div class="detail-label">Port</div>
         <div class="detail-value mono" id="cfg-port">${p.port}</div></div>
+      ${(p.child_ports||[]).length ? `<div class="detail-field"><div class="detail-label">Child Ports</div>
+        <div class="detail-value mono">${(p.child_ports||[]).map(cp=>`:${cp}`).join(", ")}</div></div>` : ""}
       <div class="detail-field"><div class="detail-label">Scheme</div>
         <div class="detail-value mono" id="cfg-scheme">${esc(p.scheme || "http")}${(p.scheme === "https") ? ' <span style="font-size:10px;color:var(--text-muted)">(HTTPS upstream)</span>' : ''}</div></div>
       <div class="detail-field"><div class="detail-label">Stop Command</div>

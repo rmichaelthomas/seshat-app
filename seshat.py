@@ -104,7 +104,15 @@ def build_project_view(project: dict, scan: dict, state: dict) -> dict:
         status    = "running"
         proc_data = {"pid": managed_pid}
 
-    view = {**project, "status": status, **proc_data}
+    # Detect secondary ports held by child processes (e.g. backend alongside Vite)
+    child_ports = []
+    if managed_pid and status == "running":
+        owned_pids = runner.child_pids(managed_pid) | {managed_pid}
+        for scan_port, scan_info in scan.items():
+            if scan_port != port and scan_info["pid"] in owned_pids:
+                child_ports.append(scan_port)
+
+    view = {**project, "status": status, **proc_data, "child_ports": sorted(child_ports)}
 
     # Attach most recent error from logs
     recent_error = runner.find_recent_error(name)

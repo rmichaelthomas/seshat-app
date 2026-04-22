@@ -120,20 +120,38 @@ class Runner:
         log_file.close()   # parent closes; child keeps writing
         return proc.pid
 
+    def child_pids(self, managed_pid: int) -> set[int]:
+        """Return the set of PIDs for all descendants of managed_pid."""
+        try:
+            return {c.pid for c in psutil.Process(managed_pid).children(recursive=True)}
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return set()
+
     def stop(self, pid: int) -> None:
         """Gracefully stop a process and its children."""
+        # Snapshot children before killing — they disappear after SIGTERM.
+        # Background jobs started with & may land in a separate process group
+        # even in non-interactive shells, so we kill them explicitly as a
+        # safety net after the PGID kill.
+        try:
+            children = psutil.Process(pid).children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            children = []
+
         try:
             pgid = os.getpgid(pid)
             os.killpg(pgid, signal.SIGTERM)
-            return
         except (ProcessLookupError, PermissionError):
             pass
         except Exception:
             pass
-        try:
-            psutil.Process(pid).terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+
+        # Belt-and-suspenders: terminate parent and any surviving children
+        for proc in [psutil.Process(pid), *children]:
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
     def is_running(self, pid: int) -> bool:
         """Return True if the process is alive and not a zombie."""
