@@ -227,39 +227,51 @@ class GitHubImporter:
             page += 1
         return repos
 
+    def fetch_repo(self, full_name: str) -> dict:
+        """Fetch a single repo's metadata."""
+        data = self._get(f"/repos/{full_name}")
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict from GitHub API, got {type(data).__name__}")
+        return data
+
+    def _build_scan_result(self, repo: dict, registered_names: set[str]) -> dict:
+        """Build a single scan-result dict from a GitHub repo record."""
+        name       = repo["name"]
+        full_name  = repo["full_name"]
+        clone_url  = repo["clone_url"]
+        readme     = self.fetch_readme(full_name)
+        extracted  = self._extract_fields(readme) if readme else {"port": None, "start": None, "start_all": [], "notes": None}
+        local_path = self.detect_local_path(name, clone_url)
+        tags = list({(repo.get("language") or "").lower()} | set(repo.get("topics") or []))
+        tags = [t for t in tags if t]
+        description = repo.get("description") or ""
+        notes = extracted["notes"] or description or ""
+        return {
+            "name":        name,
+            "full_name":   full_name,
+            "clone_url":   clone_url,
+            "local_path":  local_path,
+            "port":        extracted["port"],
+            "start":       " & ".join(extracted["start_all"]) if len(extracted["start_all"]) > 1 else extracted["start"],
+            "start_all":   extracted["start_all"],
+            "tags":        sorted(tags),
+            "notes":       notes[:300],
+            "is_fork":     repo.get("fork", False),
+            "pushed_at":   repo.get("pushed_at", ""),
+            "registered":  name.lower() in {n.lower() for n in registered_names}
+                           or (local_path is not None and local_path.lower() in
+                               {n.lower() for n in registered_names}),
+        }
+
+    def scan_one(self, full_name: str) -> dict:
+        """Re-scan a single repo by full_name (e.g. 'owner/repo')."""
+        repo = self.fetch_repo(full_name)
+        return self._build_scan_result(repo, registered_names=set())
+
     def scan(self, registered_names: set[str] | None = None) -> list[dict]:
         """
         Fetch all owned repos, detect local paths, extract metadata.
         Returns a list of dicts ready for the frontend import table.
         """
         registered_names = registered_names or set()
-        repos = self.fetch_repos()
-        results = []
-        for repo in repos:
-            name       = repo["name"]
-            full_name  = repo["full_name"]
-            clone_url  = repo["clone_url"]
-            readme     = self.fetch_readme(full_name)
-            extracted  = self._extract_fields(readme) if readme else {"port": None, "start": None, "start_all": [], "notes": None}
-            local_path = self.detect_local_path(name, clone_url)
-            tags = list({(repo.get("language") or "").lower()} | set(repo.get("topics") or []))
-            tags = [t for t in tags if t]  # remove empty strings
-            description = repo.get("description") or ""
-            notes = extracted["notes"] or description or ""
-            results.append({
-                "name":        name,
-                "full_name":   full_name,
-                "clone_url":   clone_url,
-                "local_path":  local_path,
-                "port":        extracted["port"],
-                "start":       " & ".join(extracted["start_all"]) if len(extracted["start_all"]) > 1 else extracted["start"],
-                "start_all":   extracted["start_all"],
-                "tags":        sorted(tags),
-                "notes":       notes[:300],
-                "is_fork":     repo.get("fork", False),
-                "pushed_at":   repo.get("pushed_at", ""),
-                "registered":  name.lower() in {n.lower() for n in registered_names}
-                               or (local_path is not None and local_path.lower() in
-                                   {n.lower() for n in registered_names}),
-            })
-        return results
+        return [self._build_scan_result(r, registered_names) for r in self.fetch_repos()]

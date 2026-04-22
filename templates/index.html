@@ -17,6 +17,7 @@
       <span class="subtitle">Local Registry</span>
     </div>
     <div class="header-right">
+      <button class="btn btn-ghost" onclick="openPortsModal()" title="All listening ports">⚡ Ports</button>
       <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
       <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
       <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
@@ -515,6 +516,40 @@
       <button class="btn btn-primary" id="githubImportBtn" onclick="importSelectedRepos()" style="display:none">
         Import Selected
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Ports Modal ──────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="portsOverlay" style="display:none">
+  <div class="modal" style="max-width:900px;width:90vw">
+    <div class="modal-header">
+      <h2>Listening Ports</h2>
+      <button class="icon-btn" onclick="closePortsModal()">✕</button>
+    </div>
+    <div style="padding:0 20px 12px;display:flex;gap:8px;align-items:center">
+      <input type="text" class="form-control" id="portsSearch"
+             placeholder="Filter by port, name, or cmdline…" style="flex:1"
+             oninput="renderPortsTable()">
+      <button class="btn btn-ghost btn-sm" onclick="loadPorts()">↺ Refresh</button>
+    </div>
+    <div id="portsBanner" style="display:none;padding:8px 20px;color:var(--error,#e53935);font-size:12px"></div>
+    <div style="max-height:60vh;overflow:auto;padding:0 20px 20px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="text-align:left;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px">
+            <th style="padding:6px 4px">Port</th>
+            <th style="padding:6px 4px">Kind</th>
+            <th style="padding:6px 4px">Process</th>
+            <th style="padding:6px 4px">PID</th>
+            <th style="padding:6px 4px">Command</th>
+            <th style="padding:6px 4px;text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="portsRows">
+          <tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Loading…</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </div>

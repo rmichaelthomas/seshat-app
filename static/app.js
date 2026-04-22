@@ -668,7 +668,9 @@ function updateDetailPanel(name) {
     <div class="conflict-message">
       ⚠ Port ${p.port} is in use by <code>${esc(p.process_name||"unknown")}</code>
       (PID ${p.pid||"?"})${p.process_cmd ? ` — ${esc(p.process_cmd.slice(0,80))}` : ""}.
-      Stop that process or reassign this project's port.
+      <div style="margin-top:8px">
+        <button class="detail-btn danger" onclick="stopOrphan(${p.port})">Kill Process on :${p.port}</button>
+      </div>
     </div>` : "";
   const errorBlock = hasError ? renderErrorBlock(p.recent_error) : "";
   const pidBlock = (p.pid&&isRunning) ? `
@@ -705,6 +707,8 @@ function updateDetailPanel(name) {
         <div class="detail-value mono" id="cfg-start">${esc(p.start)}</div></div>
       <div class="detail-field"><div class="detail-label">Port</div>
         <div class="detail-value mono" id="cfg-port">${p.port}</div></div>
+      <div class="detail-field"><div class="detail-label">Scheme</div>
+        <div class="detail-value mono" id="cfg-scheme">${esc(p.scheme || "http")}${(p.scheme === "https") ? ' <span style="font-size:10px;color:var(--text-muted)">(HTTPS upstream)</span>' : ''}</div></div>
       <div class="detail-field"><div class="detail-label">Stop Command</div>
         <div class="detail-value mono" id="cfg-stop">${esc(p.stop || "")}</div></div>
       <div class="detail-field"><div class="detail-label">URL</div>
@@ -731,6 +735,7 @@ function updateDetailPanel(name) {
       </div>
       <div class="log-viewer" id="logViewer"><div class="log-empty">Loading…</div></div>
     </div>
+    ${renderSourceSection(p, safeN)}
     <div class="detail-section">
       <div class="detail-section-title">Danger Zone</div>
       <button class="detail-btn danger" onclick="removeProject('${safeN}')">Remove from Registry</button>
@@ -754,6 +759,7 @@ function toggleConfigEdit(projectName) {
     directory: p.directory,
     start: p.start,
     port: p.port,
+    scheme: p.scheme || "http",
     stop: p.stop || "",
     url: p.url || "",
     tags: (p.tags || []).join(", "),
@@ -765,6 +771,8 @@ function toggleConfigEdit(projectName) {
   $("cfg-directory").innerHTML = `<input class="config-edit-input" id="cfg-input-directory" value="${esc(p.directory)}" spellcheck="false">`;
   $("cfg-start").innerHTML     = `<input class="config-edit-input" id="cfg-input-start" value="${esc(p.start)}" spellcheck="false">`;
   $("cfg-port").innerHTML      = `<input class="config-edit-input config-edit-port" id="cfg-input-port" type="number" value="${p.port}" min="1" max="65535">`;
+  const curScheme = p.scheme || "http";
+  $("cfg-scheme").innerHTML    = `<select class="config-edit-input" id="cfg-input-scheme" style="width:auto"><option value="http"${curScheme==="http"?" selected":""}>http</option><option value="https"${curScheme==="https"?" selected":""}>https</option></select>`;
   $("cfg-stop").innerHTML      = `<input class="config-edit-input" id="cfg-input-stop" value="${esc(p.stop || "")}" spellcheck="false" placeholder="Optional stop command">`;
   $("cfg-url").innerHTML       = `<input class="config-edit-input" id="cfg-input-url" value="${esc(p.url || "")}" spellcheck="false" placeholder="http://localhost:${p.port}">`;
   $("cfg-tags").innerHTML      = `<input class="config-edit-input" id="cfg-input-tags" value="${esc((p.tags||[]).join(", "))}" spellcheck="false" placeholder="Comma-separated tags">`;
@@ -778,7 +786,7 @@ function toggleConfigEdit(projectName) {
 
   // Toggle dirty indicator on Save button when inputs change
   const cfgInputs = [
-    $("cfg-input-directory"), $("cfg-input-start"), $("cfg-input-port"),
+    $("cfg-input-directory"), $("cfg-input-start"), $("cfg-input-port"), $("cfg-input-scheme"),
     $("cfg-input-stop"), $("cfg-input-url"), $("cfg-input-tags"), $("cfg-input-notes"),
   ];
   cfgInputs.forEach(el => {
@@ -798,15 +806,25 @@ async function saveConfig(projectName) {
     directory: $("cfg-input-directory")?.value.trim(),
     start:     $("cfg-input-start")?.value.trim(),
     port:      parseInt($("cfg-input-port")?.value, 10) || p.port,
+    scheme:    $("cfg-input-scheme")?.value || "http",
     stop:      $("cfg-input-stop")?.value.trim() || "",
     url:       $("cfg-input-url")?.value.trim() || "",
     tags:      ($("cfg-input-tags")?.value || "").split(",").map(t => t.trim()).filter(Boolean),
     notes:     $("cfg-input-notes")?.value.trim() || "",
   };
 
+  const origScheme = p.scheme || "http";
+  const schemeChanged = fields.scheme !== origScheme;
+  const defaultUrl = (s, port) => `${s}://localhost:${port}`;
+  // If URL still matches the default derived from the old scheme, auto-update to new scheme
+  if (schemeChanged && (fields.url === "" || fields.url === defaultUrl(origScheme, p.port))) {
+    fields.url = defaultUrl(fields.scheme, fields.port);
+  }
+
   if (fields.directory !== p.directory)              updates.directory = fields.directory;
   if (fields.start     !== p.start)                  updates.start     = fields.start;
   if (fields.port      !== p.port)                   updates.port      = fields.port;
+  if (schemeChanged)                                 updates.scheme    = fields.scheme;
   if (fields.stop      !== (p.stop || ""))           updates.stop      = fields.stop;
   if (fields.url       !== (p.url || ""))            updates.url       = fields.url;
   if (JSON.stringify(fields.tags) !== JSON.stringify(p.tags || [])) updates.tags = fields.tags;
@@ -844,6 +862,7 @@ function _isConfigDirty() {
     directory: $("cfg-input-directory")?.value.trim() ?? "",
     start:     $("cfg-input-start")?.value.trim() ?? "",
     port:      parseInt($("cfg-input-port")?.value, 10) || 0,
+    scheme:    $("cfg-input-scheme")?.value ?? "http",
     stop:      $("cfg-input-stop")?.value.trim() ?? "",
     url:       $("cfg-input-url")?.value.trim() ?? "",
     tags:      $("cfg-input-tags")?.value.trim() ?? "",
@@ -852,6 +871,7 @@ function _isConfigDirty() {
   return orig.directory !== cur.directory
       || orig.start     !== cur.start
       || String(orig.port) !== String(cur.port)
+      || orig.scheme    !== cur.scheme
       || orig.stop      !== cur.stop
       || orig.url       !== cur.url
       || orig.tags      !== cur.tags
@@ -931,6 +951,58 @@ function renderDependencies(deps, depStatus, name) {
       ${hint}
       <div class="dep-list">${rows}</div>
     </div>`;
+}
+
+function renderSourceSection(p, safeN) {
+  const src = p.source;
+  if (src && src.type === "github" && src.full_name) {
+    const ghUrl = `https://github.com/${src.full_name}`;
+    return `
+      <div class="detail-section">
+        <div class="detail-section-header">
+          <div class="detail-section-title" style="margin:0;border:none;padding:0">GitHub Source</div>
+          <button class="detail-section-action" onclick="refreshProjectSource('${safeN}')">↻ Refresh</button>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Repository</div>
+          <div class="detail-value mono"><a href="${esc(ghUrl)}" target="_blank">${esc(src.full_name)}</a></div>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">GitHub Source</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Not linked. Link this project to a GitHub repo to enable metadata refresh.</div>
+      <button class="detail-btn" onclick="linkProjectSource('${safeN}')">Link to GitHub…</button>
+    </div>`;
+}
+
+async function refreshProjectSource(name) {
+  const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/refresh`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error || "Refresh failed", "error"); return; }
+  const changed = data.changed || [];
+  if (!changed.length) {
+    toast("No changes — README metadata matches current values", "success");
+  } else {
+    toast(`Updated: ${changed.join(", ")}`, "success");
+  }
+  await refresh();
+}
+
+async function linkProjectSource(name) {
+  const full_name = (prompt("GitHub repo (owner/repo):") || "").trim();
+  if (!full_name) return;
+  if (!full_name.includes("/")) { toast("Expected format: owner/repo", "error"); return; }
+  const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/link`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ full_name }),
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error || "Link failed", "error"); return; }
+  toast(`Linked to ${full_name}`, "success");
+  await refresh();
 }
 
 async function closeDetail() {
@@ -1499,6 +1571,100 @@ async function removeProject(name) {
     closeDetail();
     await refresh();
   } catch (e) { toast(e.message, "error"); }
+}
+
+// ── Ports modal ────────────────────────────────────────────────────────────
+
+let _listeners = [];
+
+async function openPortsModal() {
+  $("portsOverlay").style.display = "flex";
+  await loadPorts();
+}
+
+function closePortsModal() {
+  $("portsOverlay").style.display = "none";
+}
+
+async function loadPorts() {
+  $("portsBanner").style.display = "none";
+  try {
+    const res  = await fetch("/api/listeners");
+    const data = await res.json();
+    if (!res.ok) {
+      _listeners = [];
+      $("portsBanner").textContent   = data.error || "Could not load listeners.";
+      $("portsBanner").style.display = "block";
+    } else {
+      _listeners = data;
+    }
+    renderPortsTable();
+  } catch (e) {
+    $("portsBanner").textContent   = "Network error: " + e.message;
+    $("portsBanner").style.display = "block";
+  }
+}
+
+function renderPortsTable() {
+  const q = ($("portsSearch").value || "").trim().toLowerCase();
+  const filtered = _listeners.filter(l => {
+    if (!q) return true;
+    return String(l.port).includes(q)
+        || (l.name || "").toLowerCase().includes(q)
+        || (l.cmdline || "").toLowerCase().includes(q)
+        || (l.project_name || "").toLowerCase().includes(q);
+  });
+  const body = $("portsRows");
+  if (!filtered.length) {
+    body.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">No listeners${q ? " match filter" : ""}</td></tr>`;
+    return;
+  }
+  const kindStyle = {
+    seshat:   "color:#7aa9ff",
+    project:  "color:#4caf50",
+    conflict: "color:#e53935",
+    orphan:   "color:#ff9800",
+  };
+  const kindLabel = {
+    seshat:   "seshat",
+    project:  "project",
+    conflict: "conflict",
+    orphan:   "orphan",
+  };
+  body.innerHTML = filtered.map(l => {
+    const nameCell = l.project_name
+      ? `${esc(l.project_name)}<div style="font-size:11px;color:var(--text-muted)">${esc(l.name||"")}</div>`
+      : esc(l.name || "—");
+    const disableKill = l.kind === "seshat";
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 4px;font-family:var(--mono,monospace)"><strong>:${l.port}</strong></td>
+      <td style="padding:8px 4px;font-size:11px;${kindStyle[l.kind]||""}">${kindLabel[l.kind]||l.kind}</td>
+      <td style="padding:8px 4px">${nameCell}</td>
+      <td style="padding:8px 4px;font-family:var(--mono,monospace);font-size:12px">${l.pid}</td>
+      <td style="padding:8px 4px;font-size:12px;color:var(--text-muted);max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.cmdline||"")}">${esc((l.cmdline||"").slice(0,120))}</td>
+      <td style="padding:8px 4px;text-align:right">
+        <button class="detail-btn danger" style="padding:3px 10px;font-size:12px" ${disableKill ? "disabled title=\"Refusing to kill Seshat itself\"" : ""} onclick="killListener(${l.port})">Kill</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function killListener(port) {
+  const entry = _listeners.find(l => l.port === port);
+  const label = entry?.project_name ? `${entry.project_name} (:${port})` : `port :${port}`;
+  const yes = await confirmAction({
+    title:       "Kill process?",
+    message:     `This will terminate the process on ${label}.`,
+    confirmText: "Kill",
+    danger:      true,
+  });
+  if (!yes) return;
+  const res  = await fetch(`/api/listeners/${port}/stop`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error || "Kill failed", "error"); return; }
+  toast(`Killed process on :${port}`, "success");
+  await loadPorts();
+  await refresh();
 }
 
 async function stopOrphan(port) {
@@ -2147,8 +2313,11 @@ async function runGitHubScan() {
       $("githubImportLoading").style.display = "none";
       return;
     }
-    _githubScanResults = data;
-    renderGitHubTable(data);
+    _githubScanResults = data.map(r => ({
+      ...r,
+      _scraped: { port: r.port, start: r.start, notes: r.notes, tags: [...(r.tags||[])] },
+    }));
+    renderGitHubTable(_githubScanResults);
   } catch (e) {
     $("githubImportBanner").textContent    = "Network error: " + e.message;
     $("githubImportBanner").style.display  = "block";
@@ -2238,6 +2407,11 @@ async function importSelectedRepos() {
           start:     r.start,
           tags,
           notes:     r.notes || "",
+          source: r.full_name ? {
+            type:      "github",
+            full_name: r.full_name,
+            scraped:   r._scraped || { port: r.port, start: r.start, notes: r.notes, tags: r.tags },
+          } : undefined,
         }),
       });
       const data = await res.json();

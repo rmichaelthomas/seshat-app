@@ -119,6 +119,24 @@ class Runner:
         except psutil.NoSuchProcess:
             return False
 
+    def owns_pid(self, managed_pid: int, other_pid: int) -> bool:
+        """Return True if `other_pid` is `managed_pid` or one of its descendants.
+
+        Required because `shell=True` makes the managed PID a shell wrapper,
+        while the real server (npm → node, python → gunicorn, etc.) is a
+        descendant and is the one that actually binds the port.
+        """
+        if managed_pid == other_pid:
+            return True
+        try:
+            parent = psutil.Process(managed_pid)
+            for child in parent.children(recursive=True):
+                if child.pid == other_pid:
+                    return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return False
+
     # ── Logs ───────────────────────────────────────────────────────────────
 
     def log_path(self, project_name: str) -> Path:

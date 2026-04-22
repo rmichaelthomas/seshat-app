@@ -22,6 +22,7 @@ from local_scanner import LocalScanner
 import deps as deps_module
 
 app = Flask(__name__)
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 registry = Registry()
 scanner  = Scanner()
@@ -90,7 +91,7 @@ def build_project_view(project: dict, scan: dict, state: dict) -> dict:
 
     if port_info:
         pid_on_port = port_info["pid"]
-        if managed_pid and pid_on_port == managed_pid and runner.is_running(managed_pid):
+        if managed_pid and runner.is_running(managed_pid) and runner.owns_pid(managed_pid, pid_on_port):
             status = "running"
         else:
             status = "conflict"
@@ -150,19 +151,30 @@ def add_project():
         if not data.get(field):
             return jsonify({"error": f"Missing required field: {field}"}), 400
 
-    port    = int(data["port"])
+    port   = int(data["port"])
+    scheme = (data.get("scheme") or "http").lower()
+    if scheme not in ("http", "https"):
+        return jsonify({"error": "scheme must be 'http' or 'https'"}), 400
     project = {
         "name":         data["name"].strip(),
         "port":         port,
+        "scheme":       scheme,
         "directory":    data["directory"].strip(),
         "start":        data["start"].strip(),
         "stop":         data.get("stop", "").strip(),
-        "url":          data.get("url") or f"http://localhost:{port}",
+        "url":          data.get("url") or f"{scheme}://localhost:{port}",
         "tags":         data.get("tags") or [],
         "notes":        data.get("notes", "").strip(),
         "dependencies": data.get("dependencies") or [],
         "env":          data.get("env") or [],
     }
+    source = data.get("source")
+    if isinstance(source, dict) and source.get("type") == "github" and source.get("full_name"):
+        project["source"] = {
+            "type":      "github",
+            "full_name": source["full_name"],
+            "scraped":   source.get("scraped") or {},
+        }
     try:
         result = registry.add(project)
     except ValueError as e:
@@ -177,10 +189,21 @@ def add_project():
 @app.route("/api/projects/<name>", methods=["PUT"])
 def update_project(name):
     data = request.json or {}
+    if "scheme" in data:
+        scheme = (data.get("scheme") or "http").lower()
+        if scheme not in ("http", "https"):
+            return jsonify({"error": "scheme must be 'http' or 'https'"}), 400
+        data["scheme"] = scheme
     try:
-        return jsonify(registry.update(name, data))
+        result = registry.update(name, data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    if "port" in data or "scheme" in data:
+        try:
+            router._reload_caddy()
+        except Exception:
+            pass
+    return jsonify(result)
 
 
 @app.route("/api/projects/<name>", methods=["DELETE"])
@@ -294,6 +317,52 @@ def get_orphans():
         for port, info in sorted(scan.items())
         if port not in registered_ports
     ])
+
+
+@app.route("/api/listeners", methods=["GET"])
+def get_listeners():
+    """All TCP listeners on this machine, annotated by role."""
+    scan             = scanner.scan()
+    state            = registry.get_state()
+    port_to_project  = {p["port"]: p["name"] for p in registry.list()}
+    managed_pids     = {name: info.get("pid") for name, info in state.items() if info.get("pid")}
+
+    rows = []
+    for port, info in sorted(scan.items()):
+        pid = info["pid"]
+        project_name = port_to_project.get(port)
+        managed = project_name and managed_pids.get(project_name) == pid
+        if port == 9000:
+            kind = "seshat"
+        elif project_name and managed:
+            kind = "project"
+        elif project_name and not managed:
+            kind = "conflict"
+        else:
+            kind = "orphan"
+        rows.append({
+            "port":         port,
+            "pid":          pid,
+            "name":         info.get("name", ""),
+            "cmdline":      info.get("cmdline", ""),
+            "kind":         kind,
+            "project_name": project_name,
+        })
+    return jsonify(rows)
+
+
+@app.route("/api/listeners/<int:port>/stop", methods=["POST"])
+def stop_listener(port):
+    scan = scanner.scan()
+    if port not in scan:
+        return jsonify({"error": f"No process found on port {port}"}), 404
+    runner.stop(scan[port]["pid"])
+    # If this port belongs to a managed project, clear its pid from state
+    for p in registry.list():
+        if p["port"] == port:
+            registry.clear_pid(p["name"])
+            break
+    return jsonify({"ok": True})
 
 
 @app.route("/api/orphans/<int:port>/stop", methods=["POST"])
@@ -681,6 +750,96 @@ def github_save_token():
         return jsonify({"error": result["error"]}), 400
     vault.set("__github_token__", token)
     return jsonify({"ok": True, "login": result["login"]})
+
+
+_REFRESHABLE_FIELDS = ("port", "start", "notes", "tags")
+
+
+def _scraped_snapshot(scan_result: dict) -> dict:
+    return {f: scan_result.get(f) for f in _REFRESHABLE_FIELDS}
+
+
+def _merge_refresh(project: dict, new_scrape: dict) -> tuple[dict, list[str]]:
+    """Merge new scraped values into project, preserving user edits.
+
+    Returns (updates_dict, changed_field_names). A field is overwritten only if
+    the project's current value still equals the previously-scraped baseline.
+    The scraped baseline is always updated to the latest scrape.
+    """
+    source  = project.get("source") or {}
+    baseline = source.get("scraped") or {}
+    updates  = {}
+    changed  = []
+    for f in _REFRESHABLE_FIELDS:
+        new_val = new_scrape.get(f)
+        old_val = project.get(f)
+        base    = baseline.get(f)
+        if old_val == base and new_val != old_val:
+            updates[f] = new_val
+            changed.append(f)
+    new_source = {
+        **source,
+        "type":      "github",
+        "scraped":   _scraped_snapshot(new_scrape),
+    }
+    updates["source"] = new_source
+    return updates, changed
+
+
+@app.route("/api/projects/<name>/refresh", methods=["POST"])
+def refresh_project_source(name):
+    project = registry.get(name)
+    if not project:
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+    source = project.get("source") or {}
+    if source.get("type") != "github" or not source.get("full_name"):
+        return jsonify({"error": "Project is not linked to a GitHub source"}), 400
+    token = vault.get("__github_token__")
+    if not token:
+        return jsonify({"error": "GitHub token not configured"}), 400
+    try:
+        new_scrape = GitHubImporter(token).scan_one(source["full_name"])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    updates, changed = _merge_refresh(project, new_scrape)
+    try:
+        result = registry.update(name, updates)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+    if "port" in changed:
+        try:
+            router._reload_caddy()
+        except Exception:
+            pass
+    return jsonify({"ok": True, "changed": changed, "project": result})
+
+
+@app.route("/api/projects/<name>/link", methods=["POST"])
+def link_project_source(name):
+    project = registry.get(name)
+    if not project:
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+    data      = request.json or {}
+    full_name = (data.get("full_name") or "").strip()
+    if not full_name or "/" not in full_name:
+        return jsonify({"error": "full_name (owner/repo) is required"}), 400
+    token = vault.get("__github_token__")
+    if not token:
+        return jsonify({"error": "GitHub token not configured"}), 400
+    try:
+        GitHubImporter(token).fetch_repo(full_name)
+    except Exception as e:
+        return jsonify({"error": f"Could not access repo: {e}"}), 400
+    new_source = {
+        "type":      "github",
+        "full_name": full_name,
+        "scraped":   {f: project.get(f) for f in _REFRESHABLE_FIELDS},
+    }
+    try:
+        result = registry.update(name, {"source": new_source})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify({"ok": True, "project": result})
 
 
 @app.route("/api/github/scan", methods=["GET"])

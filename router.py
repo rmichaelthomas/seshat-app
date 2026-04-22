@@ -47,7 +47,7 @@ class Router:
     # ── Public hostname API ────────────────────────────────────────────────
 
     def all_hostnames(self) -> list[dict]:
-        """Return [{project_name, hostname, port}] for all registered projects."""
+        """Return [{project_name, hostname, port, scheme}] for all registered projects."""
         saved = self._load_hostnames()
         result = []
         for p in self.registry.list():
@@ -56,6 +56,7 @@ class Router:
                 "project_name": name,
                 "hostname":     saved.get(name) or _slugify(name),
                 "port":         p.get("port"),
+                "scheme":       (p.get("scheme") or "http").lower(),
             })
         return result
 
@@ -89,10 +90,32 @@ class Router:
         """Build Caddyfile content from all registered projects."""
         blocks = []
         for h in self.all_hostnames():
-            if h["port"] is not None:
-                blocks.append(
-                    f"{h['hostname']} {{\n    tls internal\n    reverse_proxy localhost:{h['port']} {{\n        header_up Host localhost:{h['port']}\n    }}\n}}"
+            if h["port"] is None:
+                continue
+            if h["scheme"] == "https":
+                # HTTPS upstream: Caddy must speak TLS to localhost and skip verification
+                # (local dev certs like vite-plugin-basic-ssl / mkcert root may not be trusted here).
+                block = (
+                    f"{h['hostname']} {{\n"
+                    f"    tls internal\n"
+                    f"    reverse_proxy https://localhost:{h['port']} {{\n"
+                    f"        transport http {{\n"
+                    f"            tls_insecure_skip_verify\n"
+                    f"        }}\n"
+                    f"        header_up Host localhost:{h['port']}\n"
+                    f"    }}\n"
+                    f"}}"
                 )
+            else:
+                block = (
+                    f"{h['hostname']} {{\n"
+                    f"    tls internal\n"
+                    f"    reverse_proxy localhost:{h['port']} {{\n"
+                    f"        header_up Host localhost:{h['port']}\n"
+                    f"    }}\n"
+                    f"}}"
+                )
+            blocks.append(block)
         return "\n\n".join(blocks) + ("\n" if blocks else "")
 
     def _reload_caddy(self) -> dict:
