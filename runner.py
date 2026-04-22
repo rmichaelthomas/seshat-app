@@ -50,6 +50,21 @@ _JS_FILE_RE = re.compile(r'\bat .+? \((.+?):(\d+):\d+\)')
 
 class Runner:
 
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _has_vite_invocation(directory: Path, cmd: str) -> bool:
+        """Return True if the project uses Vite and the start command invokes it.
+
+        Checks both the start command (for 'vite' or 'npm run dev') and the
+        project directory (for a vite.config.* file) so we only rewrite
+        commands for genuine Vite projects.
+        """
+        if not re.search(r"\bnpm run dev\b|\bvite\b", cmd):
+            return False
+        vite_config_names = ("vite.config.js", "vite.config.ts", "vite.config.mjs", "vite.config.cjs")
+        return any((directory / name).exists() for name in vite_config_names)
+
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def start(self, project: dict, extra_env: dict | None = None) -> int:
@@ -68,24 +83,33 @@ class Runner:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{project['name']}.log"
 
+        # Build environment: inherit OS env, force unbuffered Python output,
+        # inject the Seshat-configured port, then layer in vault secrets.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        start_cmd = project["start"]
+        if project.get("port"):
+            port = project["port"]
+            if self._has_vite_invocation(directory, start_cmd):
+                # Vite projects: pass port via CLI flag so Vite (the user-facing
+                # process Caddy proxies to) owns the configured port. The backend
+                # process falls back to its own default port rather than competing.
+                start_cmd = re.sub(r"\bnpm run dev\b", f"npm run dev -- --port {port}", start_cmd)
+                start_cmd = re.sub(r"(?<!\w)vite(?!\s+--port)(?!\w)", f"vite --port {port}", start_cmd)
+            else:
+                env["PORT"] = str(port)
+        if extra_env:
+            env.update(extra_env)
+
         separator = (
             f"\n--- Started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n"
-            f"cmd: {project['start']}\n"
+            f"cmd: {start_cmd}\n"
         )
         with open(log_path, "a") as f:
             f.write(separator)
 
-        # Build environment: inherit OS env, force unbuffered Python output,
-        # inject the Seshat-configured port, then layer in vault secrets.
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        if project.get("port"):
-            env["PORT"] = str(project["port"])
-        if extra_env:
-            env.update(extra_env)
-
         log_file = open(log_path, "a")
         proc = subprocess.Popen(
-            project["start"],
+            start_cmd,
             shell=True,
             cwd=directory,
             stdout=log_file,
