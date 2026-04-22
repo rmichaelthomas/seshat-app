@@ -164,18 +164,28 @@ class Runner:
     def owns_pid(self, managed_pid: int, other_pid: int) -> bool:
         """Return True if `other_pid` is `managed_pid` or one of its descendants.
 
-        Required because `shell=True` makes the managed PID a shell wrapper,
-        while the real server (npm → node, python → gunicorn, etc.) is a
-        descendant and is the one that actually binds the port.
+        Uses two strategies:
+        1. Process-tree traversal (top-down from managed_pid).
+        2. Session ID comparison — with start_new_session=True the shell's PID
+           becomes the session ID (SID) for the entire spawned process group.
+           Every child inherits that SID even if the shell has exec'd away or
+           children have been reparented to init, so this stays reliable when
+           the tree traversal loses the trail.
         """
         if managed_pid == other_pid:
             return True
+        # Strategy 1: tree traversal
         try:
-            parent = psutil.Process(managed_pid)
-            for child in parent.children(recursive=True):
+            for child in psutil.Process(managed_pid).children(recursive=True):
                 if child.pid == other_pid:
                     return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        # Strategy 2: session ID (always equals the original shell PID)
+        try:
+            if os.getsid(other_pid) == managed_pid:
+                return True
+        except (ProcessLookupError, PermissionError, OSError):
             pass
         return False
 
