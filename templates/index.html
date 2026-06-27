@@ -20,6 +20,7 @@
       <button class="btn btn-ghost" onclick="openPortsModal()" title="All listening ports">⚡ Ports</button>
       <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
       <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
+      <button class="btn btn-ghost btn-receipts" id="receiptsBtn" title="Machine Action Receipts">⧫ Receipts</button>
       <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
       <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
@@ -168,6 +169,13 @@
       <div id="vaultView" style="display:none">
         <div id="vaultContent">
           <div class="empty-state"><div class="empty-state-title">Loading vault…</div></div>
+        </div>
+      </div>
+
+      <!-- ── Receipts view ────────────────────────────────────────────────── -->
+      <div id="receiptsView" style="display:none">
+        <div id="receiptsContent">
+          <div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>
         </div>
       </div>
 
