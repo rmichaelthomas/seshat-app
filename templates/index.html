@@ -18,9 +18,6 @@
     </div>
     <div class="header-right">
       <button class="btn btn-ghost" onclick="openPortsModal()" title="All listening ports">⚡ Ports</button>
-      <button class="btn btn-ghost btn-organize" id="organizeBtn" title="Folder Organization">⌂ Organize</button>
-      <button class="btn btn-ghost btn-vault" id="vaultBtn" title="Secrets Vault">⚿ Vault</button>
-      <button class="btn btn-ghost btn-receipts" id="receiptsBtn" title="Machine Action Receipts">⧫ Receipts</button>
       <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
       <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
@@ -30,10 +27,16 @@
   <!-- ── Router setup banner ─────────────────────────────────────────── -->
   <div id="routerBanner" class="router-banner" style="display:none">
     <span>Local hostnames not configured — projects could be reachable at
-      <code>vault.seshat</code> and friends.</span>
+      <code>vault.seshat</code> and other projects.</span>
     <button class="router-banner-btn" onclick="openSetupModal()">Set Up</button>
     <button class="router-banner-btn router-banner-restart" id="routerRestartBtn"
             style="display:none" onclick="restartRouterServices()">Restart Services</button>
+  </div>
+
+  <!-- ── Stale data banner ──────────────────────────────────────────── -->
+  <div id="staleBanner" class="stale-banner" style="display:none">
+    <span>Connection lost — displayed data may be stale.</span>
+    <button class="stale-banner-btn" onclick="refresh()">Retry now</button>
   </div>
 
   <!-- Body -->
@@ -41,7 +44,7 @@
 
     <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="sidebar-label">View</div>
+      <div class="sidebar-label">Status</div>
 
       <button class="filter-btn active" data-filter="all">
         <span class="filter-left"><span class="filter-dot"></span>All Projects</span>
@@ -72,6 +75,28 @@
       </div>
       <div id="groupList"><!-- rendered by JS --></div>
 
+      <!-- Navigate -->
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-label">Navigate</div>
+      <button class="filter-btn" id="vaultBtn">
+        <span class="filter-left">
+          <span class="sidebar-nav-glyph" style="color:var(--blue)">⚿</span>
+          Vault
+        </span>
+      </button>
+      <button class="filter-btn" id="organizeBtn">
+        <span class="filter-left">
+          <span class="sidebar-nav-glyph" style="color:var(--text-muted)">⌂</span>
+          Organize
+        </span>
+      </button>
+      <button class="filter-btn" id="receiptsBtn">
+        <span class="filter-left">
+          <span class="sidebar-nav-glyph" style="color:#a855f7">⧫</span>
+          Receipts
+        </span>
+      </button>
+
     </aside>
 
     <!-- Main area (projects view OR vault view) -->
@@ -86,12 +111,15 @@
             <span class="search-icon">⌕</span>
             <input type="text" class="search-input" id="searchInput"
                    placeholder="Search projects…" spellcheck="false">
-            <button class="search-clear" id="searchClear" style="display:none">✕</button>
+            <button class="search-clear" id="searchClear" style="display:none" aria-label="Clear search">✕</button>
+            <span class="search-shortcut" id="searchShortcut">/</span>
           </div>
           <div class="sort-control" id="sortControl">
             <span class="sort-label">Sort:</span>
-            <button class="sort-field-btn" id="sortFieldBtn" onclick="cycleSortField()">Name</button>
-            <button class="sort-dir-btn" id="sortDirBtn" onclick="toggleSortDir()">↑</button>
+            <button class="sort-field-btn" id="sortFieldBtn" onclick="cycleSortField()"
+                    title="Click to cycle: Name → Status → Port">Name</button>
+            <button class="sort-dir-btn" id="sortDirBtn" onclick="toggleSortDir()"
+                    title="Toggle sort direction">↑</button>
           </div>
         </div>
         <div class="shelf-header">
@@ -198,7 +226,7 @@
   <div class="modal">
     <div class="modal-header">
       <h2>Register Project</h2>
-      <button class="icon-btn" id="modalClose">✕</button>
+      <button class="icon-btn" id="modalClose" aria-label="Close">✕</button>
     </div>
     <form id="addProjectForm" autocomplete="off">
       <div class="form-group">
@@ -245,7 +273,7 @@
   <div class="modal">
     <div class="modal-header">
       <h2>New Group</h2>
-      <button class="icon-btn" id="groupModalClose">✕</button>
+      <button class="icon-btn" id="groupModalClose" aria-label="Close">✕</button>
     </div>
     <form id="addGroupForm" autocomplete="off">
       <div class="form-group">
@@ -272,7 +300,7 @@
   <div class="modal" style="width:420px">
     <div class="modal-header">
       <h2 id="vaultKeyModalTitle">Add Key</h2>
-      <button class="icon-btn" id="vaultKeyModalClose">✕</button>
+      <button class="icon-btn" id="vaultKeyModalClose" aria-label="Close">✕</button>
     </div>
     <form id="vaultKeyForm" autocomplete="off">
       <input type="hidden" name="mode" value="shared">
@@ -310,12 +338,25 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- ── Input prompt dialog ──────────────────────────────────────────────── -->
+<div class="confirm-overlay" id="promptOverlay">
+  <div class="confirm-dialog">
+    <div class="confirm-title" id="promptTitle"></div>
+    <div class="confirm-message" id="promptHint" style="margin-bottom:10px"></div>
+    <input type="text" class="prompt-input" id="promptInput" spellcheck="false">
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="promptCancel">Cancel</button>
+      <button class="btn btn-primary" id="promptOk">OK</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Router setup modal ──────────────────────────────────────────── -->
 <div class="modal-overlay" id="routerModalOverlay" style="display:none">
   <div class="modal router-modal">
     <div class="modal-header">
       <h2>Set Up Local Hostnames</h2>
-      <button class="icon-btn" onclick="closeSetupModal()">✕</button>
+      <button class="icon-btn" onclick="closeSetupModal()" aria-label="Close">✕</button>
     </div>
 
     <p class="router-modal-intro">
@@ -407,7 +448,7 @@
   <div class="modal" style="max-width:800px;width:95vw;max-height:90vh;display:flex;flex-direction:column">
     <div class="modal-header" style="flex-shrink:0">
       <h2>Discover Local Projects</h2>
-      <button class="icon-btn" onclick="closeDiscover()">✕</button>
+      <button class="icon-btn" onclick="closeDiscover()" aria-label="Close">✕</button>
     </div>
 
     <div style="flex-shrink:0;padding:16px 24px 0">
@@ -469,7 +510,7 @@
   <div class="modal" style="max-width:480px">
     <div class="modal-header">
       <h2>Connect GitHub</h2>
-      <button class="icon-btn" onclick="closeGitHubTokenModal()">✕</button>
+      <button class="icon-btn" onclick="closeGitHubTokenModal()" aria-label="Close">✕</button>
     </div>
     <div style="padding:0 24px 24px">
       <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px">
@@ -495,7 +536,7 @@
   <div class="modal" style="max-width:900px;width:95vw;max-height:90vh;display:flex;flex-direction:column">
     <div class="modal-header" style="flex-shrink:0">
       <h2>Import from GitHub</h2>
-      <button class="icon-btn" onclick="closeGitHubImportModal()">✕</button>
+      <button class="icon-btn" onclick="closeGitHubImportModal()" aria-label="Close">✕</button>
     </div>
     <div id="githubImportBanner" class="form-error" style="display:none;margin:0 24px 8px"></div>
     <div id="githubImportBody" style="flex:1;overflow-y:auto;padding:0 24px 8px">
@@ -533,7 +574,7 @@
   <div class="modal" style="max-width:900px;width:90vw">
     <div class="modal-header">
       <h2>Listening Ports</h2>
-      <button class="icon-btn" onclick="closePortsModal()">✕</button>
+      <button class="icon-btn" onclick="closePortsModal()" aria-label="Close">✕</button>
     </div>
     <div style="padding:0 20px 12px;display:flex;gap:8px;align-items:center">
       <input type="text" class="form-control" id="portsSearch"

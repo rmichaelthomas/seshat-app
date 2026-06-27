@@ -8,6 +8,7 @@ let selectedName = null;
 let activeView   = "projects";   // "projects" | "vault" | "organize" | "receipts"
 let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
+let _refreshFailCount = 0;
 
 const uiState = {
   searchQuery: "",
@@ -64,6 +65,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initGroupModal();
   initVaultKeyModal();
   initKeyboard();
+  initSearchHint();
   $("vaultBtn").addEventListener("click", toggleVaultView);
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
   $("receiptsBtn").addEventListener("click", toggleReceiptsView);
@@ -88,6 +90,9 @@ async function refresh() {
     groups    = await groupRes.json();
     hostnames = await hostnamesRes.json();
 
+    _refreshFailCount = 0;
+    hideStaleBanner();
+
     if (activeView === "projects") {
       render();
       if (selectedName && !uiState.editingConfig) updateDetailPanel(selectedName);
@@ -95,7 +100,24 @@ async function refresh() {
       renderGroups();
       renderCounts();
     }
-  } catch (_) { /* server may be restarting */ }
+  } catch (_) {
+    _refreshFailCount++;
+    if (_refreshFailCount >= 2) showStaleBanner();
+  }
+}
+
+function showStaleBanner() {
+  const b = $("staleBanner");
+  if (b) b.style.display = "flex";
+  const shelf = $("projectShelf");
+  if (shelf) shelf.style.opacity = "0.5";
+}
+
+function hideStaleBanner() {
+  const b = $("staleBanner");
+  if (b) b.style.display = "none";
+  const shelf = $("projectShelf");
+  if (shelf) shelf.style.opacity = "";
 }
 
 // ── View switching ─────────────────────────────────────────────────────────
@@ -452,11 +474,13 @@ function updateStepStatus(stepId, ok, running = false) {
   const el   = $(`step-${stepId}-status`);
   const body = $(`step-${stepId}-body`);
   if (running) {
-    el.textContent = "⏳";
+    el.textContent = "·";
+    el.style.color = "var(--text-muted)";
     if (body) body.style.display = "none";
     return;
   }
-  el.textContent = ok ? "✅" : "❌";
+  el.textContent = ok ? "✓" : "✗";
+  el.style.color = ok ? "var(--green)" : "var(--red)";
   if (body) body.style.display = ok ? "none" : "";
 }
 
@@ -1162,7 +1186,11 @@ async function refreshProjectSource(name) {
 }
 
 async function linkProjectSource(name) {
-  const full_name = (prompt("GitHub repo (owner/repo):") || "").trim();
+  const full_name = await promptAction({
+    title: "Link to GitHub",
+    hint: "Format: owner/repo",
+    placeholder: "e.g. acme/my-project",
+  });
   if (!full_name) return;
   if (!full_name.includes("/")) { toast("Expected format: owner/repo", "error"); return; }
   const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/link`, {
@@ -2193,10 +2221,12 @@ async function moveSingle(projectName, btn) {
   // Check if project is running
   const p = projects.find(x => x.name === projectName);
   if (p && p.status === "running") {
-    if (!confirm(
-      `"${projectName}" is currently running. Moving it won't affect the running process, ` +
-      `but the next start will use the new location.\n\nContinue?`
-    )) return;
+    const yes = await confirmAction({
+      title: `"${projectName}" is running`,
+      message: "Moving it won't affect the running process, but the next start will use the new location.",
+      confirmText: "Continue",
+    });
+    if (!yes) return;
   }
 
   btn.disabled = true;
@@ -2249,11 +2279,12 @@ async function moveAll() {
     .map(m => m.project);
 
   if (runningNames.length > 0) {
-    if (!confirm(
-      `${runningNames.length} project${runningNames.length > 1 ? "s are" : " is"} currently running: ` +
-      `${runningNames.join(", ")}.\n\n` +
-      `Moving them won't affect running processes, but the next start will use the new locations.\n\nContinue?`
-    )) return;
+    const yes = await confirmAction({
+      title: `${runningNames.length} project${runningNames.length > 1 ? "s" : ""} running`,
+      message: `${runningNames.join(", ")} — moving won't affect running processes, but the next start will use the new locations.`,
+      confirmText: "Continue",
+    });
+    if (!yes) return;
   }
 
   const btn = $("moveAllBtn");
@@ -2339,7 +2370,13 @@ function renderMoveHistory(moves) {
 }
 
 async function doRollback(moveId) {
-  if (!confirm("Roll back this move? The folder will be moved to its original location and the registry will be updated.")) return;
+  const yes = await confirmAction({
+    title: "Roll back this move?",
+    message: "The folder will be moved to its original location and the registry will be updated.",
+    confirmText: "Roll Back",
+    danger: true,
+  });
+  if (!yes) return;
   try {
     const res  = await fetch("/api/organize/rollback", {
       method: "POST",
@@ -2353,6 +2390,58 @@ async function doRollback(moveId) {
   } catch (e) {
     toast(`Rollback failed: ${e.message}`, "error");
   }
+}
+
+// ── Input prompt dialog ───────────────────────────────────────────────────
+
+let _promptCleanup = null;
+
+function promptAction({ title, hint = "", placeholder = "" }) {
+  return new Promise(resolve => {
+    if (_promptCleanup) { _promptCleanup(null); }
+
+    $("promptTitle").textContent = title;
+    $("promptHint").textContent  = hint;
+    const input = $("promptInput");
+    input.placeholder = placeholder;
+    input.value = "";
+
+    const overlay = $("promptOverlay");
+    overlay.classList.add("open");
+    setTimeout(() => input.focus(), 50);
+
+    const cleanup = result => {
+      _promptCleanup = null;
+      overlay.classList.remove("open");
+      $("promptOk").removeEventListener("click", onOk);
+      $("promptCancel").removeEventListener("click", onCancel);
+      input.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+
+    const onOk     = () => cleanup(input.value.trim() || null);
+    const onCancel = () => cleanup(null);
+    const onKey    = e => {
+      if (e.key === "Enter")  { e.preventDefault(); onOk(); }
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    };
+
+    _promptCleanup = cleanup;
+    $("promptOk").addEventListener("click", onOk);
+    $("promptCancel").addEventListener("click", onCancel);
+    input.addEventListener("keydown", onKey);
+  });
+}
+
+// ── Search shortcut hint ──────────────────────────────────────────────────
+
+function initSearchHint() {
+  const hint = $("searchShortcut");
+  const si   = $("searchInput");
+  if (!si || !hint) return;
+  si.addEventListener("focus", () => { hint.style.display = "none"; });
+  si.addEventListener("blur",  () => { if (!si.value) hint.style.display = ""; });
+  si.addEventListener("input", () => { hint.style.display = si.value ? "none" : ""; });
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
