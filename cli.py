@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""
+cli.py — Seshat CLI and TUI entry point.
+
+One-shot commands via Click. Interactive TUI via Textual.
+Peer entry point alongside seshat.py (Flask) and mcp_server.py (MCP).
+All surfaces share the same module layer — no Flask dependency.
+
+Usage:
+  seshat                    → launch TUI
+  seshat tui                → launch TUI (explicit)
+  seshat status             → show all projects
+  seshat start <name>       → start a project
+  seshat stop <name>        → stop a project
+  ...
+"""
+
+import json
+import os
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+from registry import Registry
+from runner import Runner
+from vault import Vault
+from scanner import Scanner
+import deps as deps_module
+
+# ── Module instances ────────────────────────────────────────────────────────
+
+registry = Registry()
+runner   = Runner()
+vault    = Vault()
+scanner  = Scanner()
+
+# ── Session identity ────────────────────────────────────────────────────────
+
+SESSION_ID = f"cli_{uuid.uuid4().hex[:12]}"
+
+# ── Receipt storage ─────────────────────────────────────────────────────────
+
+RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
+RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+console = Console()
+
+# ── Receipt helpers ─────────────────────────────────────────────────────────
+
+def _snapshot() -> dict:
+    scan  = scanner.scan()
+    state = registry.get_state()
+    return {
+        "listening_ports": sorted(scan.keys()),
+        "managed_projects": {
+            name: {"pid": info.get("pid"), "started_by": info.get("started_by")}
+            for name, info in state.items()
+        },
+    }
+
+
+def _emit_receipt(action: str, target: dict, result: dict, env_before: dict) -> None:
+    env_after = _snapshot()
+    receipt = {
+        "type":               "machine_action",
+        "timestamp":          datetime.now(timezone.utc).isoformat(),
+        "actor": {
+            "type":           "cli_session",
+            "session_id":     SESSION_ID,
+            "agent_hint":     os.environ.get("MCP_AGENT_HINT", "cli"),
+        },
+        "action":             action,
+        "target":             target,
+        "result":             result,
+        "environment_before": env_before,
+        "environment_after":  env_after,
+    }
+    filename = (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+        f"_{action}_{uuid.uuid4().hex[:8]}.json"
+    )
+    (RECEIPTS_DIR / filename).write_text(json.dumps(receipt, indent=2))
+
+
+# ── Project view builder ────────────────────────────────────────────────────
+
+def _enrich_deps(project: dict, project_name: str) -> list:
+    """Resolve vault-held URLs into dep configs before health-checking."""
+    enriched = []
+    for dep in project.get("dependencies", []):
+        d = dict(dep)
+        provider = d.get("provider", "").lower()
+        if provider == "supabase" and not d.get("url"):
+            resolved = vault.resolve_for_project(project_name, ["SUPABASE_URL"])
+            if "SUPABASE_URL" in resolved:
+                d["url"] = resolved["SUPABASE_URL"]
+        elif provider == "postgres" and not d.get("url"):
+            resolved = vault.resolve_for_project(project_name, ["DATABASE_URL"])
+            if "DATABASE_URL" in resolved:
+                d["url"] = resolved["DATABASE_URL"]
+        elif provider in ("http", "api") and not d.get("url"):
+            label = (d.get("label") or "").upper()
+            key   = f"{label}_URL" if label else None
+            if key:
+                resolved = vault.resolve_for_project(project_name, [key])
+                if key in resolved:
+                    d["url"] = resolved[key]
+        enriched.append(d)
+    return enriched
+
+
+def _build_project_view(project: dict, scan: dict, state: dict) -> dict:
+    """Merge registry + live scan + logs + deps into one view dict."""
+    port        = project["port"]
+    name        = project["name"]
+    managed_pid = state.get(name, {}).get("pid")
+    port_info   = scan.get(port)
+
+    status    = "stopped"
+    proc_data = {}
+
+    if port_info:
+        pid_on_port = port_info["pid"]
+        if managed_pid and runner.is_running(managed_pid) and runner.owns_pid(managed_pid, pid_on_port):
+            status = "running"
+        else:
+            status = "conflict"
+        proc_data = {
+            "pid":          port_info["pid"],
+            "process_name": port_info.get("name", ""),
+        }
+    elif managed_pid and runner.is_running(managed_pid):
+        status    = "running"
+        proc_data = {"pid": managed_pid}
+
+    dep_status = deps_module.get_cached(name) or []
+    if status == "running" and any(d.get("status") == "disconnected" for d in dep_status):
+        composite = "degraded"
+    else:
+        composite = status
+
+    view = {**project, "status": status, "composite_status": composite, **proc_data}
+
+    started_by = state.get(name, {}).get("started_by")
+    if started_by:
+        view["started_by"] = started_by
+
+    recent_error = runner.find_recent_error(name)
+    if recent_error:
+        view["recent_error"] = recent_error
+
+    view["dep_status"] = dep_status
+    return view
+
+
+# ── Color helpers ───────────────────────────────────────────────────────────
+
+STATUS_COLORS = {
+    "running":  "green",
+    "stopped":  "dim",
+    "conflict": "red",
+    "error":    "yellow",
+    "degraded": "yellow",
+}
+
+STATUS_GLYPHS = {
+    "running":  "●",
+    "stopped":  "○",
+    "conflict": "✗",
+    "error":    "⚠",
+    "degraded": "◐",
+}
+
+
+def _status_text(status: str) -> Text:
+    color = STATUS_COLORS.get(status, "dim")
+    glyph = STATUS_GLYPHS.get(status, "○")
+    return Text(f"{glyph} {status}", style=color)
+
+
+def _attr_text(started_by: str | None) -> Text:
+    if not started_by:
+        return Text("—", style="dim")
+    if started_by == "dashboard":
+        return Text("dashboard", style="blue")
+    if started_by == "cli":
+        return Text("cli", style="green")
+    if started_by.startswith("cli_"):
+        short = started_by[4:12]
+        return Text(f"cli:{short}", style="green")
+    if started_by.startswith("mcp_session_"):
+        short = started_by[12:20]
+        return Text(f"agent:{short}", style="magenta")
+    return Text(started_by, style="dim")
+
+
+def _shorten_path(path: str) -> str:
+    home = str(Path.home())
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+# ── Receipt helpers (shared with TUI) ──────────────────────────────────────
+
+def _load_receipts(limit: int = 50, action_filter: str | None = None) -> list:
+    if not RECEIPTS_DIR.exists():
+        return []
+    files = sorted(RECEIPTS_DIR.glob("*.json"), reverse=True)
+    results = []
+    for f in files:
+        if len(results) >= limit:
+            break
+        try:
+            r = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if action_filter and r.get("action") != action_filter:
+            continue
+        results.append(r)
+    return results
+
+
+# ── CLI entry point ─────────────────────────────────────────────────────────
+
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
+    """Seshat — local environmental agent harness.
+
+    Run without arguments to launch the interactive TUI.
+    """
+    if ctx.invoked_subcommand is None:
+        _launch_tui()
+
+
+# ── Commands ────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("name", required=False)
+def status(name):
+    """Show project status. Pass a name for detail on one project."""
+    scan  = scanner.scan()
+    state = registry.get_state()
+
+    if name:
+        project = registry.get(name)
+        if not project:
+            console.print(f"[red]Project '{name}' not found.[/red]")
+            sys.exit(1)
+        view = _build_project_view(project, scan, state)
+        _print_project_detail(view)
+        return
+
+    projects = registry.list()
+    if not projects:
+        console.print("[dim]No projects registered.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("", width=2)
+    table.add_column("Name",       style="bold", min_width=16)
+    table.add_column("Port",       style="cyan", min_width=6)
+    table.add_column("Status",     min_width=10)
+    table.add_column("Started by", min_width=14)
+    table.add_column("Directory",  style="dim")
+
+    for p in projects:
+        view   = _build_project_view(p, scan, state)
+        vstatus = view["composite_status"]
+        color  = STATUS_COLORS.get(vstatus, "dim")
+        glyph  = STATUS_GLYPHS.get(vstatus, "○")
+        table.add_row(
+            Text(glyph, style=color),
+            view["name"],
+            str(view["port"]),
+            _status_text(vstatus),
+            _attr_text(view.get("started_by")),
+            _shorten_path(view.get("directory", "")),
+        )
+
+    console.print(table)
+
+
+def _print_project_detail(view: dict) -> None:
+    """Print single-project detail panel to terminal."""
+    vstatus = view["composite_status"]
+    console.print()
+    console.print(f"[bold]{view['name']}[/bold]  [cyan]:{view['port']}[/cyan]")
+    console.print(f"  Status:     {_status_text(vstatus)}")
+    console.print(f"  Started by: {_attr_text(view.get('started_by'))}")
+    if view.get("pid"):
+        console.print(f"  PID:        [dim]{view['pid']}[/dim]")
+    console.print(f"  Directory:  [dim]{view.get('directory', '—')}[/dim]")
+    console.print(f"  Start cmd:  [dim]{view.get('start', '—')}[/dim]")
+    if view.get("recent_error"):
+        err = view["recent_error"]
+        console.print(f"  [yellow]Error:[/yellow]      {err.get('message', '')}")
+        if err.get("short"):
+            console.print(f"              [dim]{err['short']}[/dim]")
+    dep_status = view.get("dep_status", [])
+    if dep_status:
+        console.print("  Deps:")
+        for d in dep_status:
+            dep_color = {"connected": "green", "disconnected": "red"}.get(d.get("status", ""), "dim")
+            console.print(f"    [{dep_color}]●[/{dep_color}] {d.get('label', d.get('provider', '?'))}")
+    console.print()
+
+
+@cli.command()
+@click.argument("name", required=False)
+@click.option("--group", "-g", default=None, help="Start a named group of projects.")
+def start(name, group):
+    """Start a project or group."""
+    env_before = _snapshot()
+
+    if group:
+        grp = registry.get_group(group)
+        if not grp:
+            console.print(f"[red]Group '{group}' not found.[/red]")
+            sys.exit(1)
+        scan  = scanner.scan()
+        state = registry.get_state()
+        results = []
+        for proj_name in grp.get("projects", []):
+            project = registry.get(proj_name)
+            if not project:
+                results.append({"name": proj_name, "error": "not found"})
+                continue
+            managed_pid = state.get(proj_name, {}).get("pid")
+            if managed_pid and runner.is_running(managed_pid):
+                console.print(f"[dim]{proj_name}[/dim] already running")
+                results.append({"name": proj_name, "status": "already_running"})
+                continue
+            if project["port"] in scan:
+                proc = scan[project["port"]]
+                console.print(f"[red]{proj_name}[/red] port {project['port']} in use by '{proc['name']}'")
+                results.append({"name": proj_name, "error": f"port {project['port']} in use"})
+                continue
+            try:
+                extra_env = vault.resolve_for_project(proj_name, project.get("env", []))
+                pid = runner.start(project, extra_env=extra_env)
+                registry.set_pid(proj_name, pid, started_by=SESSION_ID)
+                console.print(f"[green]✓[/green] {proj_name} started (PID {pid})")
+                results.append({"name": proj_name, "status": "started", "pid": pid})
+                time.sleep(0.4)
+                scan = scanner.scan()
+            except Exception as e:
+                console.print(f"[red]✗[/red] {proj_name}: {e}")
+                results.append({"name": proj_name, "error": str(e)})
+        result = {"status": "success", "group": group, "results": results}
+        _emit_receipt("start_group", {"group": group}, result, env_before)
+        return
+
+    if not name:
+        console.print("[red]Provide a project name or --group.[/red]")
+        sys.exit(1)
+
+    project = registry.get(name)
+    if not project:
+        console.print(f"[red]Project '{name}' not found.[/red]")
+        sys.exit(1)
+
+    scan = scanner.scan()
+    if project["port"] in scan:
+        proc = scan[project["port"]]
+        console.print(f"[red]Port {project['port']} is already in use by '{proc['name']}' (PID {proc['pid']}).[/red]")
+        result = {"status": "failure", "error": f"port {project['port']} in use"}
+        _emit_receipt("start_project", {"project": name}, result, env_before)
+        sys.exit(1)
+
+    try:
+        extra_env = vault.resolve_for_project(name, project.get("env", []))
+        pid = runner.start(project, extra_env=extra_env)
+        registry.set_pid(name, pid, started_by=SESSION_ID)
+        console.print(f"[green]✓[/green] {name} started (PID {pid})")
+        result = {"status": "success", "pid": pid}
+        _emit_receipt("start_project", {"project": name, "port": project["port"]}, result, env_before)
+    except Exception as e:
+        console.print(f"[red]✗[/red] {name}: {e}")
+        result = {"status": "failure", "error": str(e)}
+        _emit_receipt("start_project", {"project": name}, result, env_before)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("name", required=False)
+@click.option("--group", "-g", default=None, help="Stop a named group of projects.")
+def stop(name, group):
+    """Stop a project or group."""
+    env_before = _snapshot()
+
+    if group:
+        grp = registry.get_group(group)
+        if not grp:
+            console.print(f"[red]Group '{group}' not found.[/red]")
+            sys.exit(1)
+        state   = registry.get_state()
+        results = []
+        for proj_name in grp.get("projects", []):
+            pid = state.get(proj_name, {}).get("pid")
+            if not pid:
+                console.print(f"[dim]{proj_name}[/dim] not managed")
+                results.append({"name": proj_name, "status": "not_managed"})
+                continue
+            runner.stop(pid)
+            registry.clear_pid(proj_name)
+            console.print(f"[green]✓[/green] {proj_name} stopped")
+            results.append({"name": proj_name, "status": "stopped"})
+        result = {"status": "success", "group": group, "results": results}
+        _emit_receipt("stop_group", {"group": group}, result, env_before)
+        return
+
+    if not name:
+        console.print("[red]Provide a project name or --group.[/red]")
+        sys.exit(1)
+
+    project = registry.get(name)
+    if not project:
+        console.print(f"[red]Project '{name}' not found.[/red]")
+        sys.exit(1)
+
+    state = registry.get_state()
+    pid   = state.get(name, {}).get("pid")
+    if not pid:
+        console.print(f"[red]{name} has no managed process.[/red]")
+        result = {"status": "failure", "error": "no managed process"}
+        _emit_receipt("stop_project", {"project": name}, result, env_before)
+        sys.exit(1)
+
+    runner.stop(pid)
+    registry.clear_pid(name)
+    console.print(f"[green]✓[/green] {name} stopped (was PID {pid})")
+    result = {"status": "success", "stopped_pid": pid}
+    _emit_receipt("stop_project", {"project": name, "port": project["port"]}, result, env_before)
+
+
+@cli.command(name="list")
+def list_projects():
+    """Alias for 'seshat status' — list all projects."""
+    ctx = click.get_current_context()
+    ctx.invoke(status)
+
+
+@cli.command()
+def ports():
+    """Show all TCP listeners annotated by kind."""
+    scan          = scanner.scan()
+    state         = registry.get_state()
+    port_to_proj  = {p["port"]: p["name"] for p in registry.list()}
+    managed_pids  = {name: info.get("pid") for name, info in state.items() if info.get("pid")}
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Port",    style="cyan",  min_width=6)
+    table.add_column("PID",     style="dim",   min_width=8)
+    table.add_column("Kind",    min_width=10)
+    table.add_column("Process", style="dim")
+
+    KIND_COLORS = {"seshat": "blue", "project": "green", "conflict": "red", "orphan": "yellow"}
+
+    if not scan:
+        console.print("[dim]No active listeners.[/dim]")
+        return
+
+    for port, info in sorted(scan.items()):
+        pid          = info["pid"]
+        project_name = port_to_proj.get(port)
+        managed      = project_name and managed_pids.get(project_name) == pid
+        if port == 9000:
+            kind = "seshat"
+        elif project_name and managed:
+            kind = "project"
+        elif project_name and not managed:
+            kind = "conflict"
+        else:
+            kind = "orphan"
+
+        kind_color = KIND_COLORS.get(kind, "dim")
+        label      = project_name if project_name else info.get("name", "unknown")
+        table.add_row(
+            str(port),
+            str(pid),
+            Text(kind, style=kind_color),
+            label,
+        )
+
+    console.print(table)
+
+
+@cli.command()
+def orphans():
+    """Show unregistered processes on ports."""
+    scan             = scanner.scan()
+    registered_ports = {p["port"] for p in registry.list()} | {9000}
+
+    rows = [
+        (port, info)
+        for port, info in sorted(scan.items())
+        if port not in registered_ports
+    ]
+
+    if not rows:
+        console.print("[dim]No orphaned processes.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Port",    style="yellow", min_width=6)
+    table.add_column("PID",     style="dim",    min_width=8)
+    table.add_column("Process", style="dim")
+
+    for port, info in rows:
+        table.add_row(str(port), str(info["pid"]), info.get("name", "unknown"))
+
+    console.print(table)
+
+
+# ── Vault commands ──────────────────────────────────────────────────────────
+
+@cli.group()
+def vault_cmd():
+    """Vault key management."""
+
+
+@vault_cmd.command(name="list")
+def vault_list():
+    """List vault keys (names only — values are never shown)."""
+    keys = vault.list_keys()
+    if not keys:
+        console.print("[dim]Vault is empty.[/dim]")
+        return
+    for key in sorted(keys):
+        console.print(f"  [cyan]{key}[/cyan]")
+
+
+@vault_cmd.command(name="set")
+@click.argument("key")
+@click.argument("value")
+def vault_set(key, value):
+    """Set a shared vault secret."""
+    vault.set(key.strip().upper(), value)
+    console.print(f"[green]✓[/green] Vault key [cyan]{key.strip().upper()}[/cyan] set.")
+
+
+@vault_cmd.command(name="audit")
+def vault_audit():
+    """Cross-reference vault keys against project env declarations."""
+    projects   = registry.list()
+    audit_data = vault.audit(projects)
+
+    if not audit_data:
+        console.print("[dim]No vault audit data.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Key",    style="cyan", min_width=24)
+    table.add_column("Status", min_width=10)
+    table.add_column("Projects")
+
+    for entry in audit_data:
+        key = entry.get("key", "")
+        if entry.get("unused"):
+            vstatus = "unused"
+            projs  = "—"
+        elif entry.get("missing_from"):
+            vstatus = "missing"
+            projs  = ", ".join(entry.get("declared_by", [])) or "—"
+        else:
+            vstatus = "ok"
+            projs  = ", ".join(entry.get("declared_by", [])) or "—"
+        s_color = {"ok": "green", "missing": "red", "unused": "dim"}.get(vstatus, "dim")
+        table.add_row(key, Text(vstatus, style=s_color), projs)
+
+    console.print(table)
+
+
+cli.add_command(vault_cmd, name="vault")
+
+
+# ── Receipts command ────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--tail", is_flag=True, default=False, help="Live-follow new receipts.")
+@click.option("--limit", default=20, show_default=True, help="Number of receipts to show.")
+@click.option("--action", default=None, help="Filter by action name.")
+def receipts(tail, limit, action):
+    """Show machine-action receipts from ~/.seshat/receipts/."""
+    if tail:
+        _tail_receipts(action)
+        return
+    _print_receipts(limit=limit, action_filter=action)
+
+
+def _print_receipts(limit: int, action_filter: str | None) -> None:
+    rows = _load_receipts(limit=limit, action_filter=action_filter)
+    if not rows:
+        console.print("[dim]No receipts found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("",       width=2)
+    table.add_column("Time",   style="dim",     min_width=18)
+    table.add_column("Action", style="bold",    min_width=20)
+    table.add_column("Target", style="dim",     min_width=16)
+    table.add_column("Actor",  style="magenta", min_width=14)
+
+    for r in rows:
+        is_success  = r.get("result", {}).get("status") == "success"
+        glyph       = Text("✓", style="green") if is_success else Text("✗", style="red")
+        ts          = r.get("timestamp", "")[:19].replace("T", " ")
+        actor       = r.get("actor", {})
+        session_id  = actor.get("session_id", "")
+        short_id    = session_id[:14] if session_id else "—"
+        target      = r.get("target", {})
+        target_str  = target.get("project") or target.get("group") or target.get("key") or "—"
+        table.add_row(glyph, ts, r.get("action", ""), target_str, short_id)
+
+    console.print(table)
+
+
+def _tail_receipts(action_filter: str | None) -> None:
+    """Live-follow receipt files as they are written."""
+    console.print("[dim]Tailing receipts… Ctrl-C to stop.[/dim]")
+    seen = set(RECEIPTS_DIR.glob("*.json"))
+    try:
+        while True:
+            time.sleep(1)
+            current = set(RECEIPTS_DIR.glob("*.json"))
+            new     = sorted(current - seen)
+            for f in new:
+                try:
+                    r           = json.loads(f.read_text())
+                    if action_filter and r.get("action") != action_filter:
+                        continue
+                    is_success  = r.get("result", {}).get("status") == "success"
+                    glyph       = "[green]✓[/green]" if is_success else "[red]✗[/red]"
+                    ts          = r.get("timestamp", "")[:19].replace("T", " ")
+                    action      = r.get("action", "")
+                    target      = r.get("target", {})
+                    target_str  = target.get("project") or target.get("group") or "—"
+                    console.print(f"{glyph} [dim]{ts}[/dim]  [bold]{action}[/bold]  [dim]{target_str}[/dim]")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            seen = current
+    except KeyboardInterrupt:
+        pass
+
+
+# ── Serve and MCP commands ──────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--port", default=9000, show_default=True, help="Port for the Flask dashboard.")
+def serve(port):
+    """Start the Seshat web dashboard."""
+    console.print(f"[green]Starting Seshat dashboard at http://localhost:{port}[/green]")
+    import seshat as seshat_app
+    seshat_app.app.run(host="0.0.0.0", port=port, debug=False)
+
+
+@cli.command()
+def mcp():
+    """Start the Seshat MCP server (stdio transport)."""
+    console.print("[dim]Starting Seshat MCP server (stdio)…[/dim]", err=True)
+    import mcp_server
+    mcp_server.mcp.run(transport="stdio")
+
+
+# ── TUI command ─────────────────────────────────────────────────────────────
+
+@cli.command()
+def tui():
+    """Launch the interactive TUI."""
+    _launch_tui()
+
+
+def _launch_tui():
+    from seshat_tui import SeshatApp
+    SeshatApp().run()
+
+
+# ── Entry point ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    cli()
