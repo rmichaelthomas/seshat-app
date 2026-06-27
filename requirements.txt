@@ -5,3 +5,5 @@ keyring>=24.0.0
 cryptography>=42.0.0
 pytest>=8.0
 mcp>=1.0.0
+click>=8.0.0
+textual>=0.50.0
