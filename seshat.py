@@ -4,6 +4,7 @@ Seshat — Local project registry and control room.
 Runs at http://localhost:9000
 """
 
+import json
 import subprocess
 import threading
 import time
@@ -30,6 +31,8 @@ runner   = Runner()
 vault     = Vault()
 organizer = Organizer(registry)
 router   = Router(registry)
+
+RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -113,6 +116,11 @@ def build_project_view(project: dict, scan: dict, state: dict) -> dict:
                 child_ports.append(scan_port)
 
     view = {**project, "status": status, **proc_data, "child_ports": sorted(child_ports)}
+
+    # Include started_by attribution from state
+    started_by = state.get(name, {}).get("started_by")
+    if started_by:
+        view["started_by"] = started_by
 
     # Attach most recent error from logs
     recent_error = runner.find_recent_error(name)
@@ -253,7 +261,7 @@ def start_project(name):
     try:
         extra_env = vault.resolve_for_project(name, project.get("env", []))
         pid       = runner.start(project, extra_env=extra_env)
-        registry.set_pid(name, pid)
+        registry.set_pid(name, pid, started_by="dashboard")
         # Kick off first dep check asynchronously once the project is live
         if project.get("dependencies"):
             enriched = _enrich_deps_with_vault(project.get("dependencies", []), name)
@@ -407,7 +415,7 @@ def register_orphan(port):
     }
     try:
         result = registry.add(project)
-        registry.set_pid(project["name"], scan[port]["pid"])
+        registry.set_pid(project["name"], scan[port]["pid"], started_by="dashboard")
         return jsonify(result), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
@@ -483,7 +491,7 @@ def start_group(name):
         try:
             extra_env = vault.resolve_for_project(proj_name, project.get("env", []))
             pid       = runner.start(project, extra_env=extra_env)
-            registry.set_pid(proj_name, pid)
+            registry.set_pid(proj_name, pid, started_by="dashboard")
             results.append({"name": proj_name, "status": "started", "pid": pid})
             if project.get("dependencies"):
                 enriched = _enrich_deps_with_vault(project.get("dependencies", []), proj_name)
@@ -908,6 +916,65 @@ def open_path():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Receipts ───────────────────────────────────────────────────────────────
+
+
+@app.route("/api/receipts", methods=["GET"])
+def get_receipts():
+    limit          = min(int(request.args.get("limit", 50)), 200)
+    action_filter  = request.args.get("action")
+    session_filter = request.args.get("session")
+
+    if not RECEIPTS_DIR.exists():
+        return jsonify([])
+
+    files    = sorted(RECEIPTS_DIR.glob("*.json"), reverse=True)
+    receipts = []
+    for f in files:
+        if len(receipts) >= limit:
+            break
+        try:
+            receipt = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if action_filter and receipt.get("action") != action_filter:
+            continue
+        if session_filter and receipt.get("actor", {}).get("session_id") != session_filter:
+            continue
+        receipts.append(receipt)
+
+    return jsonify(receipts)
+
+
+@app.route("/api/receipts/stats", methods=["GET"])
+def get_receipts_stats():
+    if not RECEIPTS_DIR.exists():
+        return jsonify({"total": 0, "sessions": [], "actions": {}})
+
+    files    = sorted(RECEIPTS_DIR.glob("*.json"), reverse=True)
+    sessions = set()
+    actions  = {}
+    total    = 0
+
+    for f in files:
+        try:
+            receipt = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        total += 1
+        session_id = receipt.get("actor", {}).get("session_id")
+        if session_id:
+            sessions.add(session_id)
+        action = receipt.get("action", "unknown")
+        actions[action] = actions.get(action, 0) + 1
+
+    return jsonify({
+        "total":    total,
+        "sessions": sorted(sessions),
+        "actions":  actions,
+    })
 
 
 # ── Background dep checker ─────────────────────────────────────────────────

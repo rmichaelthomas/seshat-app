@@ -5,7 +5,7 @@ let orphans      = [];
 let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
-let activeView   = "projects";   // "projects" | "vault" | "organize"
+let activeView   = "projects";   // "projects" | "vault" | "organize" | "receipts"
 let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 
@@ -66,6 +66,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initKeyboard();
   $("vaultBtn").addEventListener("click", toggleVaultView);
   $("organizeBtn").addEventListener("click", toggleOrganizeView);
+  $("receiptsBtn").addEventListener("click", toggleReceiptsView);
   refresh();
   loadSetupStatus();
   loadHostnames();
@@ -120,8 +121,10 @@ function showProjectView() {
   $("projectView").style.display  = "block";
   $("vaultView").style.display    = "none";
   $("organizeView").style.display = "none";
+  $("receiptsView").style.display = "none";
   $("vaultBtn").classList.remove("active");
   $("organizeBtn").classList.remove("active");
+  $("receiptsBtn").classList.remove("active");
   $("addProjectBtn").style.display = "";
   $("searchSortBar").style.display = "";
   render();
@@ -157,8 +160,10 @@ async function showVaultView() {
   $("projectView").style.display  = "none";
   $("vaultView").style.display    = "block";
   $("organizeView").style.display = "none";
+  $("receiptsView").style.display = "none";
   $("vaultBtn").classList.add("active");
   $("organizeBtn").classList.remove("active");
+  $("receiptsBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
   await renderVaultView();
@@ -170,11 +175,157 @@ async function showOrganizeView() {
   $("projectView").style.display  = "none";
   $("vaultView").style.display    = "none";
   $("organizeView").style.display = "block";
+  $("receiptsView").style.display = "none";
   $("organizeBtn").classList.add("active");
   $("vaultBtn").classList.remove("active");
+  $("receiptsBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
+}
+
+function toggleReceiptsView() {
+  if (activeView === "receipts") {
+    showProjectView();
+  } else {
+    showReceiptsView();
+  }
+}
+
+async function showReceiptsView() {
+  if (await closeDetail() === false) return;
+  activeView = "receipts";
+  $("projectView").style.display  = "none";
+  $("vaultView").style.display    = "none";
+  $("organizeView").style.display = "none";
+  $("receiptsView").style.display = "block";
+  $("receiptsBtn").classList.add("active");
+  $("vaultBtn").classList.remove("active");
+  $("organizeBtn").classList.remove("active");
+  $("addProjectBtn").style.display = "none";
+  $("searchSortBar").style.display = "none";
+  await renderReceiptsView();
+}
+
+async function renderReceiptsView() {
+  $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>`;
+  try {
+    const [receiptsRes, statsRes] = await Promise.all([
+      fetch("/api/receipts?limit=100"),
+      fetch("/api/receipts/stats"),
+    ]);
+    const receipts = await receiptsRes.json();
+    const stats    = await statsRes.json();
+
+    const sessionOptions = stats.sessions.map(s =>
+      `<option value="${esc(s)}">${esc(s)}</option>`
+    ).join("");
+
+    const actionOptions = Object.keys(stats.actions).sort().map(a =>
+      `<option value="${esc(a)}">${esc(a)} (${stats.actions[a]})</option>`
+    ).join("");
+
+    $("receiptsContent").innerHTML = `
+      <div class="receipts-view">
+        <div class="receipts-view-header">
+          <div>
+            <div class="receipts-view-title">⧫ Machine Action Receipts</div>
+            <div class="receipts-view-meta">${stats.total} receipt${stats.total !== 1 ? "s" : ""} · ${stats.sessions.length} session${stats.sessions.length !== 1 ? "s" : ""}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="receiptsFilterAction" onchange="filterReceipts()" style="font-size:12px">
+              <option value="">All actions</option>
+              ${actionOptions}
+            </select>
+            <select id="receiptsFilterSession" onchange="filterReceipts()" style="font-size:12px">
+              <option value="">All sessions</option>
+              ${sessionOptions}
+            </select>
+            <button class="btn btn-ghost btn-sm" onclick="renderReceiptsView()">↺ Refresh</button>
+            <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
+          </div>
+        </div>
+        <div id="receiptsList">${renderReceiptRows(receipts)}</div>
+      </div>`;
+  } catch (e) {
+    $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load receipts</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+async function filterReceipts() {
+  const action  = $("receiptsFilterAction").value;
+  const session = $("receiptsFilterSession").value;
+  let url = "/api/receipts?limit=100";
+  if (action)  url += `&action=${encodeURIComponent(action)}`;
+  if (session) url += `&session=${encodeURIComponent(session)}`;
+  try {
+    const res      = await fetch(url);
+    const receipts = await res.json();
+    $("receiptsList").innerHTML = renderReceiptRows(receipts);
+  } catch (e) {
+    $("receiptsList").innerHTML = `<div class="empty-state"><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderReceiptRows(receipts) {
+  if (!receipts || receipts.length === 0) {
+    return `<div class="receipts-empty">No receipts yet. Receipts are emitted when an agent uses Seshat's MCP tools.</div>`;
+  }
+  return receipts.map(r => {
+    const ts      = new Date(r.timestamp);
+    const timeStr = ts.toLocaleString("en-US", {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+    const isSuccess = r.result && r.result.status === "success";
+    const statusCls = isSuccess ? "receipt-success" : "receipt-failure";
+    const statusTxt = isSuccess ? "✓" : "✗";
+    const actor     = r.actor || {};
+    const agentHint = actor.agent_hint && actor.agent_hint !== "unknown"
+      ? ` · ${esc(actor.agent_hint)}` : "";
+    const sessionShort = (actor.session_id || "").replace("mcp_session_", "").slice(0, 8);
+
+    const target = r.target || {};
+    const targetParts = [];
+    if (target.project) targetParts.push(target.project);
+    if (target.group)   targetParts.push(`group: ${target.group}`);
+    if (target.port)    targetParts.push(`:${target.port}`);
+    if (target.key)     targetParts.push(`key: ${target.key}`);
+    const targetStr = targetParts.join(" · ") || "—";
+
+    const before       = r.environment_before || {};
+    const after        = r.environment_after  || {};
+    const portsBefore  = (before.listening_ports || []).length;
+    const portsAfter   = (after.listening_ports  || []).length;
+    const portDelta    = portsAfter - portsBefore;
+    const portDeltaStr = portDelta > 0
+      ? `+${portDelta} port${portDelta !== 1 ? "s" : ""}`
+      : portDelta < 0
+        ? `${portDelta} port${Math.abs(portDelta) !== 1 ? "s" : ""}`
+        : "no port change";
+
+    const resultDetail = [];
+    if (r.result) {
+      if (r.result.pid)         resultDetail.push(`PID ${r.result.pid}`);
+      if (r.result.stopped_pid) resultDetail.push(`stopped PID ${r.result.stopped_pid}`);
+      if (r.result.error)       resultDetail.push(r.result.error);
+    }
+    const resultStr = resultDetail.join(" · ") || "";
+
+    return `
+      <div class="receipt-row ${statusCls}">
+        <div class="receipt-header">
+          <span class="receipt-status">${statusTxt}</span>
+          <span class="receipt-action">${esc(r.action)}</span>
+          <span class="receipt-target">${esc(targetStr)}</span>
+          <span class="receipt-time">${timeStr}</span>
+        </div>
+        <div class="receipt-detail">
+          <span class="receipt-actor">${esc(sessionShort)}${agentHint}</span>
+          <span class="receipt-delta">${esc(portDeltaStr)}</span>
+          ${resultStr ? `<span class="receipt-result">${esc(resultStr)}</span>` : ""}
+        </div>
+      </div>`;
+  }).join("");
 }
 
 // ── Router setup ──────────────────────────────────────────────────────────
@@ -501,13 +652,15 @@ function projectRowHTML(p) {
     ? `<div class="conflict-inline">⚠ Port in use by <code>${esc(p.process_name)}</code> (PID ${p.pid})</div>` : "";
   const errorLine = hasError && p.recent_error
     ? `<div class="error-preview">⚠ ${esc(p.recent_error.short || p.recent_error.message.slice(0, 60))}</div>` : "";
+  const agentTag = (p.started_by && p.started_by.startsWith("mcp_session_"))
+    ? `<span class="agent-tag" title="Started by AI agent">⚡ agent</span>` : "";
   const ssCls  = isRunning ? "stop-btn" : "start-btn";
   const ssIcon = isRunning ? "■" : "▶";
   return `
     <div class="project-row ${p.status}" data-name="${esc(p.name)}">
       <div><div class="status-light ${lightClass}"></div></div>
       <div>
-        <div class="project-name">${esc(p.name)}</div>
+        <div class="project-name">${esc(p.name)} ${agentTag}</div>
         ${tags ? `<div class="project-tags">${tags}</div>` : ""}
         ${conflictLine}${errorLine}
       </div>
@@ -664,6 +817,21 @@ function updateDetailPanel(name) {
   else if (isDegraded) { statusCls = "degraded"; statusTxt = "◑ Degraded — dep down"; }
   else                 { statusCls = p.status;   statusTxt = statusLabel(p.status); }
 
+  // Attribution badge
+  let attrBadge = "";
+  if (p.started_by) {
+    if (p.started_by === "dashboard") {
+      attrBadge = `<div class="attr-badge attr-dashboard">Started from dashboard</div>`;
+    } else if (p.started_by === "cli") {
+      attrBadge = `<div class="attr-badge attr-cli">Started from CLI</div>`;
+    } else if (p.started_by.startsWith("mcp_session_")) {
+      const sessionId = p.started_by.replace("mcp_session_", "");
+      attrBadge = `<div class="attr-badge attr-agent">Agent session <code>${esc(sessionId)}</code></div>`;
+    } else {
+      attrBadge = `<div class="attr-badge attr-unknown">Started by: ${esc(p.started_by)}</div>`;
+    }
+  }
+
   const conflictBlock = isConflict ? `
     <div class="conflict-message">
       ⚠ Port ${p.port} is in use by <code>${esc(p.process_name||"unknown")}</code>
@@ -686,6 +854,7 @@ function updateDetailPanel(name) {
     <div class="detail-name">${esc(p.name)}</div>
     <div class="detail-url">localhost:${p.port}</div>
     <div class="detail-status ${statusCls}">${statusTxt}</div>
+    ${attrBadge}
     ${_hostnameDetailFieldHTML(p.name)}
     ${conflictBlock}${errorBlock}
     <div class="detail-actions">
