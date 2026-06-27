@@ -97,9 +97,12 @@ class Registry:
     def get_state(self) -> dict:
         return json.loads(STATE_FILE.read_text())
 
-    def set_pid(self, name: str, pid: int) -> None:
-        state       = self.get_state()
-        state[name] = {"pid": pid}
+    def set_pid(self, name: str, pid: int, started_by: str | None = None) -> None:
+        state = self.get_state()
+        entry = {"pid": pid}
+        if started_by:
+            entry["started_by"] = started_by
+        state[name] = entry
         STATE_FILE.write_text(json.dumps(state, indent=2))
 
     def clear_pid(self, name: str) -> None:
