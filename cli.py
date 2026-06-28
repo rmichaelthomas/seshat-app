@@ -666,7 +666,7 @@ def serve(port):
 @cli.command()
 def mcp():
     """Start the Seshat MCP server (stdio transport)."""
-    console.print("[dim]Starting Seshat MCP server (stdio)…[/dim]", err=True)
+    Console(stderr=True).print("[dim]Starting Seshat MCP server (stdio)…[/dim]")
     import mcp_server
     mcp_server.mcp.run(transport="stdio")
 
