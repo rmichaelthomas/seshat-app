@@ -77,14 +77,69 @@ After setup, every registered project is reachable at `http://<project-name>.ses
 
 ### MCP server
 
-Seshat runs an MCP server alongside the dashboard. To connect it to Claude Code:
+The MCP server lets AI coding agents (Claude Desktop, Claude Code, Cursor, Windsurf) query your local environment before they act on it.
 
-```bash
-# Add to your Claude Code MCP config
-seshat mcp
+`seshat mcp` starts an **stdio MCP server**. When you run it directly, it will appear to hang — that is correct. It is waiting for a client to connect. You do not run it in a terminal; you tell your AI client to run it on your behalf.
+
+#### Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (create it if it does not exist):
+
+```json
+{
+  "mcpServers": {
+    "seshat": {
+      "command": "seshat",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
-Once connected, Claude Code can query your local environment before running commands, check port availability, resolve vault keys, and record Receipts for actions it takes.
+Restart Claude Desktop. Seshat will appear in the MCP tools panel.
+
+#### Claude Code
+
+Add Seshat to your project or global MCP config:
+
+```bash
+claude mcp add seshat -- seshat mcp
+```
+
+Or add it manually to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "seshat": {
+      "command": "seshat",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Verify the server is responding
+
+To confirm the server is alive without a client, start it and paste this line into the terminal, then press Enter:
+
+```
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}
+```
+
+The server will respond with a JSON-RPC result listing its capabilities. Press `Ctrl-C` to stop it.
+
+#### What agents can access
+
+Once connected, agents can:
+
+- Query registered projects, their status, and port assignments (`seshat://projects`)
+- Check what processes are running on each port (`seshat://listeners`)
+- Identify unregistered processes (`seshat://orphans`)
+- Read dependency health and project logs (`seshat://project/{name}/deps`, `seshat://project/{name}/logs`)
+- Start and stop projects by name (`start_project`, `stop_project`)
+- Register new projects (`register_project`)
+- Store and resolve secrets (`set_secret`, `set_project_override`)
 
 ---
 
