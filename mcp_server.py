@@ -24,6 +24,16 @@ from runner import Runner
 from vault import Vault
 import deps as deps_module
 
+try:
+    import agreements
+except ImportError as exc:
+    raise ImportError(
+        "Seshat MCP server requires the 'liminate' package for Agreement "
+        "enforcement (deny-by-default agent permissions). Install it with: "
+        "pip install 'liminate>=0.15.1,<0.16'. "
+        f"Original error: {exc}"
+    ) from exc
+
 # ── Module instances (shared with Flask dashboard) ─────────────────────────
 
 registry = Registry()
@@ -82,19 +92,33 @@ def _snapshot_after() -> dict:
     }
 
 
+def _agreement_actor() -> str:
+    """Agent-identity string used both for Agreement checks and receipt agent_hint.
+
+    Single source of truth: the string checked against the Agreement and the
+    agent_hint recorded in every receipt must never diverge (§8 invariant 3).
+    """
+    return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
+
+
 def _emit_receipt(
     action: str,
     target: dict,
     result: dict,
     env_before: dict,
+    env_after: dict | None = None,
 ) -> None:
     """Write a machine-action Receipt to ~/.seshat/receipts/.
 
     Receipt schema (locked in §16 of addendum v1b):
       type, timestamp, actor, action, target, result,
       environment_before, environment_after
+
+    `env_after` defaults to a fresh snapshot. Denial receipts pass the same
+    snapshot used for `env_before`, since no action executed in that path.
     """
-    env_after = _snapshot_after()
+    if env_after is None:
+        env_after = _snapshot_after()
 
     receipt = {
         "type": "machine_action",
@@ -102,7 +126,7 @@ def _emit_receipt(
         "actor": {
             "type": "mcp_session",
             "session_id": SESSION_ID,
-            "agent_hint": os.environ.get("MCP_AGENT_HINT", "unknown"),
+            "agent_hint": _agreement_actor(),
         },
         "action": action,
         "target": target,
@@ -117,6 +141,34 @@ def _emit_receipt(
     )
     receipt_path = RECEIPTS_DIR / filename
     receipt_path.write_text(json.dumps(receipt, indent=2))
+
+
+def _enforce(action: str, target: dict) -> str | None:
+    """Evaluate the developer's Agreement for this call before it executes.
+
+    Returns None when the Agreement permits the call. Returns a denial
+    string (and logs a denial Receipt) when it does not — deny-by-default,
+    per SES-Q4: no Agreement, no matching permit, or any evaluation error
+    all deny, and a matching forbid always wins over a matching permit.
+    """
+    scope = target.get("project") or target.get("group")
+    decision = agreements.check_action(_agreement_actor(), action, scope)
+    if decision.allowed:
+        return None
+
+    env = _snapshot_before()
+    result = {
+        "status": "denied",
+        "mode": decision.mode,
+        "rule": decision.rule,
+        "reason": decision.reason,
+    }
+    _emit_receipt(action, target, result, env, env_after=env)
+
+    denial = f"DENIED by Agreement: {decision.reason}"
+    if decision.rule is not None:
+        denial += f" Rule: {decision.rule}"
+    return denial
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────
@@ -212,6 +264,9 @@ def _build_project_view(project: dict, scan: dict, state: dict) -> dict:
 
 
 # ── MCP tools ──────────────────────────────────────────────────────────────
+# Every tool below calls _enforce() as its first statement, before any side
+# effect. A 9th tool must do the same — it inherits the gate by convention,
+# not by any structural guarantee.
 
 
 @mcp.tool()
@@ -221,6 +276,10 @@ def start_project(name: str) -> str:
     Resolves vault secrets scoped to the project, starts the process,
     and records the PID with MCP session attribution.
     """
+    denial = _enforce("start_project", {"project": name})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     project = registry.get(name)
@@ -273,6 +332,10 @@ def start_project(name: str) -> str:
 @mcp.tool()
 def stop_project(name: str) -> str:
     """Stop a running project by name."""
+    denial = _enforce("stop_project", {"project": name})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     project = registry.get(name)
@@ -304,6 +367,10 @@ def stop_project(name: str) -> str:
 @mcp.tool()
 def start_group(name: str) -> str:
     """Start all projects in a named group."""
+    denial = _enforce("start_group", {"group": name})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     group = registry.get_group(name)
@@ -358,6 +425,10 @@ def start_group(name: str) -> str:
 @mcp.tool()
 def stop_group(name: str) -> str:
     """Stop all projects in a named group."""
+    denial = _enforce("stop_group", {"group": name})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     group = registry.get_group(name)
@@ -404,6 +475,10 @@ def register_project(
         tags: Optional list of tags for organization
         notes: Optional notes about the project
     """
+    denial = _enforce("register_project", {"project": name})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     project = {
@@ -444,6 +519,10 @@ def register_project(
 @mcp.tool()
 def stop_orphan(port: int) -> str:
     """Stop an unregistered process listening on a port."""
+    denial = _enforce("stop_orphan", {"port": port})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     scan = scanner.scan()
@@ -469,6 +548,11 @@ def set_secret(key: str, value: str) -> str:
     Secret values are never exposed through MCP resources —
     they are resolved at process start time via environment variables.
     """
+    normalized_key = key.strip().upper()
+    denial = _enforce("set_secret", {"key": normalized_key})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     vault.set(key.strip().upper(), value)
@@ -485,6 +569,11 @@ def set_project_override(project: str, key: str, value: str) -> str:
     Overrides take precedence over shared secrets when resolving
     environment variables for this project at start time.
     """
+    normalized_key = key.strip().upper()
+    denial = _enforce("set_project_override", {"project": project, "key": normalized_key})
+    if denial:
+        return denial
+
     env_before = _snapshot_before()
 
     if not registry.get(project):

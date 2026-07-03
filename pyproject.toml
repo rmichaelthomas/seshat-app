@@ -11,6 +11,7 @@ dependencies = [
     "mcp>=1.0.0",
     "click>=8.0.0",
     "textual>=0.50.0",
+    "liminate>=0.15.1,<0.16",
 ]
 
 [project.scripts]
@@ -20,7 +21,7 @@ seshat = "cli:cli"
 py-modules = [
     "cli", "seshat_tui", "registry", "runner",
     "vault", "scanner", "deps", "seshat", "mcp_server",
-    "github", "organizer", "router", "local_scanner",
+    "github", "organizer", "router", "local_scanner", "agreements",
 ]
 
 [build-system]
