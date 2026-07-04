@@ -8,3 +8,4 @@ mcp>=1.0.0
 click>=8.0.0
 textual>=0.50.0
 liminate>=0.15.1,<0.16
+httpx>=0.27.0
