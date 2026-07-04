@@ -15,6 +15,7 @@ Usage:
   ...
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -53,6 +54,25 @@ RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 console = Console()
 
+# ── Hash-chain state ────────────────────────────────────────────────────────
+
+_last_receipt_hash: str | None = None
+
+
+def _recover_chain_head() -> str | None:
+    """Read the most recent receipt file and return its receipt_hash, or None."""
+    try:
+        files = sorted(RECEIPTS_DIR.glob("*.json"))
+        if not files:
+            return None
+        last = json.loads(files[-1].read_text())
+        return last.get("receipt_hash")
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+
+
+_last_receipt_hash = _recover_chain_head()
+
 # ── Receipt helpers ─────────────────────────────────────────────────────────
 
 def _snapshot() -> dict:
@@ -68,6 +88,8 @@ def _snapshot() -> dict:
 
 
 def _emit_receipt(action: str, target: dict, result: dict, env_before: dict) -> None:
+    global _last_receipt_hash
+
     env_after = _snapshot()
     receipt = {
         "type":               "machine_action",
@@ -82,7 +104,15 @@ def _emit_receipt(action: str, target: dict, result: dict, env_before: dict) -> 
         "result":             result,
         "environment_before": env_before,
         "environment_after":  env_after,
+        "previous_hash":      _last_receipt_hash,
     }
+
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    receipt["receipt_hash"] = receipt_hash
+
+    _last_receipt_hash = receipt_hash
+
     filename = (
         f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
         f"_{action}_{uuid.uuid4().hex[:8]}.json"
@@ -652,12 +682,15 @@ cli.add_command(agreement_cmd, name="agreement")
 
 # ── Receipts command ────────────────────────────────────────────────────────
 
-@cli.command()
+@cli.group(invoke_without_command=True)
 @click.option("--tail", is_flag=True, default=False, help="Live-follow new receipts.")
 @click.option("--limit", default=20, show_default=True, help="Number of receipts to show.")
 @click.option("--action", default=None, help="Filter by action name.")
-def receipts(tail, limit, action):
-    """Show machine-action receipts from ~/.seshat/receipts/."""
+@click.pass_context
+def receipts(ctx, tail, limit, action):
+    """Show or sync machine-action receipts from ~/.seshat/receipts/."""
+    if ctx.invoked_subcommand is not None:
+        return
     if tail:
         _tail_receipts(action)
         return
@@ -717,6 +750,168 @@ def _tail_receipts(action_filter: str | None) -> None:
             seen = current
     except KeyboardInterrupt:
         pass
+
+
+LAST_SYNCED_PATH = RECEIPTS_DIR / ".last_synced"
+RECEIPTS_API_DEFAULT = "https://liminate.dev"
+
+
+def _read_last_synced() -> str | None:
+    """Return the filename recorded in .last_synced, or None."""
+    try:
+        return LAST_SYNCED_PATH.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _write_last_synced(filename: str) -> None:
+    """Record the filename of the last successfully synced receipt."""
+    LAST_SYNCED_PATH.write_text(filename + "\n")
+
+
+def _unsent_receipts() -> list[tuple[str, dict]]:
+    """Return (filename, receipt_dict) pairs for all unsent receipts, in order."""
+    last_synced = _read_last_synced()
+    files = sorted(RECEIPTS_DIR.glob("*.json"))
+    results = []
+    past_marker = last_synced is None
+    for f in files:
+        if not past_marker:
+            if f.name == last_synced:
+                past_marker = True
+            continue
+        try:
+            receipt = json.loads(f.read_text())
+            results.append((f.name, receipt))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return results
+
+
+@receipts.command(name="sync")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be synced without sending.")
+def receipts_sync(dry_run):
+    """Push unsent receipts to the Receipts API at liminate.dev."""
+    import httpx
+
+    api_key = vault.get("__receipts_api_key__")
+    if not api_key and not dry_run:
+        console.print(
+            "[red]No Receipts API key configured.[/red]\n"
+            "  Set one with: [cyan]seshat vault set __RECEIPTS_API_KEY__ <your-key>[/cyan]\n"
+            "  Get a key at: [cyan]https://liminate.dev/keys[/cyan]"
+        )
+        sys.exit(1)
+
+    unsent = _unsent_receipts()
+    if not unsent:
+        console.print("[dim]All receipts are synced.[/dim]")
+        return
+
+    console.print(f"[bold]{len(unsent)}[/bold] unsent receipt(s) found.")
+
+    if dry_run:
+        for filename, receipt in unsent:
+            ts = receipt.get("timestamp", "")[:19].replace("T", " ")
+            action = receipt.get("action", "")
+            console.print(f"  [dim]{ts}[/dim]  [bold]{action}[/bold]  [dim]{filename}[/dim]")
+        return
+
+    api_base = os.environ.get("SESHAT_RECEIPTS_API", RECEIPTS_API_DEFAULT)
+    url = f"{api_base}/api/v1/ingest"
+
+    # Batch all unsent receipts into a single POST.
+    payload = {
+        "receipts": [r for _, r in unsent],
+        "source": "seshat",
+        "session_id": SESSION_ID,
+    }
+
+    try:
+        resp = httpx.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Sync failed:[/red] HTTP {e.response.status_code}")
+        try:
+            detail = e.response.json().get("detail", str(e))
+        except Exception:
+            detail = str(e)
+        console.print(f"  [dim]{detail}[/dim]")
+        sys.exit(1)
+    except httpx.RequestError as e:
+        console.print(f"[red]Sync failed:[/red] {e}")
+        sys.exit(1)
+
+    # Record the last synced receipt.
+    last_filename = unsent[-1][0]
+    _write_last_synced(last_filename)
+
+    result = resp.json()
+    ingested = result.get("ingested", len(unsent))
+    console.print(f"[green]✓[/green] {ingested} receipt(s) synced to {api_base}")
+
+
+@receipts.command(name="verify")
+def receipts_verify():
+    """Verify the local receipt hash chain integrity."""
+    files = sorted(RECEIPTS_DIR.glob("*.json"))
+    if not files:
+        console.print("[dim]No receipts to verify.[/dim]")
+        return
+
+    expected_previous: str | None = None
+    total = 0
+    broken_at: str | None = None
+
+    for f in files:
+        total += 1
+        try:
+            receipt = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            broken_at = f.name
+            console.print(f"[red]✗[/red] {f.name} — unreadable")
+            break
+
+        # Check previous_hash linkage.
+        actual_previous = receipt.get("previous_hash")
+        if actual_previous != expected_previous:
+            broken_at = f.name
+            console.print(
+                f"[red]✗[/red] {f.name} — chain break\n"
+                f"  Expected previous_hash: [dim]{expected_previous}[/dim]\n"
+                f"  Actual previous_hash:   [dim]{actual_previous}[/dim]"
+            )
+            break
+
+        # Verify receipt_hash by recomputing.
+        stored_hash = receipt.get("receipt_hash")
+        verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
+        canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
+        computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+        if computed_hash != stored_hash:
+            broken_at = f.name
+            console.print(
+                f"[red]✗[/red] {f.name} — hash mismatch (receipt was modified)\n"
+                f"  Stored:   [dim]{stored_hash}[/dim]\n"
+                f"  Computed: [dim]{computed_hash}[/dim]"
+            )
+            break
+
+        expected_previous = stored_hash
+
+    if broken_at is None:
+        console.print(f"[green]✓[/green] Chain intact — {total} receipt(s) verified.")
+    else:
+        console.print(f"\n[yellow]Chain broken at receipt {total} of {len(files)}.[/yellow]")
 
 
 # ── Serve and MCP commands ──────────────────────────────────────────────────

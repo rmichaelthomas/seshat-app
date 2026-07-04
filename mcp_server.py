@@ -9,6 +9,7 @@ Transport: stdio
 Protocol: MCP (Model Context Protocol)
 """
 
+import hashlib
 import json
 import os
 import time
@@ -62,6 +63,28 @@ SESSION_ID = f"mcp_session_{uuid.uuid4().hex[:12]}"
 RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
 RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Hash-chain state ───────────────────────────────────────────────────────
+# Tracks the most recent receipt hash for chain continuity. Initialized from
+# the last receipt file on disk (if any) so the chain survives MCP session
+# restarts. Updated in memory on every _emit_receipt() call.
+
+_last_receipt_hash: str | None = None
+
+
+def _recover_chain_head() -> str | None:
+    """Read the most recent receipt file and return its receipt_hash, or None."""
+    try:
+        files = sorted(RECEIPTS_DIR.glob("*.json"))
+        if not files:
+            return None
+        last = json.loads(files[-1].read_text())
+        return last.get("receipt_hash")
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+
+
+_last_receipt_hash = _recover_chain_head()
+
 
 # ── Receipt helpers ────────────────────────────────────────────────────────
 
@@ -110,13 +133,20 @@ def _emit_receipt(
 ) -> None:
     """Write a machine-action Receipt to ~/.seshat/receipts/.
 
-    Receipt schema (locked in §16 of addendum v1b):
+    Receipt schema (locked in §16 of addendum v1b, extended in addendum v1e):
       type, timestamp, actor, action, target, result,
-      environment_before, environment_after
+      environment_before, environment_after, previous_hash, receipt_hash
 
     `env_after` defaults to a fresh snapshot. Denial receipts pass the same
     snapshot used for `env_before`, since no action executed in that path.
+
+    Hash-chaining: each receipt includes the SHA-256 hash of its predecessor
+    (or null for the first receipt in a chain) and its own hash computed over
+    the full canonical JSON serialization. Any modification to any receipt
+    in the chain breaks the chain from that point forward.
     """
+    global _last_receipt_hash
+
     if env_after is None:
         env_after = _snapshot_after()
 
@@ -133,7 +163,15 @@ def _emit_receipt(
         "result": result,
         "environment_before": env_before,
         "environment_after": env_after,
+        "previous_hash": _last_receipt_hash,
     }
+
+    # Canonical serialization: sorted keys, no whitespace — deterministic.
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    receipt["receipt_hash"] = receipt_hash
+
+    _last_receipt_hash = receipt_hash
 
     filename = (
         f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
