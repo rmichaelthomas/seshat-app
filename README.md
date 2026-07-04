@@ -143,6 +143,22 @@ Once connected, agents can:
 
 ---
 
+## Agreements
+
+Every MCP tool call is checked against the developer's Agreement — a [Liminate](https://liminate.dev) contract at `~/.seshat/agreement.limn` — before it executes. The posture is deny-by-default: no Agreement, no matching `permit` rule, or any malformed rule all deny the call. A matching `forbid` always wins over a matching `permit`.
+
+Enforcement happens at the MCP tier — the surface an autonomous agent operates on. The dashboard and CLI start/stop paths are not gated.
+
+```bash
+seshat agreement init          # write the starter Agreement
+seshat agreement check <action>  # dry-run a decision (exit 0 allow, 1 deny)
+seshat agreement show          # print the current Agreement
+```
+
+Every denial is recorded as a machine-action Receipt (`status: denied`, with the deciding rule) alongside the Receipts already generated for successful actions.
+
+---
+
 ## Project structure
 
 | File | Purpose |
@@ -158,6 +174,7 @@ Once connected, agents can:
 | `local_scanner.py` | Local directory project discovery |
 | `deps.py` | Dependency detection |
 | `mcp_server.py` | MCP server for agent access |
+| `agreements.py` | Agreement loading and deny-by-default enforcement decisions |
 | `receipts.py` | Machine-action Receipt recording and retrieval |
 | `templates/` | Dashboard HTML |
 | `static/` | CSS and JavaScript |
@@ -176,6 +193,7 @@ Seshat stores everything in `~/.seshat/`:
 | `groups.yaml` | Group assignments |
 | `hostnames.yaml` | Custom hostname overrides |
 | `Caddyfile` | Generated reverse proxy config |
+| `agreement.limn` | Agent-permission Agreement (deny-by-default) |
 | `vault/` | Encrypted secrets per project |
 | `receipts/` | Machine-action Receipt log |
 

@@ -33,6 +33,7 @@ from runner import Runner
 from vault import Vault
 from scanner import Scanner
 import deps as deps_module
+import agreements
 
 # ── Module instances ────────────────────────────────────────────────────────
 
@@ -581,6 +582,72 @@ def vault_audit():
 
 
 cli.add_command(vault_cmd, name="vault")
+
+
+# ── Agreement commands ──────────────────────────────────────────────────────
+
+AGREEMENT_STARTER = """\
+-- Seshat Agreement — agent permissions, deny-by-default.
+-- Facts available: actor, action, scope (scope is "none" when the call has no project/group target).
+-- No permit match = denied. A forbid always wins over a permit.
+
+permit actor is "claude-code" and action is "start_project"
+permit actor is "claude-code" and action is "stop_project"
+permit actor is "claude-code" and action is "start_group"
+permit actor is "claude-code" and action is "stop_group"
+permit actor is "claude-code" and action is "register_project"
+
+forbid action is "stop_orphan" because "orphan termination stays in the dashboard"
+"""
+
+
+@cli.group()
+def agreement_cmd():
+    """Agent-permission Agreement management (deny-by-default)."""
+
+
+@agreement_cmd.command(name="init")
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing Agreement file.")
+def agreement_init(force):
+    """Write the starter Agreement to ~/.seshat/agreement.limn."""
+    path = agreements.AGREEMENT_PATH
+    if path.exists() and not force:
+        console.print(f"[yellow]Agreement already exists at {path}.[/yellow] Use --force to overwrite.")
+        sys.exit(1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(AGREEMENT_STARTER)
+    console.print(f"[green]✓[/green] Agreement written to [cyan]{path}[/cyan]")
+
+
+@agreement_cmd.command(name="check")
+@click.argument("action")
+@click.option("--actor", default="claude-code", show_default=True, help="Actor to check.")
+@click.option("--scope", default="none", show_default=True, help="Scope to check.")
+def agreement_check(action, actor, scope):
+    """Dry-run the Agreement decision for ACTION. Exit 0 on allow, 1 on deny."""
+    decision = agreements.check_action(actor, action, scope)
+    verdict = "[green]ALLOW[/green]" if decision.allowed else "[red]DENY[/red]"
+    console.print(f"{verdict}  mode=[bold]{decision.mode}[/bold]")
+    if decision.rule:
+        console.print(f"  Rule:   [dim]{decision.rule}[/dim]")
+    console.print(f"  Reason: {decision.reason}")
+    sys.exit(0 if decision.allowed else 1)
+
+
+@agreement_cmd.command(name="show")
+def agreement_show():
+    """Print the current Agreement file."""
+    text = agreements.load_agreement()
+    if text is None:
+        console.print(
+            f"[dim]No Agreement exists at {agreements.AGREEMENT_PATH}. "
+            f"Run: seshat agreement init[/dim]"
+        )
+        return
+    console.print(text)
+
+
+cli.add_command(agreement_cmd, name="agreement")
 
 
 # ── Receipts command ────────────────────────────────────────────────────────
