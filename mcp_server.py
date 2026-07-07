@@ -9,13 +9,10 @@ Transport: stdio
 Protocol: MCP (Model Context Protocol)
 """
 
-import hashlib
 import json
 import os
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -24,6 +21,7 @@ from scanner import Scanner
 from runner import Runner
 from vault import Vault
 import deps as deps_module
+import receipts
 
 try:
     import agreements
@@ -31,7 +29,7 @@ except ImportError as exc:
     raise ImportError(
         "Seshat MCP server requires the 'liminate' package for Agreement "
         "enforcement (deny-by-default agent permissions). Install it with: "
-        "pip install 'liminate>=0.15.1,<0.16'. "
+        "pip install 'liminate>=0.16.0,<0.17'. "
         f"Original error: {exc}"
     ) from exc
 
@@ -58,62 +56,6 @@ mcp = FastMCP(
 
 SESSION_ID = f"mcp_session_{uuid.uuid4().hex[:12]}"
 
-# ── Receipt storage ────────────────────────────────────────────────────────
-
-RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
-RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
-
-# ── Hash-chain state ───────────────────────────────────────────────────────
-# Tracks the most recent receipt hash for chain continuity. Initialized from
-# the last receipt file on disk (if any) so the chain survives MCP session
-# restarts. Updated in memory on every _emit_receipt() call.
-
-_last_receipt_hash: str | None = None
-
-
-def _recover_chain_head() -> str | None:
-    """Read the most recent receipt file and return its receipt_hash, or None."""
-    try:
-        files = sorted(RECEIPTS_DIR.glob("*.json"))
-        if not files:
-            return None
-        last = json.loads(files[-1].read_text())
-        return last.get("receipt_hash")
-    except (json.JSONDecodeError, OSError, KeyError):
-        return None
-
-
-_last_receipt_hash = _recover_chain_head()
-
-
-# ── Receipt helpers ────────────────────────────────────────────────────────
-
-
-def _snapshot_before() -> dict:
-    """Capture environment state before a tool action."""
-    scan = scanner.scan()
-    state = registry.get_state()
-    return {
-        "listening_ports": sorted(scan.keys()),
-        "managed_projects": {
-            name: {"pid": info.get("pid"), "started_by": info.get("started_by")}
-            for name, info in state.items()
-        },
-    }
-
-
-def _snapshot_after() -> dict:
-    """Capture environment state after a tool action."""
-    scan = scanner.scan()
-    state = registry.get_state()
-    return {
-        "listening_ports": sorted(scan.keys()),
-        "managed_projects": {
-            name: {"pid": info.get("pid"), "started_by": info.get("started_by")}
-            for name, info in state.items()
-        },
-    }
-
 
 def _agreement_actor() -> str:
     """Agent-identity string used both for Agreement checks and receipt agent_hint.
@@ -122,63 +64,6 @@ def _agreement_actor() -> str:
     agent_hint recorded in every receipt must never diverge (§8 invariant 3).
     """
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
-
-
-def _emit_receipt(
-    action: str,
-    target: dict,
-    result: dict,
-    env_before: dict,
-    env_after: dict | None = None,
-) -> None:
-    """Write a machine-action Receipt to ~/.seshat/receipts/.
-
-    Receipt schema (locked in §16 of addendum v1b, extended in addendum v1e):
-      type, timestamp, actor, action, target, result,
-      environment_before, environment_after, previous_hash, receipt_hash
-
-    `env_after` defaults to a fresh snapshot. Denial receipts pass the same
-    snapshot used for `env_before`, since no action executed in that path.
-
-    Hash-chaining: each receipt includes the SHA-256 hash of its predecessor
-    (or null for the first receipt in a chain) and its own hash computed over
-    the full canonical JSON serialization. Any modification to any receipt
-    in the chain breaks the chain from that point forward.
-    """
-    global _last_receipt_hash
-
-    if env_after is None:
-        env_after = _snapshot_after()
-
-    receipt = {
-        "type": "machine_action",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "actor": {
-            "type": "mcp_session",
-            "session_id": SESSION_ID,
-            "agent_hint": _agreement_actor(),
-        },
-        "action": action,
-        "target": target,
-        "result": result,
-        "environment_before": env_before,
-        "environment_after": env_after,
-        "previous_hash": _last_receipt_hash,
-    }
-
-    # Canonical serialization: sorted keys, no whitespace — deterministic.
-    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-    receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    receipt["receipt_hash"] = receipt_hash
-
-    _last_receipt_hash = receipt_hash
-
-    filename = (
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
-        f"_{action}_{uuid.uuid4().hex[:8]}.json"
-    )
-    receipt_path = RECEIPTS_DIR / filename
-    receipt_path.write_text(json.dumps(receipt, indent=2))
 
 
 def _enforce(action: str, target: dict) -> str | None:
@@ -194,14 +79,23 @@ def _enforce(action: str, target: dict) -> str | None:
     if decision.allowed:
         return None
 
-    env = _snapshot_before()
+    env = receipts.snapshot()
     result = {
         "status": "denied",
         "mode": decision.mode,
         "rule": decision.rule,
         "reason": decision.reason,
     }
-    _emit_receipt(action, target, result, env, env_after=env)
+    receipts.emit(
+        action=action,
+        target=target,
+        result=result,
+        env_before=env,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+        env_after=env,
+    )
 
     denial = f"DENIED by Agreement: {decision.reason}"
     if decision.rule is not None:
@@ -318,12 +212,20 @@ def start_project(name: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     project = registry.get(name)
     if not project:
         result = {"status": "failure", "error": f"Project '{name}' not found"}
-        _emit_receipt("start_project", {"project": name}, result, env_before)
+        receipts.emit(
+            action="start_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     scan = scanner.scan()
@@ -336,11 +238,14 @@ def start_project(name: str) -> str:
                 f"'{proc['name']}' (PID {proc['pid']})"
             ),
         }
-        _emit_receipt(
-            "start_project",
-            {"project": name, "port": project["port"]},
-            result,
-            env_before,
+        receipts.emit(
+            action="start_project",
+            target={"project": name, "port": project["port"]},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
         )
         return json.dumps(result)
 
@@ -354,16 +259,27 @@ def start_project(name: str) -> str:
             deps_module.check_all_async(name, enriched)
 
         result = {"status": "success", "pid": pid}
-        _emit_receipt(
-            "start_project",
-            {"project": name, "port": project["port"], "directory": project["directory"]},
-            result,
-            env_before,
+        receipts.emit(
+            action="start_project",
+            target={"project": name, "port": project["port"], "directory": project["directory"]},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
         )
         return json.dumps(result)
     except (ValueError, OSError) as e:
         result = {"status": "failure", "error": str(e)}
-        _emit_receipt("start_project", {"project": name}, result, env_before)
+        receipts.emit(
+            action="start_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
 
@@ -374,30 +290,49 @@ def stop_project(name: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     project = registry.get(name)
     if not project:
         result = {"status": "failure", "error": f"Project '{name}' not found"}
-        _emit_receipt("stop_project", {"project": name}, result, env_before)
+        receipts.emit(
+            action="stop_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     state = registry.get_state()
     pid = state.get(name, {}).get("pid")
     if not pid:
         result = {"status": "failure", "error": "No managed process found"}
-        _emit_receipt("stop_project", {"project": name}, result, env_before)
+        receipts.emit(
+            action="stop_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     runner.stop(pid)
     registry.clear_pid(name)
 
     result = {"status": "success", "stopped_pid": pid}
-    _emit_receipt(
-        "stop_project",
-        {"project": name, "port": project["port"]},
-        result,
-        env_before,
+    receipts.emit(
+        action="stop_project",
+        target={"project": name, "port": project["port"]},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
     )
     return json.dumps(result)
 
@@ -409,12 +344,20 @@ def start_group(name: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     group = registry.get_group(name)
     if not group:
         result = {"status": "failure", "error": f"Group '{name}' not found"}
-        _emit_receipt("start_group", {"group": name}, result, env_before)
+        receipts.emit(
+            action="start_group",
+            target={"group": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     scan = scanner.scan()
@@ -456,7 +399,15 @@ def start_group(name: str) -> str:
             results.append({"name": proj_name, "error": str(e)})
 
     result = {"status": "success", "group": name, "results": results}
-    _emit_receipt("start_group", {"group": name}, result, env_before)
+    receipts.emit(
+        action="start_group",
+        target={"group": name},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
     return json.dumps(result)
 
 
@@ -467,12 +418,20 @@ def stop_group(name: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     group = registry.get_group(name)
     if not group:
         result = {"status": "failure", "error": f"Group '{name}' not found"}
-        _emit_receipt("stop_group", {"group": name}, result, env_before)
+        receipts.emit(
+            action="stop_group",
+            target={"group": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     state = registry.get_state()
@@ -488,7 +447,15 @@ def stop_group(name: str) -> str:
         results.append({"name": proj_name, "status": "stopped"})
 
     result = {"status": "success", "group": name, "results": results}
-    _emit_receipt("stop_group", {"group": name}, result, env_before)
+    receipts.emit(
+        action="stop_group",
+        target={"group": name},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
     return json.dumps(result)
 
 
@@ -517,7 +484,7 @@ def register_project(
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     project = {
         "name": name.strip(),
@@ -536,20 +503,26 @@ def register_project(
     try:
         result_project = registry.add(project)
         result = {"status": "success", "project": result_project}
-        _emit_receipt(
-            "register_project",
-            {"project": name, "port": port, "directory": directory},
-            result,
-            env_before,
+        receipts.emit(
+            action="register_project",
+            target={"project": name, "port": port, "directory": directory},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
         )
         return json.dumps(result)
     except ValueError as e:
         result = {"status": "failure", "error": str(e)}
-        _emit_receipt(
-            "register_project",
-            {"project": name, "port": port},
-            result,
-            env_before,
+        receipts.emit(
+            action="register_project",
+            target={"project": name, "port": port},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
         )
         return json.dumps(result)
 
@@ -561,12 +534,20 @@ def stop_orphan(port: int) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     scan = scanner.scan()
     if port not in scan:
         result = {"status": "failure", "error": f"No process found on port {port}"}
-        _emit_receipt("stop_orphan", {"port": port}, result, env_before)
+        receipts.emit(
+            action="stop_orphan",
+            target={"port": port},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
         return json.dumps(result)
 
     pid = scan[port]["pid"]
@@ -574,7 +555,15 @@ def stop_orphan(port: int) -> str:
     runner.stop(pid)
 
     result = {"status": "success", "stopped_pid": pid, "process": process_name}
-    _emit_receipt("stop_orphan", {"port": port, "pid": pid}, result, env_before)
+    receipts.emit(
+        action="stop_orphan",
+        target={"port": port, "pid": pid},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
     return json.dumps(result)
 
 
@@ -591,12 +580,20 @@ def set_secret(key: str, value: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     vault.set(key.strip().upper(), value)
 
     result = {"status": "success", "key": key.strip().upper()}
-    _emit_receipt("set_secret", {"key": key.strip().upper()}, result, env_before)
+    receipts.emit(
+        action="set_secret",
+        target={"key": key.strip().upper()},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
     return json.dumps(result)
 
 
@@ -612,26 +609,32 @@ def set_project_override(project: str, key: str, value: str) -> str:
     if denial:
         return denial
 
-    env_before = _snapshot_before()
+    env_before = receipts.snapshot()
 
     if not registry.get(project):
         result = {"status": "failure", "error": f"Project '{project}' not found"}
-        _emit_receipt(
-            "set_project_override",
-            {"project": project, "key": key.strip().upper()},
-            result,
-            env_before,
+        receipts.emit(
+            action="set_project_override",
+            target={"project": project, "key": key.strip().upper()},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
         )
         return json.dumps(result)
 
     vault.set_override(project, key.strip().upper(), value)
 
     result = {"status": "success", "project": project, "key": key.strip().upper()}
-    _emit_receipt(
-        "set_project_override",
-        {"project": project, "key": key.strip().upper()},
-        result,
-        env_before,
+    receipts.emit(
+        action="set_project_override",
+        target={"project": project, "key": key.strip().upper()},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
     )
     return json.dumps(result)
 
