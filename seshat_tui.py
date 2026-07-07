@@ -5,6 +5,7 @@ Launched through cli.py via _launch_tui(). Not a standalone entry point.
 """
 
 import json
+import uuid
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -18,6 +19,7 @@ from runner import Runner
 from vault import Vault
 from scanner import Scanner
 import deps as deps_module
+import receipts as receipts_module
 
 # ── Module instances ────────────────────────────────────────────────────────
 
@@ -25,6 +27,10 @@ registry = Registry()
 runner   = Runner()
 vault    = Vault()
 scanner  = Scanner()
+
+# ── Session identity ────────────────────────────────────────────────────────
+
+SESSION_ID = f"tui_{uuid.uuid4().hex[:12]}"
 
 # ── Color palette ───────────────────────────────────────────────────────────
 
@@ -351,8 +357,7 @@ class SeshatApp(App):
 
     @work(thread=True)
     def _start_project(self, name: str) -> None:
-        from cli import _snapshot, _emit_receipt, SESSION_ID
-        env_before = _snapshot()
+        env_before = receipts_module.snapshot()
         project    = registry.get(name)
         if not project:
             self.call_from_thread(self.notify, f"Project '{name}' not found.", severity="error")
@@ -368,15 +373,30 @@ class SeshatApp(App):
             self.call_from_thread(self.notify, f"{name} started (PID {pid}).")
             self.call_from_thread(self.refresh_data)
             result = {"status": "success", "pid": pid}
-            _emit_receipt("start_project", {"project": name}, result, env_before)
+            receipts_module.emit(
+                action="start_project",
+                target={"project": name},
+                result=result,
+                env_before=env_before,
+                session_id=SESSION_ID,
+                actor_type="tui_session",
+                agent_hint="tui",
+            )
         except Exception as e:
             self.call_from_thread(self.notify, str(e), severity="error")
-            _emit_receipt("start_project", {"project": name}, {"status": "failure", "error": str(e)}, env_before)
+            receipts_module.emit(
+                action="start_project",
+                target={"project": name},
+                result={"status": "failure", "error": str(e)},
+                env_before=env_before,
+                session_id=SESSION_ID,
+                actor_type="tui_session",
+                agent_hint="tui",
+            )
 
     @work(thread=True)
     def _stop_project(self, name: str) -> None:
-        from cli import _snapshot, _emit_receipt
-        env_before = _snapshot()
+        env_before = receipts_module.snapshot()
         state      = registry.get_state()
         pid        = state.get(name, {}).get("pid")
         project    = registry.get(name)
@@ -388,9 +408,12 @@ class SeshatApp(App):
         self.call_from_thread(self.notify, f"{name} stopped.")
         self.call_from_thread(self.refresh_data)
         result = {"status": "success", "stopped_pid": pid}
-        _emit_receipt(
-            "stop_project",
-            {"project": name, "port": project["port"] if project else 0},
-            result,
-            env_before,
+        receipts_module.emit(
+            action="stop_project",
+            target={"project": name, "port": project["port"] if project else 0},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="tui_session",
+            agent_hint="tui",
         )
