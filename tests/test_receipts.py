@@ -1,8 +1,11 @@
 """Tests for receipt hash-chaining and sync state tracking."""
 
+import fcntl
 import hashlib
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -182,3 +185,132 @@ class TestSyncStateTracking:
                 continue
             unsent.append(f.name)
         assert unsent == []
+
+
+class TestConcurrentEmission:
+    """Test that concurrent writers produce a linear chain, not a fork."""
+
+    def test_two_threads_produce_linear_chain(self, receipts_dir, monkeypatch):
+        """Simulate MCP + CLI writing receipts concurrently."""
+        import receipts as receipts_mod
+
+        # Point the module at our temp directory
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+
+        # Stub out snapshot to avoid needing real registry/scanner
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [],
+            "managed_projects": {},
+        })
+
+        errors = []
+
+        def writer(thread_id, count):
+            try:
+                for i in range(count):
+                    receipts_mod.emit(
+                        action=f"action_{thread_id}_{i}",
+                        target={"project": "test"},
+                        result={"status": "success"},
+                        env_before={"listening_ports": [], "managed_projects": {}},
+                        session_id=f"session_{thread_id}",
+                        actor_type="test",
+                        agent_hint="test",
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("mcp", 5))
+        t2 = threading.Thread(target=writer, args=("cli", 5))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, f"Writer threads raised errors: {errors}"
+
+        # Verify the chain is linear (no forks)
+        files = sorted(receipts_dir.glob("*.json"))
+        assert len(files) == 10
+
+        expected_previous = None
+        for f in files:
+            receipt = json.loads(f.read_text())
+            assert receipt["previous_hash"] == expected_previous, (
+                f"Chain fork detected at {f.name}: "
+                f"expected previous_hash={expected_previous}, "
+                f"got {receipt['previous_hash']}"
+            )
+            # Verify the receipt_hash is correct
+            stored_hash = receipt["receipt_hash"]
+            verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
+            canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
+            computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            assert computed == stored_hash, f"Hash mismatch in {f.name}"
+            expected_previous = stored_hash
+
+    def test_lock_file_created(self, receipts_dir, monkeypatch):
+        """Verify the lock file is created in the receipts directory."""
+        import receipts as receipts_mod
+
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        lock_path = receipts_dir / ".chain.lock"
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", lock_path)
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [],
+            "managed_projects": {},
+        })
+
+        receipts_mod.emit(
+            action="test_action",
+            target={"project": "test"},
+            result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="test_session",
+            actor_type="test",
+            agent_hint="test",
+        )
+
+        assert lock_path.exists()
+
+
+class TestReceiptLoading:
+    """Test the load() function from the extracted module."""
+
+    def test_load_returns_newest_first(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+
+        h0, _ = _make_receipt(receipts_dir, "start_project", previous_hash=None, index=0)
+        h1, _ = _make_receipt(receipts_dir, "stop_project", previous_hash=h0, index=1)
+        h2, _ = _make_receipt(receipts_dir, "start_group", previous_hash=h1, index=2)
+
+        loaded = receipts_mod.load(limit=50)
+        assert len(loaded) == 3
+        # Newest first
+        assert loaded[0]["action"] == "start_group"
+        assert loaded[2]["action"] == "start_project"
+
+    def test_load_with_action_filter(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+
+        h0, _ = _make_receipt(receipts_dir, "start_project", previous_hash=None, index=0)
+        h1, _ = _make_receipt(receipts_dir, "stop_project", previous_hash=h0, index=1)
+        h2, _ = _make_receipt(receipts_dir, "start_project", previous_hash=h1, index=2)
+
+        loaded = receipts_mod.load(limit=50, action_filter="start_project")
+        assert len(loaded) == 2
+        assert all(r["action"] == "start_project" for r in loaded)
+
+    def test_load_respects_limit(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+
+        h = None
+        for i in range(10):
+            h, _ = _make_receipt(receipts_dir, "start_project", previous_hash=h, index=i)
+
+        loaded = receipts_mod.load(limit=3)
+        assert len(loaded) == 3

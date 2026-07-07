@@ -21,7 +21,6 @@ import os
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -35,6 +34,7 @@ from vault import Vault
 from scanner import Scanner
 import deps as deps_module
 import agreements
+import receipts as receipts_module
 
 # ── Module instances ────────────────────────────────────────────────────────
 
@@ -47,78 +47,7 @@ scanner  = Scanner()
 
 SESSION_ID = f"cli_{uuid.uuid4().hex[:12]}"
 
-# ── Receipt storage ─────────────────────────────────────────────────────────
-
-RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
-RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
-
 console = Console()
-
-# ── Hash-chain state ────────────────────────────────────────────────────────
-
-_last_receipt_hash: str | None = None
-
-
-def _recover_chain_head() -> str | None:
-    """Read the most recent receipt file and return its receipt_hash, or None."""
-    try:
-        files = sorted(RECEIPTS_DIR.glob("*.json"))
-        if not files:
-            return None
-        last = json.loads(files[-1].read_text())
-        return last.get("receipt_hash")
-    except (json.JSONDecodeError, OSError, KeyError):
-        return None
-
-
-_last_receipt_hash = _recover_chain_head()
-
-# ── Receipt helpers ─────────────────────────────────────────────────────────
-
-def _snapshot() -> dict:
-    scan  = scanner.scan()
-    state = registry.get_state()
-    return {
-        "listening_ports": sorted(scan.keys()),
-        "managed_projects": {
-            name: {"pid": info.get("pid"), "started_by": info.get("started_by")}
-            for name, info in state.items()
-        },
-    }
-
-
-def _emit_receipt(action: str, target: dict, result: dict, env_before: dict) -> None:
-    global _last_receipt_hash
-
-    env_after = _snapshot()
-    receipt = {
-        "type":               "machine_action",
-        "timestamp":          datetime.now(timezone.utc).isoformat(),
-        "actor": {
-            "type":           "cli_session",
-            "session_id":     SESSION_ID,
-            "agent_hint":     os.environ.get("MCP_AGENT_HINT", "cli"),
-        },
-        "action":             action,
-        "target":             target,
-        "result":             result,
-        "environment_before": env_before,
-        "environment_after":  env_after,
-        "previous_hash":      _last_receipt_hash,
-    }
-
-    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-    receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    receipt["receipt_hash"] = receipt_hash
-
-    _last_receipt_hash = receipt_hash
-
-    filename = (
-        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
-        f"_{action}_{uuid.uuid4().hex[:8]}.json"
-    )
-    (RECEIPTS_DIR / filename).write_text(json.dumps(receipt, indent=2))
-
 
 # ── Project view builder ────────────────────────────────────────────────────
 
@@ -239,26 +168,6 @@ def _shorten_path(path: str) -> str:
     return path
 
 
-# ── Receipt helpers (shared with TUI) ──────────────────────────────────────
-
-def _load_receipts(limit: int = 50, action_filter: str | None = None) -> list:
-    if not RECEIPTS_DIR.exists():
-        return []
-    files = sorted(RECEIPTS_DIR.glob("*.json"), reverse=True)
-    results = []
-    for f in files:
-        if len(results) >= limit:
-            break
-        try:
-            r = json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        if action_filter and r.get("action") != action_filter:
-            continue
-        results.append(r)
-    return results
-
-
 # ── CLI entry point ─────────────────────────────────────────────────────────
 
 @click.group(invoke_without_command=True)
@@ -350,7 +259,7 @@ def _print_project_detail(view: dict) -> None:
 @click.option("--group", "-g", default=None, help="Start a named group of projects.")
 def start(name, group):
     """Start a project or group."""
-    env_before = _snapshot()
+    env_before = receipts_module.snapshot()
 
     if group:
         grp = registry.get_group(group)
@@ -387,7 +296,15 @@ def start(name, group):
                 console.print(f"[red]✗[/red] {proj_name}: {e}")
                 results.append({"name": proj_name, "error": str(e)})
         result = {"status": "success", "group": group, "results": results}
-        _emit_receipt("start_group", {"group": group}, result, env_before)
+        receipts_module.emit(
+            action="start_group",
+            target={"group": group},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
         return
 
     if not name:
@@ -404,7 +321,15 @@ def start(name, group):
         proc = scan[project["port"]]
         console.print(f"[red]Port {project['port']} is already in use by '{proc['name']}' (PID {proc['pid']}).[/red]")
         result = {"status": "failure", "error": f"port {project['port']} in use"}
-        _emit_receipt("start_project", {"project": name}, result, env_before)
+        receipts_module.emit(
+            action="start_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
         sys.exit(1)
 
     try:
@@ -413,11 +338,27 @@ def start(name, group):
         registry.set_pid(name, pid, started_by=SESSION_ID)
         console.print(f"[green]✓[/green] {name} started (PID {pid})")
         result = {"status": "success", "pid": pid}
-        _emit_receipt("start_project", {"project": name, "port": project["port"]}, result, env_before)
+        receipts_module.emit(
+            action="start_project",
+            target={"project": name, "port": project["port"]},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
     except Exception as e:
         console.print(f"[red]✗[/red] {name}: {e}")
         result = {"status": "failure", "error": str(e)}
-        _emit_receipt("start_project", {"project": name}, result, env_before)
+        receipts_module.emit(
+            action="start_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
         sys.exit(1)
 
 
@@ -426,7 +367,7 @@ def start(name, group):
 @click.option("--group", "-g", default=None, help="Stop a named group of projects.")
 def stop(name, group):
     """Stop a project or group."""
-    env_before = _snapshot()
+    env_before = receipts_module.snapshot()
 
     if group:
         grp = registry.get_group(group)
@@ -446,7 +387,15 @@ def stop(name, group):
             console.print(f"[green]✓[/green] {proj_name} stopped")
             results.append({"name": proj_name, "status": "stopped"})
         result = {"status": "success", "group": group, "results": results}
-        _emit_receipt("stop_group", {"group": group}, result, env_before)
+        receipts_module.emit(
+            action="stop_group",
+            target={"group": group},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
         return
 
     if not name:
@@ -463,14 +412,30 @@ def stop(name, group):
     if not pid:
         console.print(f"[red]{name} has no managed process.[/red]")
         result = {"status": "failure", "error": "no managed process"}
-        _emit_receipt("stop_project", {"project": name}, result, env_before)
+        receipts_module.emit(
+            action="stop_project",
+            target={"project": name},
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        )
         sys.exit(1)
 
     runner.stop(pid)
     registry.clear_pid(name)
     console.print(f"[green]✓[/green] {name} stopped (was PID {pid})")
     result = {"status": "success", "stopped_pid": pid}
-    _emit_receipt("stop_project", {"project": name, "port": project["port"]}, result, env_before)
+    receipts_module.emit(
+        action="stop_project",
+        target={"project": name, "port": project["port"]},
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="cli_session",
+        agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+    )
 
 
 @cli.command(name="list")
@@ -698,7 +663,7 @@ def receipts(ctx, tail, limit, action):
 
 
 def _print_receipts(limit: int, action_filter: str | None) -> None:
-    rows = _load_receipts(limit=limit, action_filter=action_filter)
+    rows = receipts_module.load(limit=limit, action_filter=action_filter)
     if not rows:
         console.print("[dim]No receipts found.[/dim]")
         return
@@ -727,11 +692,11 @@ def _print_receipts(limit: int, action_filter: str | None) -> None:
 def _tail_receipts(action_filter: str | None) -> None:
     """Live-follow receipt files as they are written."""
     console.print("[dim]Tailing receipts… Ctrl-C to stop.[/dim]")
-    seen = set(RECEIPTS_DIR.glob("*.json"))
+    seen = set(receipts_module.RECEIPTS_DIR.glob("*.json"))
     try:
         while True:
             time.sleep(1)
-            current = set(RECEIPTS_DIR.glob("*.json"))
+            current = set(receipts_module.RECEIPTS_DIR.glob("*.json"))
             new     = sorted(current - seen)
             for f in new:
                 try:
@@ -752,7 +717,7 @@ def _tail_receipts(action_filter: str | None) -> None:
         pass
 
 
-LAST_SYNCED_PATH = RECEIPTS_DIR / ".last_synced"
+LAST_SYNCED_PATH = receipts_module.RECEIPTS_DIR / ".last_synced"
 RECEIPTS_API_DEFAULT = "https://liminate.dev"
 
 
@@ -772,7 +737,7 @@ def _write_last_synced(filename: str) -> None:
 def _unsent_receipts() -> list[tuple[str, dict]]:
     """Return (filename, receipt_dict) pairs for all unsent receipts, in order."""
     last_synced = _read_last_synced()
-    files = sorted(RECEIPTS_DIR.glob("*.json"))
+    files = sorted(receipts_module.RECEIPTS_DIR.glob("*.json"))
     results = []
     past_marker = last_synced is None
     for f in files:
@@ -862,7 +827,7 @@ def receipts_sync(dry_run):
 @receipts.command(name="verify")
 def receipts_verify():
     """Verify the local receipt hash chain integrity."""
-    files = sorted(RECEIPTS_DIR.glob("*.json"))
+    files = sorted(receipts_module.RECEIPTS_DIR.glob("*.json"))
     if not files:
         console.print("[dim]No receipts to verify.[/dim]")
         return
