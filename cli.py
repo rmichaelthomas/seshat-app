@@ -629,6 +629,8 @@ def agreement_init(force):
     path.write_text(AGREEMENT_STARTER)
     console.print(f"[green]✓[/green] Agreement written to [cyan]{path}[/cyan]")
 
+    console.print(f"\n  [dim]Need to turn an existing policy into an Agreement? Try [cyan]liminate.dev/translate[/cyan][/dim]")
+
 
 @agreement_cmd.command(name="check")
 @click.argument("action")
@@ -789,6 +791,15 @@ def _print_receipts(limit: int, action_filter: str | None) -> None:
 
     console.print(table)
 
+    # Sync hint — surface the platform when receipts accumulate
+    unsent = _count_unsent()
+    if unsent > 0:
+        api_key = vault.get("__receipts_api_key__")
+        if api_key:
+            console.print(f"\n  [dim]{unsent} receipt(s) not synced. Run [cyan]seshat receipts sync[/cyan] to push to liminate.dev.[/dim]")
+        else:
+            console.print(f"\n  [dim]{unsent} receipt(s) local only. Run [cyan]seshat receipts sync[/cyan] to back up to liminate.dev (free).[/dim]")
+
 
 def _tail_receipts(action_filter: str | None) -> None:
     """Live-follow receipt files as they are written."""
@@ -852,6 +863,23 @@ def _unsent_receipts() -> list[tuple[str, dict]]:
         except (json.JSONDecodeError, OSError):
             continue
     return results
+
+
+def _count_unsent() -> int:
+    """Count unsent receipts without parsing JSON — just file count past the marker."""
+    last_synced = _read_last_synced()
+    files = sorted(receipts_module.RECEIPTS_DIR.glob("*.json"))
+    if last_synced is None:
+        return len(files)
+    past_marker = False
+    count = 0
+    for f in files:
+        if not past_marker:
+            if f.name == last_synced:
+                past_marker = True
+            continue
+        count += 1
+    return count
 
 
 @receipts.command(name="sync")
