@@ -64,6 +64,8 @@ def emit(
     actor_type: str,
     agent_hint: str,
     env_after: dict | None = None,
+    *,
+    revocation_state: dict | None = None,
 ) -> None:
     """Write a hash-chained receipt to disk with file locking.
 
@@ -93,8 +95,10 @@ def emit(
             "result": result,
             "environment_before": env_before,
             "environment_after": env_after,
-            "previous_hash": previous_hash,
         }
+        if revocation_state is not None:
+            receipt["revocation_state"] = revocation_state
+        receipt["previous_hash"] = previous_hash
 
         canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
         receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()

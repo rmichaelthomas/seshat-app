@@ -66,6 +66,12 @@ def _agreement_actor() -> str:
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
 
 
+def _emit(**kwargs) -> None:
+    """Wrap receipts.emit(), injecting the current revocation_state so every
+    MCP-emitted receipt carries it from one source (§7 invariant 4)."""
+    receipts.emit(revocation_state=agreements.revocation_state(), **kwargs)
+
+
 def _enforce(action: str, target: dict) -> str | None:
     """Evaluate the developer's Agreement for this call before it executes.
 
@@ -86,7 +92,7 @@ def _enforce(action: str, target: dict) -> str | None:
         "rule": decision.rule,
         "reason": decision.reason,
     }
-    receipts.emit(
+    _emit(
         action=action,
         target=target,
         result=result,
@@ -217,7 +223,7 @@ def start_project(name: str) -> str:
     project = registry.get(name)
     if not project:
         result = {"status": "failure", "error": f"Project '{name}' not found"}
-        receipts.emit(
+        _emit(
             action="start_project",
             target={"project": name},
             result=result,
@@ -238,7 +244,7 @@ def start_project(name: str) -> str:
                 f"'{proc['name']}' (PID {proc['pid']})"
             ),
         }
-        receipts.emit(
+        _emit(
             action="start_project",
             target={"project": name, "port": project["port"]},
             result=result,
@@ -259,7 +265,7 @@ def start_project(name: str) -> str:
             deps_module.check_all_async(name, enriched)
 
         result = {"status": "success", "pid": pid}
-        receipts.emit(
+        _emit(
             action="start_project",
             target={"project": name, "port": project["port"], "directory": project["directory"]},
             result=result,
@@ -271,7 +277,7 @@ def start_project(name: str) -> str:
         return json.dumps(result)
     except (ValueError, OSError) as e:
         result = {"status": "failure", "error": str(e)}
-        receipts.emit(
+        _emit(
             action="start_project",
             target={"project": name},
             result=result,
@@ -295,7 +301,7 @@ def stop_project(name: str) -> str:
     project = registry.get(name)
     if not project:
         result = {"status": "failure", "error": f"Project '{name}' not found"}
-        receipts.emit(
+        _emit(
             action="stop_project",
             target={"project": name},
             result=result,
@@ -310,7 +316,7 @@ def stop_project(name: str) -> str:
     pid = state.get(name, {}).get("pid")
     if not pid:
         result = {"status": "failure", "error": "No managed process found"}
-        receipts.emit(
+        _emit(
             action="stop_project",
             target={"project": name},
             result=result,
@@ -325,7 +331,7 @@ def stop_project(name: str) -> str:
     registry.clear_pid(name)
 
     result = {"status": "success", "stopped_pid": pid}
-    receipts.emit(
+    _emit(
         action="stop_project",
         target={"project": name, "port": project["port"]},
         result=result,
@@ -349,7 +355,7 @@ def start_group(name: str) -> str:
     group = registry.get_group(name)
     if not group:
         result = {"status": "failure", "error": f"Group '{name}' not found"}
-        receipts.emit(
+        _emit(
             action="start_group",
             target={"group": name},
             result=result,
@@ -399,7 +405,7 @@ def start_group(name: str) -> str:
             results.append({"name": proj_name, "error": str(e)})
 
     result = {"status": "success", "group": name, "results": results}
-    receipts.emit(
+    _emit(
         action="start_group",
         target={"group": name},
         result=result,
@@ -423,7 +429,7 @@ def stop_group(name: str) -> str:
     group = registry.get_group(name)
     if not group:
         result = {"status": "failure", "error": f"Group '{name}' not found"}
-        receipts.emit(
+        _emit(
             action="stop_group",
             target={"group": name},
             result=result,
@@ -447,7 +453,7 @@ def stop_group(name: str) -> str:
         results.append({"name": proj_name, "status": "stopped"})
 
     result = {"status": "success", "group": name, "results": results}
-    receipts.emit(
+    _emit(
         action="stop_group",
         target={"group": name},
         result=result,
@@ -503,7 +509,7 @@ def register_project(
     try:
         result_project = registry.add(project)
         result = {"status": "success", "project": result_project}
-        receipts.emit(
+        _emit(
             action="register_project",
             target={"project": name, "port": port, "directory": directory},
             result=result,
@@ -515,7 +521,7 @@ def register_project(
         return json.dumps(result)
     except ValueError as e:
         result = {"status": "failure", "error": str(e)}
-        receipts.emit(
+        _emit(
             action="register_project",
             target={"project": name, "port": port},
             result=result,
@@ -539,7 +545,7 @@ def stop_orphan(port: int) -> str:
     scan = scanner.scan()
     if port not in scan:
         result = {"status": "failure", "error": f"No process found on port {port}"}
-        receipts.emit(
+        _emit(
             action="stop_orphan",
             target={"port": port},
             result=result,
@@ -555,7 +561,7 @@ def stop_orphan(port: int) -> str:
     runner.stop(pid)
 
     result = {"status": "success", "stopped_pid": pid, "process": process_name}
-    receipts.emit(
+    _emit(
         action="stop_orphan",
         target={"port": port, "pid": pid},
         result=result,
@@ -585,7 +591,7 @@ def set_secret(key: str, value: str) -> str:
     vault.set(key.strip().upper(), value)
 
     result = {"status": "success", "key": key.strip().upper()}
-    receipts.emit(
+    _emit(
         action="set_secret",
         target={"key": key.strip().upper()},
         result=result,
@@ -613,7 +619,7 @@ def set_project_override(project: str, key: str, value: str) -> str:
 
     if not registry.get(project):
         result = {"status": "failure", "error": f"Project '{project}' not found"}
-        receipts.emit(
+        _emit(
             action="set_project_override",
             target={"project": project, "key": key.strip().upper()},
             result=result,
@@ -627,7 +633,7 @@ def set_project_override(project: str, key: str, value: str) -> str:
     vault.set_override(project, key.strip().upper(), value)
 
     result = {"status": "success", "project": project, "key": key.strip().upper()}
-    receipts.emit(
+    _emit(
         action="set_project_override",
         target={"project": project, "key": key.strip().upper()},
         result=result,

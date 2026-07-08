@@ -9,12 +9,16 @@ all deny. A matching forbid always wins over a matching permit.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import liminate
 
 AGREEMENT_PATH = Path.home() / ".seshat" / "agreement.limn"
+REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
+LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
 
 _ERROR_STATUS_NAMES = {
     "ERROR_PARSE",
@@ -39,6 +43,100 @@ def load_agreement() -> str | None:
         return AGREEMENT_PATH.read_text()
     except FileNotFoundError:
         return None
+
+
+def load_revocations() -> str | None:
+    """Return the revocations file text, or None if it doesn't exist."""
+    try:
+        return REVOCATIONS_PATH.read_text()
+    except FileNotFoundError:
+        return None
+
+
+def revocation_state() -> dict | None:
+    """Return {'head_hash': ..., 'last_checked': ...} describing the current
+    revocations file, or None when no revocations.limn exists (backward-
+    compatible omission). head_hash is the SHA-256 of the file content;
+    last_checked is read from the .last_synced_revocations marker written by
+    `seshat revocations sync` (None if never synced)."""
+    revocations_text = load_revocations()
+    if revocations_text is None:
+        return None
+    head_hash = hashlib.sha256(revocations_text.encode("utf-8")).hexdigest()
+    try:
+        last_checked = LAST_SYNCED_REVOCATIONS_PATH.read_text().strip() or None
+    except FileNotFoundError:
+        last_checked = None
+    return {"head_hash": head_hash, "last_checked": last_checked}
+
+
+def _temporal_window(canonical: str | None) -> str:
+    """Return 'active' | 'expired' | 'future' | 'unbounded' | 'malformed' for a
+    rule's starting/until prefix. Ported from liminate-dev serializers.py
+    (_extract_temporal_window) so the harness enforces the same window
+    semantics the platform records. Interpreter untouched — this reads the
+    canonical string only.
+
+    A malformed date is NOT silently ignored here the way the platform's
+    display-only serializer ignores it: this function is an ENFORCEMENT
+    path, so an unparseable date must surface to the caller as a deny, per
+    §8.A (malformed dates deny). Return 'malformed' for that case; the
+    caller maps it to an error decision.
+    """
+    if not canonical:
+        return "unbounded"
+    starting_date = None
+    until_date = None
+    words = canonical.split()
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "starting" and i + 1 < len(words):
+            raw = words[i + 1].strip('"')
+            try:
+                starting_date = date.fromisoformat(raw)
+            except ValueError:
+                return "malformed"
+            i += 2
+            continue
+        if w == "until" and i + 1 < len(words):
+            raw = words[i + 1].strip('"')
+            try:
+                until_date = date.fromisoformat(raw)
+            except ValueError:
+                return "malformed"
+            i += 2
+            continue
+        break
+    if starting_date is None and until_date is None:
+        return "unbounded"
+    today = datetime.now(timezone.utc).date()
+    if starting_date is not None and today < starting_date:
+        return "future"
+    if until_date is not None and today > until_date:
+        return "expired"
+    return "active"
+
+
+def _validate_forbid_only(revocations_text: str) -> str | None:
+    """Return None if every non-blank, non-comment line is a forbid statement
+    (optionally with a starting/until prefix). Return an error string naming
+    the first offending line otherwise.
+
+    A revocation subtracts authority; it must never grant. A permit (or any
+    non-forbid verb) in revocations.limn is a validation failure, not a
+    silently-ignored line — a malformed kill order must be loud. Verb
+    extraction reuses _verb_of() (the existing skip-prefix helper), so a
+    'starting "..." forbid ...' line validates correctly.
+    """
+    for lineno, line in enumerate(revocations_text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        verb = _verb_of(stripped)
+        if verb != "forbid":
+            return f"line {lineno}: expected a forbid statement, got {verb!r}: {stripped!r}"
+    return None
 
 
 def _verb_of(canonical: str | None) -> str | None:
@@ -101,12 +199,24 @@ def check_action(
                 reason=f"Invalid characters in {field_name}: quotes and newlines are not permitted.",
             )
 
+    revocations_text = load_revocations()
+    if revocations_text is not None:
+        validation_error = _validate_forbid_only(revocations_text)
+        if validation_error is not None:
+            return Decision(
+                allowed=False,
+                mode="error",
+                rule=None,
+                reason=f"Invalid revocations.limn: {validation_error}",
+            )
+
     composed = (
         f'remember a string called actor with "{actor}"\n'
         f'remember a string called action with "{action}"\n'
         f'remember a string called scope with "{scope_value}"\n'
         "\n"
-        f"{agreement_text}"
+        + (f"{revocations_text}\n" if revocations_text else "")
+        + f"{agreement_text}"
     )
 
     try:
@@ -128,8 +238,26 @@ def check_action(
                 reason=f"Agreement evaluation error ({r.status.name}): {r.message or 'unknown error'}",
             )
 
+    # Temporal gate: a line whose starting/until window has not yet opened or
+    # has already closed is treated as absent — it cannot fire a forbid and
+    # cannot satisfy a permit. Computed once per line so both scans below
+    # (and any future ones) see a consistent verdict for a given result.
+    windows: list[str] = []
     for r in result.results:
+        window = _temporal_window(r.canonical)
+        if window == "malformed":
+            return Decision(
+                allowed=False,
+                mode="error",
+                rule=r.canonical,
+                reason=f"Malformed date in temporal window: {r.canonical}",
+            )
+        windows.append(window)
+
+    for r, window in zip(result.results, windows):
         if r.status.name == "PROHIBITION_VIOLATED":
+            if window in ("expired", "future"):
+                continue
             return Decision(
                 allowed=False,
                 mode="forbidden",
@@ -137,8 +265,10 @@ def check_action(
                 reason=r.message or "Forbidden by Agreement.",
             )
 
-    for r in result.results:
+    for r, window in zip(result.results, windows):
         if _verb_of(r.canonical) == "permit" and r.output:
+            if window in ("expired", "future"):
+                continue
             return Decision(
                 allowed=True,
                 mode="permitted",
