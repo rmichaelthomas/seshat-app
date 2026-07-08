@@ -36,6 +36,7 @@ from scanner import Scanner
 import deps as deps_module
 import agreements
 import receipts as receipts_module
+import invariant_check
 
 # ── Module instances ────────────────────────────────────────────────────────
 
@@ -52,9 +53,16 @@ console = Console()
 
 
 def _emit(**kwargs) -> None:
-    """Wrap receipts.emit(), injecting the current revocation_state so every
-    CLI-emitted receipt carries it from one source (§7 invariant 4)."""
-    receipts_module.emit(revocation_state=agreements.revocation_state(), **kwargs)
+    """Wrap receipts.emit(), injecting revocation_state and (post-action)
+    the Invariant verification block so every CLI-emitted receipt carries
+    them from one source (§7 invariant 4)."""
+    env_after = kwargs.get("env_after") or receipts_module.snapshot()
+    kwargs["env_after"] = env_after
+    receipts_module.emit(
+        revocation_state=agreements.revocation_state(),
+        invariant=invariant_check.run_verification(env_after),
+        **kwargs,
+    )
 
 
 # ── Project view builder ────────────────────────────────────────────────────
@@ -651,6 +659,91 @@ def agreement_show():
 
 
 cli.add_command(agreement_cmd, name="agreement")
+
+
+# ── Invariant commands ──────────────────────────────────────────────────────
+
+INVARIANT_STARTER = """\
+-- Seshat Invariant — post-action verification claims.
+-- These check environment correctness AFTER a permitted action runs.
+-- Unlike the Agreement (which grants/denies permission), these verify state.
+-- Claims that fail are recorded on the receipt; they do NOT block actions.
+
+-- Example: require that the vault project stays reachable.
+-- require source is "environment" and status is "ok"
+"""
+
+
+@cli.group()
+def invariant_cmd():
+    """Invariant post-action verification management (~/.seshat/invariant.limn)."""
+
+
+@invariant_cmd.command(name="init")
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing Invariant contract.")
+def invariant_init(force):
+    """Write the starter Invariant contract to ~/.seshat/invariant.limn."""
+    path = agreements.INVARIANT_PATH
+    if path.exists() and not force:
+        console.print(f"[yellow]Invariant contract already exists at {path}.[/yellow] Use --force to overwrite.")
+        sys.exit(1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(INVARIANT_STARTER)
+    console.print(f"[green]✓[/green] Invariant contract written to [cyan]{path}[/cyan]")
+
+
+@invariant_cmd.command(name="show")
+def invariant_show():
+    """Print the current Invariant contract."""
+    text = agreements.load_invariant()
+    if text is None:
+        console.print(
+            f"[dim]No Invariant contract exists at {agreements.INVARIANT_PATH}. "
+            f"Run: seshat invariant init[/dim]"
+        )
+        return
+    console.print(text)
+
+
+@invariant_cmd.command(name="check")
+def invariant_check_cmd():
+    """Run Invariant verification against the current environment and print per-claim outcomes."""
+    if agreements.load_invariant() is None:
+        console.print(
+            f"[dim]No Invariant contract exists at {agreements.INVARIANT_PATH}. "
+            f"Run: seshat invariant init[/dim]"
+        )
+        return
+
+    block = invariant_check.run_verification(receipts_module.snapshot())
+    if block is None:
+        console.print("[yellow]Invariant harness unavailable (liminate-invariant not installed).[/yellow]")
+        return
+
+    if "error" in block:
+        console.print(f"[red]Invariant harness error:[/red] {block['error']}")
+        return
+
+    table = Table(title="Invariant verification")
+    table.add_column("Claim")
+    table.add_column("Status")
+    table.add_column("Cycles")
+    table.add_column("Escalation reason")
+    style_by_status = {"verified": "green", "corrected": "cyan", "escalated": "red"}
+    for claim in block["claims"]:
+        status = claim["status"]
+        style = style_by_status.get(status, "white")
+        table.add_row(
+            claim["name"],
+            f"[{style}]{status}[/{style}]",
+            str(claim["cycles"]),
+            claim["escalation_reason"] or "",
+        )
+    console.print(table)
+    console.print(f"converged={block['converged']}  total_cycles={block['total_cycles']}")
+
+
+cli.add_command(invariant_cmd, name="invariant")
 
 
 # ── Receipts command ────────────────────────────────────────────────────────

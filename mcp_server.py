@@ -22,6 +22,7 @@ from runner import Runner
 from vault import Vault
 import deps as deps_module
 import receipts
+import invariant_check
 
 try:
     import agreements
@@ -67,9 +68,16 @@ def _agreement_actor() -> str:
 
 
 def _emit(**kwargs) -> None:
-    """Wrap receipts.emit(), injecting the current revocation_state so every
-    MCP-emitted receipt carries it from one source (§7 invariant 4)."""
-    receipts.emit(revocation_state=agreements.revocation_state(), **kwargs)
+    """Wrap receipts.emit(), injecting revocation_state and (post-action)
+    the Invariant verification block so every MCP-emitted receipt carries
+    them from one source (§7 invariant 4)."""
+    env_after = kwargs.get("env_after") or receipts.snapshot()
+    kwargs["env_after"] = env_after
+    receipts.emit(
+        revocation_state=agreements.revocation_state(),
+        invariant=invariant_check.run_verification(env_after),
+        **kwargs,
+    )
 
 
 def _enforce(action: str, target: dict) -> str | None:

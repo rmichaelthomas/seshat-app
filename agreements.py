@@ -19,6 +19,7 @@ import liminate
 AGREEMENT_PATH = Path.home() / ".seshat" / "agreement.limn"
 REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
 LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
+INVARIANT_PATH = Path.home() / ".seshat" / "invariant.limn"
 
 _ERROR_STATUS_NAMES = {
     "ERROR_PARSE",
@@ -49,6 +50,14 @@ def load_revocations() -> str | None:
     """Return the revocations file text, or None if it doesn't exist."""
     try:
         return REVOCATIONS_PATH.read_text()
+    except FileNotFoundError:
+        return None
+
+
+def load_invariant() -> str | None:
+    """Return the Invariant verification contract text, or None if absent."""
+    try:
+        return INVARIANT_PATH.read_text()
     except FileNotFoundError:
         return None
 
