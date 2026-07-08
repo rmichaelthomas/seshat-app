@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -48,6 +49,13 @@ scanner  = Scanner()
 SESSION_ID = f"cli_{uuid.uuid4().hex[:12]}"
 
 console = Console()
+
+
+def _emit(**kwargs) -> None:
+    """Wrap receipts.emit(), injecting the current revocation_state so every
+    CLI-emitted receipt carries it from one source (§7 invariant 4)."""
+    receipts_module.emit(revocation_state=agreements.revocation_state(), **kwargs)
+
 
 # ── Project view builder ────────────────────────────────────────────────────
 
@@ -296,7 +304,7 @@ def start(name, group):
                 console.print(f"[red]✗[/red] {proj_name}: {e}")
                 results.append({"name": proj_name, "error": str(e)})
         result = {"status": "success", "group": group, "results": results}
-        receipts_module.emit(
+        _emit(
             action="start_group",
             target={"group": group},
             result=result,
@@ -321,7 +329,7 @@ def start(name, group):
         proc = scan[project["port"]]
         console.print(f"[red]Port {project['port']} is already in use by '{proc['name']}' (PID {proc['pid']}).[/red]")
         result = {"status": "failure", "error": f"port {project['port']} in use"}
-        receipts_module.emit(
+        _emit(
             action="start_project",
             target={"project": name},
             result=result,
@@ -338,7 +346,7 @@ def start(name, group):
         registry.set_pid(name, pid, started_by=SESSION_ID)
         console.print(f"[green]✓[/green] {name} started (PID {pid})")
         result = {"status": "success", "pid": pid}
-        receipts_module.emit(
+        _emit(
             action="start_project",
             target={"project": name, "port": project["port"]},
             result=result,
@@ -350,7 +358,7 @@ def start(name, group):
     except Exception as e:
         console.print(f"[red]✗[/red] {name}: {e}")
         result = {"status": "failure", "error": str(e)}
-        receipts_module.emit(
+        _emit(
             action="start_project",
             target={"project": name},
             result=result,
@@ -387,7 +395,7 @@ def stop(name, group):
             console.print(f"[green]✓[/green] {proj_name} stopped")
             results.append({"name": proj_name, "status": "stopped"})
         result = {"status": "success", "group": group, "results": results}
-        receipts_module.emit(
+        _emit(
             action="stop_group",
             target={"group": group},
             result=result,
@@ -412,7 +420,7 @@ def stop(name, group):
     if not pid:
         console.print(f"[red]{name} has no managed process.[/red]")
         result = {"status": "failure", "error": "no managed process"}
-        receipts_module.emit(
+        _emit(
             action="stop_project",
             target={"project": name},
             result=result,
@@ -427,7 +435,7 @@ def stop(name, group):
     registry.clear_pid(name)
     console.print(f"[green]✓[/green] {name} stopped (was PID {pid})")
     result = {"status": "success", "stopped_pid": pid}
-    receipts_module.emit(
+    _emit(
         action="stop_project",
         target={"project": name, "port": project["port"]},
         result=result,
@@ -877,6 +885,116 @@ def receipts_verify():
         console.print(f"[green]✓[/green] Chain intact — {total} receipt(s) verified.")
     else:
         console.print(f"\n[yellow]Chain broken at receipt {total} of {len(files)}.[/yellow]")
+
+
+# ── Revocations command ─────────────────────────────────────────────────────
+
+REVOCATIONS_API_DEFAULT = "https://liminate.dev"
+
+
+@cli.group()
+def revocations_cmd():
+    """Revocation registry management (~/.seshat/revocations.limn)."""
+
+
+@revocations_cmd.command(name="show")
+def revocations_show():
+    """Print the current revocations file."""
+    text = agreements.load_revocations()
+    if text is None:
+        console.print(
+            f"[dim]No revocations file. It is written by `seshat revocations sync` "
+            f"from the platform registry.[/dim]"
+        )
+        return
+
+    error = agreements._validate_forbid_only(text)
+    if error is not None:
+        console.print(f"[yellow]Invalid revocations.limn: {error}[/yellow]")
+    console.print(text)
+
+
+@revocations_cmd.command(name="sync")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would change without writing.")
+def revocations_sync(dry_run):
+    """Pull the current revocation set from the platform registry."""
+    import httpx
+
+    api_key = vault.get("__receipts_api_key__")
+    if not api_key:
+        console.print(
+            "[red]No Receipts API key configured.[/red]\n"
+            "  Set one with: [cyan]seshat vault set __RECEIPTS_API_KEY__ <your-key>[/cyan]\n"
+            "  Get a key at: [cyan]https://liminate.dev/keys[/cyan]"
+        )
+        sys.exit(1)
+
+    api_base = os.environ.get("SESHAT_RECEIPTS_API", REVOCATIONS_API_DEFAULT)
+    url = f"{api_base}/api/v1/revocations"
+
+    old_text = agreements.load_revocations()
+    old_hash = hashlib.sha256(old_text.encode("utf-8")).hexdigest() if old_text is not None else None
+
+    try:
+        resp = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # Fail-open: an unreachable/erroring registry leaves the last-known
+        # revocations.limn in force. Never delete or blank it on transport error.
+        console.print(
+            f"[yellow]Warning:[/yellow] revocations sync failed (HTTP {e.response.status_code}); "
+            f"local revocation set may be stale."
+        )
+        sys.exit(1)
+    except httpx.RequestError as e:
+        console.print(
+            f"[yellow]Warning:[/yellow] revocations sync failed ({e}); "
+            f"local revocation set may be stale."
+        )
+        sys.exit(1)
+
+    data = resp.json()
+    new_text = data.get("revocations_limn", "")
+    # Self-computed, not the platform's claimed head_hash: this must use the
+    # same method as agreements.revocation_state() (sha256 of actual content)
+    # so the changed-content comparison against old_hash is apples-to-apples,
+    # and so the receipt below can't be spoofed by a mismatched claimed hash.
+    new_hash = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+
+    if dry_run:
+        line_count = len(new_text.splitlines())
+        console.print(f"Would sync: [dim]{old_hash or '(none)'}[/dim] → [cyan]{new_hash}[/cyan]  ({line_count} line(s))")
+        return
+
+    changed = new_hash != old_hash
+
+    agreements.REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agreements.REVOCATIONS_PATH.write_text(new_text)
+
+    agreements.LAST_SYNCED_REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agreements.LAST_SYNCED_REVOCATIONS_PATH.write_text(datetime.now(timezone.utc).isoformat() + "\n")
+
+    console.print(f"[green]✓[/green] revocations.limn synced from {api_base}")
+
+    if changed:
+        env = receipts_module.snapshot()
+        _emit(
+            action="apply_revocations",
+            target={"head_hash": new_hash},
+            result={"status": "success"},
+            env_before=env,
+            session_id=SESSION_ID,
+            actor_type="cli_session",
+            agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+            env_after=env,
+        )
+
+
+cli.add_command(revocations_cmd, name="revocations")
 
 
 # ── Serve and MCP commands ──────────────────────────────────────────────────
