@@ -1,89 +1,88 @@
 # Seshat
 
-Local environmental agent harness for developers running multiple services on one machine.
+Govern what AI agents do on your machine.
 
-Seshat makes your local environment legible: what's running, what's broken, what an agent touched, and what it's allowed to touch. It exposes that knowledge through a dashboard at `http://localhost:9000` and an MCP server that AI coding agents (Claude Code, Cursor, Windsurf) can query before they act.
+*Part of the Liminate family — trust infrastructure for autonomous AI, built on a [62-word prose-as-syntax language](https://github.com/rmichaelthomas/liminate).*
 
-The name comes from the Egyptian goddess of writing, measurement, and record-keeping. Seshat measured the foundation before anything was built.
+Seshat is a local governance layer for AI coding agents. It sits between your agent (Claude Code, Cursor, Windsurf) and your machine, enforcing permissions you write in plain English. Every action — permitted or denied — gets a tamper-proof, hash-chained receipt. Not a sandbox. Not a prompt wrapper. A governance layer with a receipt chain.
 
----
+## See it in action
+
+**Full CLI + live agent governance loop** — Agreement enforcement, receipts, agent attribution, chain verification:
+
+![Seshat Demo](./seshat-demo.svg)
+
+**Interactive TUI** — Projects, Ports, and Receipts tabs:
+
+![Seshat TUI Demo](./seshat-tui-demo.svg)
 
 ## What it does
 
-**Registry and process management**
+You write an Agreement — a few lines of plain English declaring what an agent may and may not do — and Seshat enforces it at the MCP tier. No matching permit? Denied. A `forbid` always wins. Every action produces a hash-chained receipt you can verify, sync, and audit. Optionally, a verification contract checks environment correctness after every permitted action via the [Invariant](https://github.com/rmichaelthomas/liminate-invariant) harness.
 
-Register projects by name, port, and directory. Seshat remembers them across reboots. Start and stop services from the dashboard. Projects with multiple processes launch as a single unit.
+## Example
 
-**MCP server**
+```
+permit actor is "claude-code" and action is "start_project"
+permit actor is "claude-code" and action is "stop_project"
+forbid action is "set_secret" because "secrets stay manual"
+```
 
-Exposes your full local environment to AI coding agents: registered projects, port assignments, running processes, vault keys (resolved, never raw), dependency state, and agent session history. Agents can query the machine before they act on it.
+```bash
+seshat agreement init
+seshat agreement check start_project --actor claude-code
+# → ALLOW  mode=permitted
+```
 
-**Machine-action Receipts**
+→ Full Agreement walkthrough and examples at [liminate.dev/agreements](https://liminate.dev/agreements)
 
-Every action an AI agent takes through Seshat is recorded as a Receipt: what ran, what changed, which agent session initiated it. Attribution is tracked at the process level, not inferred after the fact.
+## Built by Liminate
 
-**Encrypted secrets vault**
+Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a prose-as-syntax language where plain English sentences execute directly.
 
-API keys, tokens, and credentials stored per project, encrypted with a master password backed by macOS Keychain. Agents get resolved values for the keys they're permitted to access. They cannot enumerate the vault.
+| | Repo | What it does |
+|---|---|---|
+| **← this repo** | [**seshat-app**](https://github.com/rmichaelthomas/seshat-app) | **Local agent harness. Agreement enforcement, receipts, CLI/TUI/dashboard/MCP server.** |
+| | [liminate](https://github.com/rmichaelthomas/liminate) | The language and interpreter. 62 words, deterministic execution, domain packs. |
+| | [liminate-invariant](https://github.com/rmichaelthomas/liminate-invariant) | Semantic verification harness. Deterministic claim-verification correction loop. |
 
-**Port scanner and conflict detection**
+→ [liminate.dev](https://liminate.dev)
 
-Live scan of what's actually running on each registered port. Conflicts surface immediately. Processes Seshat didn't start are identified and shown separately.
+## Install
 
-**Local hostnames**
+Requires Python 3.11+.
 
-Every registered project gets a `.seshat` address (`my-api.seshat`) via Caddy and dnsmasq. Stop memorizing port numbers.
+```bash
+brew tap rmichaelthomas/seshat
+brew install seshat
 
-**Supporting tools**
+seshat --help
+seshat agreement init
+```
 
-- GitHub import: scan your repos and import with port, start command, and tags pre-filled from the README
-- Local discovery: scan a directory for projects and register them in one click
-- Log viewer: tail live output without opening a separate terminal
-- Groups: organize projects into named groups
-- Folder organizer: move projects to recommended directories, preview changes, roll back if anything goes wrong
-
----
-
-## Requirements
-
-- macOS
-- Python 3.10+
-- [Caddy](https://caddyserver.com/docs/install) (`brew install caddy`) for the `.seshat` reverse proxy
-- [dnsmasq](https://formulae.brew.sh/formula/dnsmasq) (`brew install dnsmasq`) for wildcard DNS resolution of `*.seshat`
-
----
-
-## Setup
+Or from source:
 
 ```bash
 git clone https://github.com/rmichaelthomas/seshat-app.git
 cd seshat-app
-pip3 install -r requirements.txt
-python3 seshat.py
+pip install .
 ```
 
-Open `http://localhost:9000`.
+The harness runs entirely on your machine. No network calls, no telemetry, no account required.
 
-### Local hostnames
+## Quick start
 
-To enable `.seshat` addresses, click **Set Up** in the banner on the dashboard. The wizard will:
+### 1. Write an Agreement
 
-1. Confirm Caddy is installed
-2. Confirm dnsmasq is installed
-3. Add `address=/.seshat/127.0.0.1` to your dnsmasq config
-4. Walk through adding a macOS resolver file (one `sudo` command, shown in the UI)
+```bash
+seshat agreement init
+```
 
-After setup, every registered project is reachable at `http://<project-name>.seshat`.
+This writes a starter Agreement to `~/.seshat/agreement.limn`. Edit it — `permit` what your agent should do, `forbid` what it shouldn't.
 
-### MCP server
+### 2. Connect your agent
 
-The MCP server lets AI coding agents (Claude Desktop, Claude Code, Cursor, Windsurf) query your local environment before they act on it.
-
-`seshat mcp` starts an **stdio MCP server**. When you run it directly, it will appear to hang — that is correct. It is waiting for a client to connect. You do not run it in a terminal; you tell your AI client to run it on your behalf.
-
-#### Claude Desktop
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (create it if it does not exist):
+**Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -96,111 +95,193 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (create i
 }
 ```
 
-Restart Claude Desktop. Seshat will appear in the MCP tools panel.
-
-#### Claude Code
-
-Add Seshat to your project or global MCP config:
+**Claude Code:**
 
 ```bash
 claude mcp add seshat -- seshat mcp
 ```
 
-Or add it manually to `.mcp.json` in your project root:
+### 3. See what happens
+
+```bash
+seshat receipts                    # recent agent actions
+seshat receipts verify             # verify the hash chain
+seshat receipts --tail             # live-follow
+```
+
+## The Agreement
+
+The Agreement is written in [Liminate](https://github.com/rmichaelthomas/liminate). You don't need to learn the language — just write `permit` and `forbid` rules with conditions on `actor`, `action`, and `scope`.
+
+```
+-- Allow Claude Code to manage projects
+permit actor is "claude-code" and action is "start_project"
+permit actor is "claude-code" and action is "stop_project"
+permit actor is "claude-code" and action is "start_group"
+permit actor is "claude-code" and action is "stop_group"
+
+-- Block secret access
+forbid action is "set_secret" because "secrets stay in the dashboard"
+
+-- Time-limited access
+starting "2026-07-01" until "2026-07-31" permit actor is "contractor-agent" and action is "start_project"
+```
+
+**Facts available:** `actor` (from `MCP_AGENT_HINT`), `action` (the MCP tool name), `scope` (project or group name, or `"none"`).
+
+**Tools governed:** `start_project`, `stop_project`, `start_group`, `stop_group`, `register_project`, `stop_orphan`, `set_secret`, `set_project_override`.
+
+→ Primer and interactive examples at [liminate.dev/agreements/primer](https://liminate.dev/agreements/primer)
+
+## Verification (Invariant)
+
+Beyond permission, verify environment correctness after every permitted action. Write claims in `~/.seshat/invariant.limn`:
+
+```bash
+seshat invariant init      # starter verification contract
+seshat invariant show      # print current contract
+seshat invariant check     # run verification against current state
+```
+
+The [Invariant](https://github.com/rmichaelthomas/liminate-invariant) harness runs after every permitted action. Claims that fail are recorded on the receipt — they don't block the action. The Agreement governs *permission*; the verification contract governs *correctness*. Deterministic, no LLM required.
+
+## Receipts
+
+Every agent action produces a SHA-256 hash-chained receipt in `~/.seshat/receipts/`:
 
 ```json
 {
-  "mcpServers": {
-    "seshat": {
-      "command": "seshat",
-      "args": ["mcp"]
-    }
-  }
+  "type": "machine_action",
+  "timestamp": "2026-07-08T14:23:01.123456+00:00",
+  "actor": {
+    "type": "mcp_session",
+    "session_id": "mcp_session_a1b2c3d4e5f6",
+    "agent_hint": "claude-code"
+  },
+  "action": "start_project",
+  "target": { "project": "my-api", "port": 3000 },
+  "result": { "status": "success", "pid": 12345 },
+  "previous_hash": "abc123...",
+  "receipt_hash": "def456..."
 }
 ```
 
-#### Verify the server is responding
-
-To confirm the server is alive without a client, start it and paste this line into the terminal, then press Enter:
-
-```
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}
-```
-
-The server will respond with a JSON-RPC result listing its capabilities. Press `Ctrl-C` to stop it.
-
-#### What agents can access
-
-Once connected, agents can:
-
-- Query registered projects, their status, and port assignments (`seshat://projects`)
-- Check what processes are running on each port (`seshat://listeners`)
-- Identify unregistered processes (`seshat://orphans`)
-- Read dependency health and project logs (`seshat://project/{name}/deps`, `seshat://project/{name}/logs`)
-- Start and stop projects by name (`start_project`, `stop_project`)
-- Register new projects (`register_project`)
-- Store and resolve secrets (`set_secret`, `set_project_override`)
-
----
-
-## Agreements
-
-Every MCP tool call is checked against the developer's Agreement — a [Liminate](https://liminate.dev) contract at `~/.seshat/agreement.limn` — before it executes. The posture is deny-by-default: no Agreement, no matching `permit` rule, or any malformed rule all deny the call. A matching `forbid` always wins over a matching `permit`.
-
-Enforcement happens at the MCP tier — the surface an autonomous agent operates on. The dashboard and CLI start/stop paths are not gated.
+Tamper with any receipt and `seshat receipts verify` catches it.
 
 ```bash
-seshat agreement init          # write the starter Agreement
-seshat agreement check <action>  # dry-run a decision (exit 0 allow, 1 deny)
-seshat agreement show          # print the current Agreement
+seshat receipts                    # list recent receipts
+seshat receipts --tail             # live-follow new receipts
+seshat receipts --action start_project  # filter by action
+seshat receipts verify             # verify chain integrity
+seshat receipts sync               # push to liminate.dev (optional)
 ```
 
-Every denial is recorded as a machine-action Receipt (`status: denied`, with the deciding rule) alongside the Receipts already generated for successful actions.
+→ Receipt schema and walkthrough at [liminate.dev/receipts](https://liminate.dev/receipts)
 
----
+## Real-world examples
 
-## Project structure
+Seshat's Agreement and Receipt system has been validated against real compliance workloads:
 
-| File | Purpose |
-|---|---|
-| `seshat.py` | Flask app, API routes |
-| `registry.py` | Project registry (YAML + runtime state) |
-| `runner.py` | Process start/stop and log capture |
-| `scanner.py` | Port scanner using psutil |
-| `vault.py` | Encrypted secrets vault |
-| `organizer.py` | Folder move, health checks, rollback |
-| `router.py` | Caddy + dnsmasq management, `.seshat` hostnames |
-| `github.py` | GitHub API client, README metadata extraction |
-| `local_scanner.py` | Local directory project discovery |
-| `deps.py` | Dependency detection |
-| `mcp_server.py` | MCP server for agent access |
-| `agreements.py` | Agreement loading and deny-by-default enforcement decisions |
-| `receipts.py` | Machine-action Receipt recording and retrieval |
-| `templates/` | Dashboard HTML |
-| `static/` | CSS and JavaScript |
-| `tests/` | pytest test suite |
+- **[EDGAR financial filings](https://liminate.dev/case-study/edgar)** — SEC disclosure verification with per-paragraph attribution
+- **[METR evaluations](https://liminate.dev/case-study/metr)** — AI safety evaluation contract enforcement
+- **[DailyMed drug labels](https://liminate.dev/case-study/dailymed)** — FDA label claim verification
 
----
+## Revocations
+
+Revoke an agent's authority from the platform. Revocations are forbid-only rules that compose before the Agreement — they subtract authority, never grant it.
+
+```bash
+seshat revocations sync    # pull latest from the platform
+seshat revocations show    # print the current set
+```
+
+## Cloud sync (optional)
+
+Sync receipts to [liminate.dev](https://liminate.dev) for cloud storage, search, and team visibility.
+
+```bash
+seshat vault set __RECEIPTS_API_KEY__ <your-key>
+seshat receipts sync
+```
+
+Get an API key at [liminate.dev/keys](https://liminate.dev/keys). The platform also offers [Translate](https://liminate.dev/translate) (turn compliance documents into enforceable Agreements) and daily contract re-verification.
+
+## Four surfaces
+
+One install, four ways to interact:
+
+| Surface | Command | What it is |
+|---|---|---|
+| CLI | `seshat status`, `seshat start`, ... | One-shot commands for scripts and terminals |
+| TUI | `seshat` (no args) | Interactive terminal session (Textual) |
+| Dashboard | `seshat serve` | Browser UI at localhost:9000 |
+| MCP server | `seshat mcp` | Agent integration via stdio |
+
+## CLI reference
+
+```
+seshat                          Launch the interactive TUI
+seshat status [name]            Show all projects, or detail for one
+seshat start <name>             Start a project
+seshat stop <name>              Stop a project
+seshat start --group <name>     Start a named group
+seshat stop --group <name>      Stop a named group
+seshat ports                    Show all TCP listeners
+seshat orphans                  Show unregistered processes
+seshat serve                    Start the dashboard (localhost:9000)
+seshat mcp                      Start the MCP server (stdio)
+
+seshat agreement init           Write the starter Agreement
+seshat agreement show           Print the current Agreement
+seshat agreement check <action> Dry-run a decision
+
+seshat invariant init           Write the starter verification contract
+seshat invariant show           Print the current contract
+seshat invariant check          Run verification now
+
+seshat receipts                 List recent receipts
+seshat receipts --tail          Live-follow new receipts
+seshat receipts verify          Verify hash chain integrity
+seshat receipts sync            Push to liminate.dev
+
+seshat revocations show         Print the revocation set
+seshat revocations sync         Pull from the platform
+
+seshat vault list               List vault keys (names only)
+seshat vault set <key> <value>  Set a shared secret
+seshat vault audit              Cross-reference keys vs. project declarations
+```
 
 ## Data
 
-Seshat stores everything in `~/.seshat/`:
+Everything lives in `~/.seshat/`:
 
-| File | Contents |
+| Path | Contents |
 |---|---|
 | `registry.yaml` | Registered projects |
-| `state.json` | Runtime PIDs for managed processes |
+| `state.json` | Runtime PIDs |
 | `groups.yaml` | Group assignments |
-| `hostnames.yaml` | Custom hostname overrides |
-| `Caddyfile` | Generated reverse proxy config |
-| `agreement.limn` | Agent-permission Agreement (deny-by-default) |
-| `vault/` | Encrypted secrets per project |
-| `receipts/` | Machine-action Receipt log |
+| `agreement.limn` | Agent-permission Agreement |
+| `invariant.limn` | Verification contract (optional) |
+| `revocations.limn` | Revocation set (synced from platform) |
+| `vault/` | Encrypted secrets (Keychain-backed Fernet) |
+| `receipts/` | Hash-chained machine-action receipts |
+
+## How it works
+
+Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a 62-word prose-as-syntax language. The Agreement and verification contracts are Liminate files. The interpreter runs locally — your policies never leave your machine.
+
+The local tool is fully self-contained. Your `.limn` files, your receipt JSON files, your Agreement — you own them. Optionally sync receipts to [liminate.dev](https://liminate.dev) for cloud storage, search, and team visibility. If you stop using the platform, you keep everything.
+
+## Requirements
+
+- macOS (Linux support planned)
+- Python 3.11+
+
+## License
+
+Apache 2.0. See [LICENSE](LICENSE).
 
 ---
 
-## Tests
-
-```bash
-python3 -m pytest tests/
-```
+*Before anything satisfying can be written, we must first know the exact measure of the foundation; we must stretch the cord.*
