@@ -14,3 +14,12 @@ def _no_revocations_by_default(monkeypatch):
     the test body, which runs after fixture setup and so takes precedence.
     """
     monkeypatch.setattr(agreements, "load_revocations", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_invariant_by_default(monkeypatch):
+    """Isolate every test from whatever may actually exist at
+    ~/.seshat/invariant.limn on the host machine, mirroring
+    _no_revocations_by_default above. Tests that need specific Invariant
+    contract content override load_invariant explicitly in the test body."""
+    monkeypatch.setattr(agreements, "load_invariant", lambda: None)
