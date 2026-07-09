@@ -660,6 +660,49 @@ def agreement_show():
     console.print(text)
 
 
+@agreement_cmd.command(name="install")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing Agreement file.")
+def agreement_install(path, force):
+    """Validate a Liminate Agreement file and install it to ~/.seshat/agreement.limn.
+
+    Reads PATH, checks it parses cleanly through the interpreter (a broken
+    Agreement is never installed), and writes it to the enforcement surface.
+    This is a human action at the terminal — it is deliberately not gated by
+    the Agreement itself (that gate applies to agent MCP calls, not to you).
+    """
+    import liminate
+
+    dest = agreements.AGREEMENT_PATH
+    if dest.exists() and not force:
+        console.print(f"[yellow]Agreement already exists at {dest}.[/yellow] Use --force to overwrite.")
+        sys.exit(1)
+
+    source = Path(path).read_text()
+
+    # Validate through the interpreter before writing. Any parse/semantic error
+    # blocks the install — a broken Agreement must never reach the enforcement
+    # surface. Unbound-reference "errors" (I can't find 'X') are expected here:
+    # an Agreement references facts (actor/action/scope) supplied only at
+    # enforcement time, so they are NOT install-blocking.
+    result = liminate.run(source)
+    blocking = [
+        r for r in result.results
+        if r.status.name in ("ERROR_PARSE", "ERROR_SEMANTIC")
+        and not (r.status.name == "ERROR_SEMANTIC" and r.message and "I can't find" in r.message)
+    ]
+    if blocking:
+        console.print(f"[red]Agreement did not validate — not installed.[/red]")
+        for r in blocking:
+            loc = f"line {r.line}: " if getattr(r, "line", None) else ""
+            console.print(f"  [red]{loc}{r.message}[/red]")
+        sys.exit(1)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(source)
+    console.print(f"[green]✓[/green] Agreement installed to [cyan]{dest}[/cyan]")
+
+
 cli.add_command(agreement_cmd, name="agreement")
 
 
