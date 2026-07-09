@@ -678,7 +678,11 @@ def agreement_install(path, force):
         console.print(f"[yellow]Agreement already exists at {dest}.[/yellow] Use --force to overwrite.")
         sys.exit(1)
 
-    source = Path(path).read_text()
+    try:
+        source = Path(path).read_text()
+    except UnicodeDecodeError as exc:
+        console.print(f"[red]Could not read {path} as text — not installed.[/red] ({exc})")
+        sys.exit(1)
 
     # Validate through the interpreter before writing. Any parse/semantic error
     # blocks the install — a broken Agreement must never reach the enforcement
