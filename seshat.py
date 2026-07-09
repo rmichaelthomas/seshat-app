@@ -96,6 +96,12 @@ def _summarize_agreement_rules(text: str) -> list:
     `agreements._temporal_window` — never reimplemented here, so this stays
     consistent with the enforcement path. Read-only; never writes to
     ~/.seshat/.
+
+    `liminate.run()` does not raise on malformed input — parse/semantic
+    errors surface in-band via `result.results[i].status`. Mirrors the same
+    `r.status.name in agreements._ERROR_STATUS_NAMES` check `check_action`
+    uses (see agreements.py) so a malformed rule reports `{"error": ...}`
+    instead of a hollow canonical/verb/window entry.
     """
     try:
         result = liminate.run(text, enter_phase2=False, auto_confirm_amber=True)
@@ -104,6 +110,9 @@ def _summarize_agreement_rules(text: str) -> list:
 
     rules = []
     for r in result.results:
+        if r.status.name in agreements._ERROR_STATUS_NAMES:
+            rules.append({"error": r.message or f"Agreement evaluation error ({r.status.name})"})
+            continue
         rule = {
             "canonical": r.canonical,
             "verb":      agreements._verb_of(r.canonical),
