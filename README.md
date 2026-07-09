@@ -45,6 +45,7 @@ Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a pro
 | **← this repo** | [**seshat-app**](https://github.com/rmichaelthomas/seshat-app) | **Local agent harness. Agreement enforcement, receipts, CLI/TUI/dashboard/MCP server.** |
 | | [liminate](https://github.com/rmichaelthomas/liminate) | The language and interpreter. 62 words, deterministic execution, domain packs. |
 | | [liminate-invariant](https://github.com/rmichaelthomas/liminate-invariant) | Semantic verification harness. Deterministic claim-verification correction loop. |
+| | [liminate-mcp](https://github.com/rmichaelthomas/liminate-mcp) | Authoring MCP server. Helps an agent draft, validate, explain, and test Agreements. |
 
 → [liminate.dev](https://liminate.dev)
 
@@ -135,6 +136,8 @@ forbid action is "set_secret" because "secrets stay in the dashboard"
 -- Time-limited access
 starting "2026-07-01" until "2026-07-31" permit actor is "contractor-agent" and action is "start_project"
 ```
+
+→ Your agent can help you write Agreements too — [liminate-mcp](https://github.com/rmichaelthomas/liminate-mcp) lets agents validate, explain, draft, and test Agreements locally. `pip install liminate-mcp`
 
 **Facts available:** `actor` (from `MCP_AGENT_HINT`), `action` (the MCP tool name), `scope` (project or group name, or `"none"`).
 
