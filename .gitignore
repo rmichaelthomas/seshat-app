@@ -36,3 +36,6 @@ moves.log
 
 # Git worktrees
 .worktrees/
+
+# Internal planning docs — not for the public repo
+docs/superpowers/
