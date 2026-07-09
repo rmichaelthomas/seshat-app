@@ -60,6 +60,15 @@ seshat --help
 seshat agreement init
 ```
 
+If `brew install seshat` fails right after tapping with an "untrusted tap"
+error, Homebrew requires new third-party taps to be trusted once before
+their formulae can be installed:
+
+```bash
+brew trust rmichaelthomas/seshat
+brew install seshat
+```
+
 Or from source:
 
 ```bash
