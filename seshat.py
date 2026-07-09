@@ -97,11 +97,20 @@ def _summarize_agreement_rules(text: str) -> list:
     consistent with the enforcement path. Read-only; never writes to
     ~/.seshat/.
 
-    `liminate.run()` does not raise on malformed input — parse/semantic
-    errors surface in-band via `result.results[i].status`. Mirrors the same
-    `r.status.name in agreements._ERROR_STATUS_NAMES` check `check_action`
-    uses (see agreements.py) so a malformed rule reports `{"error": ...}`
-    instead of a hollow canonical/verb/window entry.
+    `liminate.run()` does not raise on malformed input — a true parse
+    failure surfaces in-band as `result.results[i].canonical is None`. That
+    is the only reliable error signal here: because no `actor`/`action`/
+    `scope` facts are injected (this function enumerates rules, it does not
+    evaluate one), a perfectly well-formed rule routinely comes back with
+    `status.name == "ERROR_SEMANTIC"` (e.g. "I can't find 'actor'.") even
+    though `r.canonical` parsed correctly and is fully populated. That
+    status-based signal is what `agreements.check_action` uses (see
+    `agreements._ERROR_STATUS_NAMES`), but check_action always runs with
+    facts remembered first, so ERROR_SEMANTIC there means something is
+    actually broken — not so here. Gate on `r.canonical is None` instead so
+    this function only reports `{"error": ...}` for genuine parse failures,
+    and otherwise reports the normal canonical/verb/window shape regardless
+    of status name.
     """
     try:
         result = liminate.run(text, enter_phase2=False, auto_confirm_amber=True)
@@ -110,8 +119,8 @@ def _summarize_agreement_rules(text: str) -> list:
 
     rules = []
     for r in result.results:
-        if r.status.name in agreements._ERROR_STATUS_NAMES:
-            rules.append({"error": r.message or f"Agreement evaluation error ({r.status.name})"})
+        if r.canonical is None:
+            rules.append({"error": r.message or r.status.name})
             continue
         rule = {
             "canonical": r.canonical,
