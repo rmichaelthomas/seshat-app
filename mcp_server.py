@@ -26,6 +26,7 @@ from vault import Vault
 import amendment_diff
 import deps as deps_module
 import receipts
+import identity
 import invariant_check
 
 try:
@@ -62,33 +63,52 @@ mcp = FastMCP(
 SESSION_ID = f"mcp_session_{uuid.uuid4().hex[:12]}"
 
 
+def _verified_identity() -> "identity.VerifiedIdentity | None":
+    """The single source of truth for whether this call carries a verified
+    identity token — _agreement_actor() and _emit() both call this so they
+    can never disagree about the verdict (§8 invariant 3, extended to the
+    identity plane)."""
+    token = os.environ.get("SESHAT_IDENTITY_TOKEN")
+    if not token:
+        return None
+    return identity.verify(token)
+
+
 def _agreement_actor() -> str:
     """Agent-identity string used both for Agreement checks and receipt agent_hint.
 
     Single source of truth: the string checked against the Agreement and the
     agent_hint recorded in every receipt must never diverge (§8 invariant 3).
 
-    F-02 (acute): this is self-declared, not authenticated — any process
-    can set MCP_AGENT_HINT to any string. receipts.emit() stamps every
-    receipt's actor.identity_verified: false unconditionally for exactly
-    this reason. Actor-scoped Agreement permit/forbid rules built on this
-    string are advisory, not a security boundary, until real per-agent
-    credentials exist (identity-plane arc).
+    Identity-plane Stage 1: when SESHAT_IDENTITY_TOKEN is present and
+    verifies, this returns the token's verified identifier — provable, not
+    self-declared. check_action() independently re-verifies the same token
+    itself (never trusts this return value as proof of anything); this
+    function only supplies the display/lookup string used when no token is
+    present or verification fails, in which case it falls back to the
+    existing self-declared MCP_AGENT_HINT (F-02 acute): any process can
+    set that to any string, so receipts.emit() stamps
+    actor.identity_verified: false unconditionally in that case.
     """
+    verified = _verified_identity()
+    if verified is not None:
+        return verified.identifier
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
 
 
 def _emit(**kwargs) -> dict:
-    """Wrap receipts.emit(), injecting revocation_state, agreement_hash, and
-    (post-action) the Invariant verification block so every MCP-emitted
-    receipt carries them from one source (§7 invariant 4). Returns the
-    written receipt dict (receipts.emit()'s return value)."""
+    """Wrap receipts.emit(), injecting revocation_state, agreement_hash,
+    identity_verified, and (post-action) the Invariant verification block
+    so every MCP-emitted receipt carries them from one source (§7
+    invariant 4). Returns the written receipt dict (receipts.emit()'s
+    return value)."""
     env_after = kwargs.get("env_after") or receipts.snapshot()
     kwargs["env_after"] = env_after
     return receipts.emit(
         revocation_state=agreements.revocation_state(),
         agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
+        identity_verified=_verified_identity() is not None,
         **kwargs,
     )
 
@@ -100,9 +120,15 @@ def _enforce(action: str, target: dict) -> str | None:
     string (and logs a denial Receipt) when it does not — deny-by-default,
     per SES-Q4: no Agreement, no matching permit, or any evaluation error
     all deny, and a matching forbid always wins over a matching permit.
+
+    Identity-plane Stage 1: SESHAT_IDENTITY_TOKEN, if present, is passed to
+    check_action's token parameter — it independently verifies the token
+    (never trusting _agreement_actor()'s already-computed string as proof)
+    and denies with mode="identity-invalid" on failure.
     """
     scope = target.get("project") or target.get("group")
-    decision = agreements.check_action(_agreement_actor(), action, scope)
+    token = os.environ.get("SESHAT_IDENTITY_TOKEN")
+    decision = agreements.check_action(_agreement_actor(), action, scope, token=token)
     if decision.allowed:
         return None
 
