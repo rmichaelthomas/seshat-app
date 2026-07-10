@@ -37,6 +37,35 @@ router   = Router(registry)
 
 RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
 
+# F-09: a page loaded from any other origin in the user's browser can
+# still POST/PUT/PATCH/DELETE against this dashboard — the browser
+# doesn't restrict where a page's own requests may target, only what the
+# response is allowed to read back (which cross-origin CSRF doesn't
+# need). Browsers attach an Origin header to same-origin state-changing
+# requests too, so this needs no dashboard JS changes: a same-origin
+# fetch from the dashboard's own page always carries an Origin matching
+# the request's own Host. Compared against request.host (not a hardcoded
+# origin/port) since `seshat serve --port <n>` accepts an arbitrary port
+# and binds all interfaces, not just 127.0.0.1 — confirmed by actually
+# running the server, which logs itself reachable at a LAN address too.
+# A request with no Origin header at all (e.g. a direct curl call) is the
+# user's own deliberate local action, not a CSRF vector, and is left
+# unaffected.
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.before_request
+def _reject_cross_origin_mutations():
+    if request.method not in _MUTATING_METHODS:
+        return None
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return None
+    origin_host = origin.split("://", 1)[-1]
+    if origin_host != request.host:
+        return jsonify({"error": "Cross-origin request rejected"}), 403
+    return None
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
