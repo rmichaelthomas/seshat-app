@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,6 +19,18 @@ from agreements import (
 
 # Cross-test isolation from any real ~/.seshat/revocations.limn on the host
 # machine is provided by the autouse fixture in tests/conftest.py.
+
+
+def _mock_synced_recently(monkeypatch, tmp_path, *, hours_ago: float = 0.0):
+    """F-07: revocations content on its own isn't enough to enforce under
+    the new staleness gate — tests exercising revocation content must also
+    represent a recent sync, or check_action denies as stale before it
+    ever looks at the content. hours_ago lets a test place the marker just
+    inside or outside the policy window."""
+    marker = tmp_path / ".last_synced_revocations"
+    checked_at = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    marker.write_text(checked_at.isoformat() + "\n")
+    monkeypatch.setattr(agreements, "LAST_SYNCED_REVOCATIONS_PATH", marker)
 
 
 # ── Phase 1: temporal-window enforcement ────────────────────────────────────
@@ -149,7 +162,8 @@ permit actor is "claude-code" and action is "start_project"
         assert d.allowed is True
         assert d.mode == "permitted"
 
-    def test_revocation_forbid_wins_over_agreement_permit_surgically(self, monkeypatch):
+    def test_revocation_forbid_wins_over_agreement_permit_surgically(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid action is "stop_project"'
         )
@@ -161,7 +175,8 @@ permit actor is "claude-code" and action is "start_project"
         assert still_allowed.allowed is True
         assert still_allowed.mode == "permitted"
 
-    def test_blanket_actor_forbid_denies_every_action_for_that_actor_only(self, monkeypatch):
+    def test_blanket_actor_forbid_denies_every_action_for_that_actor_only(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid actor is "claude-code"'
         )
@@ -174,7 +189,8 @@ permit actor is "claude-code" and action is "start_project"
         assert unaffected.allowed is True
         assert unaffected.mode == "permitted"
 
-    def test_permit_line_in_revocations_fails_closed(self, monkeypatch):
+    def test_permit_line_in_revocations_fails_closed(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'permit action is "stop_project"'
         )
@@ -188,7 +204,8 @@ permit actor is "claude-code" and action is "start_project"
         assert d2.allowed is False
         assert d2.mode == "error"
 
-    def test_expired_revocation_lapses(self, monkeypatch):
+    def test_expired_revocation_lapses(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
             agreements,
             "load_revocations",
@@ -198,7 +215,8 @@ permit actor is "claude-code" and action is "start_project"
         assert d.allowed is True
         assert d.mode == "permitted"
 
-    def test_future_revocation_has_not_yet_taken_effect(self, monkeypatch):
+    def test_future_revocation_has_not_yet_taken_effect(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
             agreements,
             "load_revocations",
@@ -207,6 +225,68 @@ permit actor is "claude-code" and action is "start_project"
         d = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
         assert d.allowed is True
         assert d.mode == "permitted"
+
+
+class TestRevocationStaleness:
+    """F-07: revocations that exist but haven't been refreshed within the
+    policy window deny by default rather than enforcing against possibly-
+    outdated data. A revocations.limn that doesn't exist at all (the
+    feature was never used) is unaffected — this gate only applies once
+    the file is actually present."""
+
+    AGREEMENT = 'permit actor is "claude-code" and action is "stop_project"'
+
+    def test_never_synced_revocations_deny_by_default(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid action is "start_project"'
+        )
+        monkeypatch.setattr(
+            agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / "never-written" / ".marker"
+        )
+        d = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert d.allowed is False
+        assert d.mode == "stale-revocations"
+
+    def test_stale_revocations_deny_by_default(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path, hours_ago=48)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid action is "start_project"'
+        )
+        d = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert d.allowed is False
+        assert d.mode == "stale-revocations"
+        assert "sync" in d.reason.lower()
+
+    def test_fresh_revocations_enforce_normally(self, monkeypatch, tmp_path):
+        _mock_synced_recently(monkeypatch, tmp_path, hours_ago=1)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid action is "start_project"'
+        )
+        d = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert d.allowed is True
+        assert d.mode == "permitted"
+
+    def test_missing_revocations_file_unaffected_by_staleness_gate(self, monkeypatch):
+        monkeypatch.setattr(agreements, "load_revocations", lambda: None)
+        d = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert d.allowed is True
+        assert d.mode == "permitted"
+
+    def test_staleness_window_configurable_via_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SESHAT_REVOCATION_STALENESS_HOURS", "1")
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid action is "start_project"'
+        )
+
+        _mock_synced_recently(monkeypatch, tmp_path, hours_ago=2)
+        stale = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert stale.allowed is False
+        assert stale.mode == "stale-revocations"
+
+        _mock_synced_recently(monkeypatch, tmp_path, hours_ago=0.5)
+        fresh = check_action("claude-code", "stop_project", agreement_text=self.AGREEMENT)
+        assert fresh.allowed is True
+        assert fresh.mode == "permitted"
 
 
 # ── Phase 3: revocation_state receipt field ─────────────────────────────────
