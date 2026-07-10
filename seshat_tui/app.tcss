@@ -216,3 +216,44 @@ DataTable > .datatable--hover {
 FilterInput {
     margin: 0 1;
 }
+
+/* ── Drill screen: authority-trace breadcrumb + detail + edge list ──────
+   Reuses .pane / .pane-head / .work directly (same elevation/no-divider
+   language as every domain). Only the breadcrumb/footer bars and the
+   edge-list ListView get DrillScreen-specific rules, mirroring #topbar /
+   #statusbar's own background and #receipts-chain's ListItem states. */
+
+DrillScreen #drill-breadcrumb {
+    dock: top;
+    height: 1;
+    padding: 0 2;
+    background: #1A130A;
+}
+
+DrillScreen #drill-footer {
+    dock: bottom;
+    height: 1;
+    padding: 0 2;
+    background: #1A130A;
+    color: $text-3;
+}
+
+DrillScreen #drill-edges {
+    width: 34;
+    margin-left: 1;
+    height: 1fr;
+    padding: 1 2;
+    background: #16120D;
+    border: round #33291B;
+}
+DrillScreen #drill-edges ListItem {
+    background: #16120D;
+    padding: 0 1;
+}
+DrillScreen #drill-edges ListItem.-highlight {
+    background: #292219;
+    border-bottom: solid $amber;
+}
+DrillScreen #drill-edges ListItem.-hovered {
+    background: #1E1912;
+}

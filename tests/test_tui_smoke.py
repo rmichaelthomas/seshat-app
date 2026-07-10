@@ -85,3 +85,54 @@ def test_never_writes_enforcement_files(monkeypatch):
                 await pilot.pause()
 
     asyncio.run(run())
+
+
+def test_drill_screen_pushes_renders_and_walks_back():
+    from seshat_tui.graph import GovernanceGraph, ReceiptNode, RuleNode
+    from seshat_tui.screens import DrillScreen
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+
+            rule_canonical = "forbid action is stop_orphan"
+            receipt = {
+                "receipt_hash": "a" * 40,
+                "previous_hash": None,
+                "timestamp": "2026-07-10T12:00:00+00:00",
+                "actor": {"session_id": "tui_abc", "agent_hint": "tui"},
+                "action": "stop_orphan",
+                "target": {"port": 4321},
+                "result": {"status": "denied", "mode": "forbidden", "rule": rule_canonical, "reason": "no."},
+                "environment_after": {"listening_ports": [4321]},
+            }
+            graph = GovernanceGraph(
+                receipts=[receipt],
+                agreement_rules=[],
+                revocation_rules=[{"canonical": rule_canonical, "verb": "forbid", "window": "active"}],
+            )
+            app.governance_graph = graph
+            app.push_screen(DrillScreen(graph, ReceiptNode(receipt)))
+            await pilot.pause()
+            assert len(app.screen_stack) == 2
+            drill = app.screen_stack[-1]
+            assert isinstance(drill, DrillScreen)
+            assert "receipt" in str(drill.query_one("#drill-breadcrumb").content)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(drill._stack) == 2
+            assert isinstance(drill._stack[-1], RuleNode)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(drill._stack) == 1
+            assert len(app.screen_stack) == 2
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+
+    asyncio.run(run())
