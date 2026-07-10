@@ -9,6 +9,7 @@ Transport: stdio
 Protocol: MCP (Model Context Protocol)
 """
 
+import hashlib
 import json
 import os
 import time
@@ -20,6 +21,7 @@ from registry import Registry
 from scanner import Scanner
 from runner import Runner
 from vault import Vault
+import amendment_diff
 import deps as deps_module
 import receipts
 import invariant_check
@@ -67,13 +69,14 @@ def _agreement_actor() -> str:
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
 
 
-def _emit(**kwargs) -> None:
+def _emit(**kwargs) -> dict:
     """Wrap receipts.emit(), injecting revocation_state, agreement_hash, and
     (post-action) the Invariant verification block so every MCP-emitted
-    receipt carries them from one source (§7 invariant 4)."""
+    receipt carries them from one source (§7 invariant 4). Returns the
+    written receipt dict (receipts.emit()'s return value)."""
     env_after = kwargs.get("env_after") or receipts.snapshot()
     kwargs["env_after"] = env_after
-    receipts.emit(
+    return receipts.emit(
         revocation_state=agreements.revocation_state(),
         agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
@@ -652,6 +655,77 @@ def set_project_override(project: str, key: str, value: str) -> str:
         agent_hint=_agreement_actor(),
     )
     return json.dumps(result)
+
+
+@mcp.tool()
+def amend_agreement(additions: list[str] | None = None, removals: list[str] | None = None) -> str:
+    """Propose an amendment to the Agreement (TI-Q7, v1.0k §55).
+
+    `additions` and `removals` are each full canonical statement lines
+    (e.g. 'forbid action is "wipe_disk"') to add to or remove from the
+    Agreement. The proposed change is classified (monotonic / de-escalating
+    / entrenched-violation) and recorded as a proposal receipt.
+
+    This tool NEVER writes ~/.seshat/agreement.limn — it only proposes. A
+    human must run `seshat agreement amend --apply <receipt_id>` at the
+    terminal to enact it (TI-Q6c: only a human writes the Agreement).
+    """
+    additions = additions or []
+    removals = removals or []
+
+    denial = _enforce("amend_agreement", {"additions": additions, "removals": removals})
+    if denial:
+        return denial
+
+    env_before = receipts.snapshot()
+
+    before_src = agreements.load_agreement() or ""
+    hash_before = agreements.agreement_hash()
+
+    after_src = amendment_diff.apply_delta(before_src, additions, removals)
+    hash_after = hashlib.sha256(after_src.encode("utf-8")).hexdigest()
+
+    proposed_delta = amendment_diff.diff_statements(before_src, after_src)
+    classification = amendment_diff.classify_amendment(
+        before_src, after_src, agreements.entrenched_keys()
+    )
+
+    target = {
+        "agreement_hash_before": hash_before,
+        "agreement_hash_after": hash_after,
+        "additions": additions,
+        "removals": removals,
+        "proposed_delta": proposed_delta,
+    }
+    result: dict = {
+        "status": "proposed",
+        "classification": classification["class"],
+    }
+    if classification.get("violations"):
+        result["violations"] = [list(v) for v in classification["violations"]]
+
+    receipt = _emit(
+        action="amend_agreement",
+        target=target,
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
+
+    response: dict = {
+        "status": "proposed",
+        "receipt_id": receipt["receipt_hash"],
+        "classification": classification["class"],
+        "next_step": (
+            f"A human must run `seshat agreement amend --apply {receipt['receipt_hash']}` "
+            "at the terminal to apply this amendment. This tool never writes the Agreement."
+        ),
+    }
+    if classification.get("violations"):
+        response["violations"] = [list(v) for v in classification["violations"]]
+    return json.dumps(response)
 
 
 # ── MCP resources ──────────────────────────────────────────────────────────
