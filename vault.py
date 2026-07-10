@@ -6,8 +6,11 @@ Architecture:
     Keychain via the `keyring` library (Touch ID compatible).
   - The vault data (JSON) is encrypted with that key and stored at
     ~/.seshat/vault.enc.
-  - If `keyring` or `cryptography` are unavailable, the vault falls back
-    to unencrypted JSON at ~/.seshat/vault.json with a runtime warning.
+  - If `keyring` or `cryptography` are unavailable, storing a secret
+    hard-fails (VaultEncryptionUnavailableError) rather than writing an
+    unencrypted vault.json (F-06). A pre-existing plaintext vault.json
+    from before this change is still readable, and gets migrated to
+    vault.enc automatically on the next successful write.
 
 Vault data structure (decrypted):
   {
@@ -53,6 +56,14 @@ except ImportError:
     _CRYPTO_OK = False
 
 
+class VaultEncryptionUnavailableError(RuntimeError):
+    """Raised when a secret would be stored without encryption (F-06).
+    Storing secrets requires the `keyring` and `cryptography` packages —
+    install them (`pip install keyring cryptography`, or reinstall Seshat
+    with its full dependency set) rather than writing an unencrypted
+    vault."""
+
+
 class Vault:
     """Encrypted key-value store for environment secrets."""
 
@@ -92,16 +103,21 @@ class Vault:
         return dict(_EMPTY)
 
     def _save(self, data: dict) -> None:
+        if not _CRYPTO_OK:
+            raise VaultEncryptionUnavailableError(
+                "Cannot store secrets: 'keyring' and 'cryptography' are "
+                "required for vault encryption and are not installed. "
+                "Install them (pip install keyring cryptography) before "
+                "storing secrets — Seshat refuses to write an unencrypted "
+                "vault."
+            )
         payload = json.dumps(data, indent=2).encode()
-        if _CRYPTO_OK:
-            VAULT_ENC.write_bytes(self._fernet().encrypt(payload))
-            VAULT_ENC.chmod(0o600)
-            # Remove plaintext file if it exists
-            if VAULT_PLAIN.exists():
-                VAULT_PLAIN.unlink()
-        else:
-            VAULT_PLAIN.write_text(payload.decode())
-            VAULT_PLAIN.chmod(0o600)
+        VAULT_ENC.write_bytes(self._fernet().encrypt(payload))
+        VAULT_ENC.chmod(0o600)
+        # Remove plaintext file if it exists (migrates a pre-existing
+        # legacy plaintext vault to encrypted storage on first write).
+        if VAULT_PLAIN.exists():
+            VAULT_PLAIN.unlink()
 
     # ── Shared keys ────────────────────────────────────────────────────────
 

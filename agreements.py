@@ -10,8 +10,9 @@ all deny. A matching forbid always wins over a matching permit.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import liminate
@@ -23,6 +24,14 @@ REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
 LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
 INVARIANT_PATH = Path.home() / ".seshat" / "invariant.limn"
 ENTRENCHED_PATH = Path.home() / ".seshat" / "entrenched.limn"
+
+# F-07: how old the last successful `seshat revocations sync` may be
+# before check_action treats an *existing* revocations.limn as stale and
+# denies by default rather than enforcing against possibly-outdated
+# revocations. Configurable via SESHAT_REVOCATION_STALENESS_HOURS. Deny-
+# by-default is the posture implemented here; a missing revocations.limn
+# (the feature was never used) is unaffected by this gate.
+DEFAULT_REVOCATION_STALENESS_HOURS = 24
 
 _ERROR_STATUS_NAMES = {
     "ERROR_PARSE",
@@ -116,6 +125,28 @@ def revocation_state() -> dict | None:
     except FileNotFoundError:
         last_checked = None
     return {"head_hash": head_hash, "last_checked": last_checked}
+
+
+def _revocation_staleness_window() -> timedelta:
+    hours = float(os.environ.get(
+        "SESHAT_REVOCATION_STALENESS_HOURS", DEFAULT_REVOCATION_STALENESS_HOURS
+    ))
+    return timedelta(hours=hours)
+
+
+def _revocations_are_stale(last_checked: str | None) -> bool:
+    """True if revocations.limn exists but hasn't been refreshed within
+    the policy window — including never (last_checked is None) or an
+    unparseable marker, both treated as stale (deny-by-default, F-07)."""
+    if last_checked is None:
+        return True
+    try:
+        checked_at = datetime.fromisoformat(last_checked)
+    except ValueError:
+        return True
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - checked_at > _revocation_staleness_window()
 
 
 def _temporal_window(canonical: str | None) -> str:
@@ -256,6 +287,20 @@ def check_action(
 
     revocations_text = load_revocations()
     if revocations_text is not None:
+        state = revocation_state()
+        if state is not None and _revocations_are_stale(state.get("last_checked")):
+            window = _revocation_staleness_window()
+            return Decision(
+                allowed=False,
+                mode="stale-revocations",
+                rule=None,
+                reason=(
+                    "revocations.limn exists but hasn't been refreshed within "
+                    f"the last {window} — denying by default rather than "
+                    "enforcing against possibly-outdated revocations. Run: "
+                    "seshat revocations sync"
+                ),
+            )
         validation_error = _validate_forbid_only(revocations_text)
         if validation_error is not None:
             return Decision(
