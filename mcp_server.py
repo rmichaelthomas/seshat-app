@@ -9,7 +9,9 @@ Transport: stdio
 Protocol: MCP (Model Context Protocol)
 """
 
+import functools
 import hashlib
+import inspect
 import json
 import os
 import time
@@ -128,6 +130,67 @@ def _enforce(action: str, target: dict) -> str | None:
     return denial
 
 
+_ENFORCED_MARKER = "_seshat_enforced_tool"
+
+
+def _enforced_tool(action: str, target_fn):
+    """Register an MCP tool with a structural (not convention-based)
+    enforcement gate (F-11). Every tool wrapped here calls _enforce()
+    before its body runs, no matter what the body does or omits — there
+    is no path from an MCP call into the tool's logic that skips it.
+
+    target_fn receives the tool call's bound arguments (a dict, defaults
+    applied) and must return the `target` dict _enforce() expects, e.g.
+    `lambda a: {"project": a["name"]}`.
+
+    Also stamps the wrapped function so _assert_all_tools_enforced() can
+    catch a tool that bypasses this decorator entirely (a bare
+    @mcp.tool()) at import time, rather than serving it unenforced.
+    """
+    def decorator(fn):
+        signature = inspect.signature(fn)
+
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                denial = _enforce(action, target_fn(bound.arguments))
+                if denial:
+                    return denial
+                return await fn(*args, **kwargs)
+        else:
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                bound = signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                denial = _enforce(action, target_fn(bound.arguments))
+                if denial:
+                    return denial
+                return fn(*args, **kwargs)
+
+        setattr(wrapper, _ENFORCED_MARKER, True)
+        return mcp.tool()(wrapper)
+
+    return decorator
+
+
+def _assert_all_tools_enforced() -> None:
+    """Fail at import time — not silently — if any registered MCP tool
+    skipped the _enforced_tool gate. A structural check, not a review
+    convention: this runs unconditionally when this module loads."""
+    unenforced = sorted(
+        tool.name for tool in mcp._tool_manager.list_tools()
+        if not getattr(tool.fn, _ENFORCED_MARKER, False)
+    )
+    if unenforced:
+        raise RuntimeError(
+            f"MCP tool(s) registered without the _enforced_tool gate: "
+            f"{unenforced}. Use @_enforced_tool(action, target_fn) instead "
+            "of a bare @mcp.tool()."
+        )
+
+
 # ── Shared helpers ─────────────────────────────────────────────────────────
 
 
@@ -221,22 +284,19 @@ def _build_project_view(project: dict, scan: dict, state: dict) -> dict:
 
 
 # ── MCP tools ──────────────────────────────────────────────────────────────
-# Every tool below calls _enforce() as its first statement, before any side
-# effect. A 9th tool must do the same — it inherits the gate by convention,
-# not by any structural guarantee.
+# Every tool below is registered via @_enforced_tool(...), which calls
+# _enforce() before the tool body runs — structurally (F-11), not by
+# convention. _assert_all_tools_enforced() at the bottom of this module
+# audits that every registered tool actually went through it.
 
 
-@mcp.tool()
+@_enforced_tool("start_project", lambda a: {"project": a["name"]})
 def start_project(name: str) -> str:
     """Start a registered project by name.
 
     Resolves vault secrets scoped to the project, starts the process,
     and records the PID with MCP session attribution.
     """
-    denial = _enforce("start_project", {"project": name})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     project = registry.get(name)
@@ -308,13 +368,9 @@ def start_project(name: str) -> str:
         return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("stop_project", lambda a: {"project": a["name"]})
 def stop_project(name: str) -> str:
     """Stop a running project by name."""
-    denial = _enforce("stop_project", {"project": name})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     project = registry.get(name)
@@ -362,13 +418,9 @@ def stop_project(name: str) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("start_group", lambda a: {"group": a["name"]})
 def start_group(name: str) -> str:
     """Start all projects in a named group."""
-    denial = _enforce("start_group", {"group": name})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     group = registry.get_group(name)
@@ -436,13 +488,9 @@ def start_group(name: str) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("stop_group", lambda a: {"group": a["name"]})
 def stop_group(name: str) -> str:
     """Stop all projects in a named group."""
-    denial = _enforce("stop_group", {"group": name})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     group = registry.get_group(name)
@@ -484,7 +532,7 @@ def stop_group(name: str) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("register_project", lambda a: {"project": a["name"]})
 def register_project(
     name: str,
     port: int,
@@ -505,10 +553,6 @@ def register_project(
         tags: Optional list of tags for organization
         notes: Optional notes about the project
     """
-    denial = _enforce("register_project", {"project": name})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     project = {
@@ -552,13 +596,9 @@ def register_project(
         return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("stop_orphan", lambda a: {"port": a["port"]})
 def stop_orphan(port: int) -> str:
     """Stop an unregistered process listening on a port."""
-    denial = _enforce("stop_orphan", {"port": port})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     scan = scanner.scan()
@@ -592,7 +632,7 @@ def stop_orphan(port: int) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool("set_secret", lambda a: {"key": a["key"].strip().upper()})
 def set_secret(key: str, value: str) -> str:
     """Store or update a shared secret in the vault.
 
@@ -602,11 +642,6 @@ def set_secret(key: str, value: str) -> str:
     are never exposed through MCP resources — they are resolved at
     process start time via environment variables.
     """
-    normalized_key = key.strip().upper()
-    denial = _enforce("set_secret", {"key": normalized_key})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     vault.set(key.strip().upper(), value)
@@ -624,18 +659,16 @@ def set_secret(key: str, value: str) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool(
+    "set_project_override",
+    lambda a: {"project": a["project"], "key": a["key"].strip().upper()},
+)
 def set_project_override(project: str, key: str, value: str) -> str:
     """Set a project-specific secret override in the vault.
 
     Overrides take precedence over shared secrets when resolving
     environment variables for this project at start time.
     """
-    normalized_key = key.strip().upper()
-    denial = _enforce("set_project_override", {"project": project, "key": normalized_key})
-    if denial:
-        return denial
-
     env_before = receipts.snapshot()
 
     if not registry.get(project):
@@ -666,7 +699,10 @@ def set_project_override(project: str, key: str, value: str) -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
+@_enforced_tool(
+    "amend_agreement",
+    lambda a: {"additions": a.get("additions") or [], "removals": a.get("removals") or []},
+)
 def amend_agreement(additions: list[str] | None = None, removals: list[str] | None = None) -> str:
     """Propose an amendment to the Agreement (TI-Q7, v1.0k §55).
 
@@ -681,10 +717,6 @@ def amend_agreement(additions: list[str] | None = None, removals: list[str] | No
     """
     additions = additions or []
     removals = removals or []
-
-    denial = _enforce("amend_agreement", {"additions": additions, "removals": removals})
-    if denial:
-        return denial
 
     env_before = receipts.snapshot()
 
@@ -857,6 +889,12 @@ def resource_project_deps(name: str) -> str:
         dep_status = []
 
     return json.dumps(dep_status, indent=2)
+
+
+# F-11: run once at import time — fails loudly, refusing to even import
+# this module (let alone start serving), if any tool above skipped the
+# structural enforcement gate.
+_assert_all_tools_enforced()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────
