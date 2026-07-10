@@ -33,6 +33,7 @@ from registry import Registry
 from runner import Runner
 from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 from scanner import Scanner
+import amendment_diff
 import deps as deps_module
 import agreements
 import receipts as receipts_module
@@ -52,13 +53,14 @@ SESSION_ID = f"cli_{uuid.uuid4().hex[:12]}"
 console = Console()
 
 
-def _emit(**kwargs) -> None:
+def _emit(**kwargs) -> dict:
     """Wrap receipts.emit(), injecting revocation_state, agreement_hash, and
     (post-action) the Invariant verification block so every CLI-emitted
-    receipt carries them from one source (§7 invariant 4)."""
+    receipt carries them from one source (§7 invariant 4). Returns the
+    written receipt dict (receipts.emit()'s return value)."""
     env_after = kwargs.get("env_after") or receipts_module.snapshot()
     kwargs["env_after"] = env_after
-    receipts_module.emit(
+    return receipts_module.emit(
         revocation_state=agreements.revocation_state(),
         agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
@@ -613,6 +615,41 @@ forbid action is "stop_orphan" because "orphan termination stays in the dashboar
 """
 
 
+def _validate_agreement_source(source: str) -> list:
+    """Run SOURCE through the interpreter and return blocking errors (empty
+    list = valid). Unbound-reference "errors" ("I can't find 'X'") are
+    expected here — an Agreement references facts (actor/action/scope)
+    supplied only at enforcement time — so they are never blocking."""
+    import liminate
+
+    result = liminate.run(source)
+    return [
+        r for r in result.results
+        if r.status.name in ("ERROR_PARSE", "ERROR_SEMANTIC")
+        and not (r.status.name == "ERROR_SEMANTIC" and r.message and "I can't find" in r.message)
+    ]
+
+
+def _print_validation_errors(blocking: list) -> None:
+    for r in blocking:
+        loc = f"line {r.line}: " if getattr(r, "line", None) else ""
+        console.print(f"  [red]{loc}{r.message}[/red]")
+
+
+def _find_receipt_by_hash(receipt_hash: str) -> dict | None:
+    """Scan ~/.seshat/receipts/ for the receipt whose receipt_hash matches.
+    Newest first, since a duplicate hash cannot occur (receipts.emit() chains
+    on it), but a fresh receipt is the more likely lookup."""
+    for f in sorted(receipts_module.RECEIPTS_DIR.glob("*.json"), reverse=True):
+        try:
+            r = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if r.get("receipt_hash") == receipt_hash:
+            return r
+    return None
+
+
 @cli.group()
 def agreement_cmd():
     """Agent-permission Agreement management (deny-by-default)."""
@@ -672,8 +709,6 @@ def agreement_install(path, force):
     This is a human action at the terminal — it is deliberately not gated by
     the Agreement itself (that gate applies to agent MCP calls, not to you).
     """
-    import liminate
-
     dest = agreements.AGREEMENT_PATH
     if dest.exists() and not force:
         console.print(f"[yellow]Agreement already exists at {dest}.[/yellow] Use --force to overwrite.")
@@ -687,25 +722,113 @@ def agreement_install(path, force):
 
     # Validate through the interpreter before writing. Any parse/semantic error
     # blocks the install — a broken Agreement must never reach the enforcement
-    # surface. Unbound-reference "errors" (I can't find 'X') are expected here:
-    # an Agreement references facts (actor/action/scope) supplied only at
-    # enforcement time, so they are NOT install-blocking.
-    result = liminate.run(source)
-    blocking = [
-        r for r in result.results
-        if r.status.name in ("ERROR_PARSE", "ERROR_SEMANTIC")
-        and not (r.status.name == "ERROR_SEMANTIC" and r.message and "I can't find" in r.message)
-    ]
+    # surface.
+    blocking = _validate_agreement_source(source)
     if blocking:
         console.print(f"[red]Agreement did not validate — not installed.[/red]")
-        for r in blocking:
-            loc = f"line {r.line}: " if getattr(r, "line", None) else ""
-            console.print(f"  [red]{loc}{r.message}[/red]")
+        _print_validation_errors(blocking)
         sys.exit(1)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(source)
     console.print(f"[green]✓[/green] Agreement installed to [cyan]{dest}[/cyan]")
+
+
+@agreement_cmd.command(name="amend")
+@click.option(
+    "--apply", "receipt_id", required=True,
+    help="Apply a previously proposed amend_agreement receipt by its receipt id (receipt_hash).",
+)
+@click.option(
+    "--allow-deescalation", is_flag=True, default=False,
+    help="Required to apply a de-escalating (privilege-granting) amendment.",
+)
+def agreement_amend(receipt_id, allow_deescalation):
+    """Apply a previously proposed amend_agreement receipt to the live Agreement.
+
+    Human terminal action (TI-Q6c) — only a human writes agreement.limn; the
+    amend_agreement MCP tool only proposes. This command always re-derives
+    the classification against the CURRENT Agreement and entrenched.limn at
+    apply time — it never trusts the proposal receipt's stored (harness-
+    attested) classification, since either file may have changed since the
+    proposal was made.
+    """
+    proposal = _find_receipt_by_hash(receipt_id)
+    if proposal is None:
+        console.print(f"[red]No receipt found with id {receipt_id}.[/red]")
+        sys.exit(1)
+    if proposal.get("action") != "amend_agreement":
+        console.print(
+            f"[red]Receipt {receipt_id} is not an amend_agreement proposal "
+            f"(action={proposal.get('action')!r}).[/red]"
+        )
+        sys.exit(1)
+
+    target = proposal.get("target") or {}
+    additions = target.get("additions", [])
+    removals = target.get("removals", [])
+
+    current_src = agreements.load_agreement() or ""
+    hash_before = agreements.agreement_hash()
+
+    after_src = amendment_diff.apply_delta(current_src, additions, removals)
+    hash_after = hashlib.sha256(after_src.encode("utf-8")).hexdigest()
+
+    classification = amendment_diff.classify_amendment(
+        current_src, after_src, agreements.entrenched_keys()
+    )
+    cls = classification["class"]
+
+    if cls == "entrenched-violation":
+        console.print(
+            "[red]Refused: this amendment touches an entrenched rule and cannot be applied.[/red]"
+        )
+        for verb, subject in classification["violations"]:
+            console.print(f"  [red]entrenched: {verb} {subject}[/red]")
+        sys.exit(1)
+
+    if cls == "de-escalating" and not allow_deescalation:
+        console.print(
+            "[yellow]This amendment removes or loosens a restriction (de-escalating).[/yellow]\n"
+            "  Re-run with [cyan]--allow-deescalation[/cyan] to apply it."
+        )
+        sys.exit(1)
+
+    # Validate through the interpreter before writing — a broken Agreement
+    # never reaches the enforcement surface (mirrors `agreement install`).
+    blocking = _validate_agreement_source(after_src)
+    if blocking:
+        console.print("[red]Amended Agreement did not validate — not applied.[/red]")
+        _print_validation_errors(blocking)
+        sys.exit(1)
+
+    env_before = receipts_module.snapshot()
+    agreements.AGREEMENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agreements.AGREEMENT_PATH.write_text(after_src)
+
+    _emit(
+        action="apply_amendment",
+        target={
+            "proposal_receipt_id": receipt_id,
+            "agreement_hash_before": hash_before,
+            "agreement_hash_after": hash_after,
+            "proposed_delta": amendment_diff.diff_statements(current_src, after_src),
+        },
+        result={
+            "status": "applied",
+            "classification": cls,
+            "applied_by": os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
+        },
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="cli_session",
+        agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+    )
+
+    console.print(
+        f"[green]✓[/green] Amendment applied ([bold]{cls}[/bold]). "
+        f"Agreement written to [cyan]{agreements.AGREEMENT_PATH}[/cyan]"
+    )
 
 
 cli.add_command(agreement_cmd, name="agreement")
@@ -1164,6 +1287,132 @@ def revocations_sync(dry_run):
 
 
 cli.add_command(revocations_cmd, name="revocations")
+
+
+# ── Entrenchment command (TI-Q7, v1.0k §57) ─────────────────────────────────
+#
+# A distinct, higher-ceremony surface from `agreement` — entrenchment
+# protects specific (verb, subject) keys from ever being amended, even by a
+# human `agreement amend --apply`. entrenched.limn lives outside the
+# amendment surface entirely and is mutated only here, never by any
+# agent-reachable code path (mirrors TI-Q6c for agreement.limn).
+
+def _entrenched_line(verb: str, subject: str) -> str:
+    """A minimal canonical statement line whose parsed (verb, subject) is
+    exactly (verb, subject) — the parser's verb-subject pattern requires
+    predicate content after the subject, hence the trailing 'is protected'."""
+    ts = datetime.now(timezone.utc).isoformat()
+    return f'{verb} {subject} is protected because "entrenched via seshat entrench on {ts}"'
+
+
+def _write_entrenched_lines(lines: list[str]) -> None:
+    agreements.ENTRENCHED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    content = "\n".join(lines)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    agreements.ENTRENCHED_PATH.write_text(content)
+
+
+@cli.group(name="entrench")
+def entrench_cmd():
+    """Manage entrenched (protected) Agreement rules (~/.seshat/entrenched.limn)."""
+
+
+@entrench_cmd.command(name="show")
+def entrench_show():
+    """List currently entrenched (verb, subject) keys."""
+    keys = agreements.entrenched_keys()
+    if not keys:
+        console.print(f"[dim]No entrenched rules at {agreements.ENTRENCHED_PATH}.[/dim]")
+        return
+    for verb, subject in sorted(keys):
+        console.print(f"  [bold]{verb}[/bold] {subject}")
+
+
+@entrench_cmd.command(name="add")
+@click.argument("verb")
+@click.argument("subject")
+def entrench_add(verb, subject):
+    """Protect (VERB, SUBJECT) from ever being amended, even by a human --apply.
+
+    Requires typed confirmation — type the exact key back to confirm.
+    """
+    key_str = f"{verb} {subject}"
+    if (verb, subject) in agreements.entrenched_keys():
+        console.print(f"[yellow]{key_str} is already entrenched.[/yellow]")
+        return
+
+    console.print(
+        f"[bold]This will permanently protect '{key_str}' from amendment[/bold] "
+        "(even a human `agreement amend --apply` will refuse to touch it)."
+    )
+    typed = click.prompt(f"Type '{key_str}' to confirm")
+    if typed != key_str:
+        console.print("[red]Confirmation did not match — aborted. Nothing was entrenched.[/red]")
+        sys.exit(1)
+
+    lines = (agreements.load_entrenched() or "").splitlines()
+    lines.append(_entrenched_line(verb, subject))
+    _write_entrenched_lines(lines)
+
+    env = receipts_module.snapshot()
+    _emit(
+        action="entrench",
+        target={"operation": "add", "verb": verb, "subject": subject},
+        result={"status": "success"},
+        env_before=env,
+        session_id=SESSION_ID,
+        actor_type="cli_session",
+        agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        env_after=env,
+    )
+    console.print(f"[green]✓[/green] Entrenched: [bold]{key_str}[/bold]")
+
+
+@entrench_cmd.command(name="remove")
+@click.argument("verb")
+@click.argument("subject")
+def entrench_remove(verb, subject):
+    """Un-protect (VERB, SUBJECT). Security-critical — requires typed confirmation.
+
+    Unentrenching is the direction that matters most to get deliberately
+    right: a mistaken removal silently reopens a rule to amendment.
+    """
+    key_str = f"{verb} {subject}"
+    if (verb, subject) not in agreements.entrenched_keys():
+        console.print(f"[yellow]{key_str} is not currently entrenched.[/yellow]")
+        return
+
+    console.print(
+        f"[bold red]This will remove entrenchment protection from '{key_str}'.[/bold red] "
+        "It will become amendable again."
+    )
+    typed = click.prompt(f"Type '{key_str}' to confirm removal")
+    if typed != key_str:
+        console.print("[red]Confirmation did not match — aborted. Nothing was changed.[/red]")
+        sys.exit(1)
+
+    remaining = [
+        s["raw"] for s in amendment_diff.parse_statements(agreements.load_entrenched() or "")
+        if (s["verb"], s["subject"]) != (verb, subject)
+    ]
+    _write_entrenched_lines(remaining)
+
+    env = receipts_module.snapshot()
+    _emit(
+        action="entrench",
+        target={"operation": "remove", "verb": verb, "subject": subject},
+        result={"status": "success"},
+        env_before=env,
+        session_id=SESSION_ID,
+        actor_type="cli_session",
+        agent_hint=os.environ.get("MCP_AGENT_HINT", "cli"),
+        env_after=env,
+    )
+    console.print(f"[green]✓[/green] Un-entrenched: [bold]{key_str}[/bold]")
+
+
+cli.add_command(entrench_cmd, name="entrench")
 
 
 # ── Serve and MCP commands ──────────────────────────────────────────────────

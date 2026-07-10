@@ -68,8 +68,11 @@ def emit(
     revocation_state: dict | None = None,
     agreement_hash: str | None = None,
     invariant: dict | None = None,
-) -> None:
-    """Write a hash-chained receipt to disk with file locking.
+) -> dict:
+    """Write a hash-chained receipt to disk with file locking. Returns the
+    written receipt dict (including its receipt_hash) so callers that need
+    to reference the receipt they just wrote — e.g. amend_agreement handing
+    a receipt id back to the caller — don't have to re-derive it.
 
     This is the ONLY function that writes receipt files. The chain head is
     re-read from disk under an exclusive lock immediately before building
@@ -121,6 +124,8 @@ def emit(
         (RECEIPTS_DIR / filename).write_text(json.dumps(receipt, indent=2))
     finally:
         lock_fd.close()
+
+    return receipt
 
 
 def load(limit: int = 50, action_filter: str | None = None) -> list[dict]:

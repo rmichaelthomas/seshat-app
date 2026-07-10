@@ -16,10 +16,13 @@ from pathlib import Path
 
 import liminate
 
+import amendment_diff
+
 AGREEMENT_PATH = Path.home() / ".seshat" / "agreement.limn"
 REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
 LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
 INVARIANT_PATH = Path.home() / ".seshat" / "invariant.limn"
+ENTRENCHED_PATH = Path.home() / ".seshat" / "entrenched.limn"
 
 _ERROR_STATUS_NAMES = {
     "ERROR_PARSE",
@@ -60,6 +63,31 @@ def load_invariant() -> str | None:
         return INVARIANT_PATH.read_text()
     except FileNotFoundError:
         return None
+
+
+def load_entrenched() -> str | None:
+    """Return the entrenched-rules file text, or None if it doesn't exist."""
+    try:
+        return ENTRENCHED_PATH.read_text()
+    except FileNotFoundError:
+        return None
+
+
+def entrenched_keys() -> set[tuple[str, str]]:
+    """Parse entrenched.limn to a set of (verb, subject) protected keys.
+
+    Empty set when the file is absent — nothing entrenched by default.
+    entrenched.limn uses the same statement syntax as an Agreement; each
+    line names a (verb, subject) to protect. Parsing reuses the ported
+    amendment_diff.parse_statements (TI-Q7, v1.0k §57) — never a second,
+    ad hoc extractor. entrenched.limn is off the amendment surface (§57):
+    it is read here but never written by any agent-reachable code path,
+    only by `seshat entrench` (a human terminal command).
+    """
+    text = load_entrenched()
+    if text is None:
+        return set()
+    return {(s["verb"], s["subject"]) for s in amendment_diff.parse_statements(text)}
 
 
 def agreement_hash() -> str | None:
