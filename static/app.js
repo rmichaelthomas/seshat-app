@@ -634,9 +634,6 @@ function render() {
 }
 
 function renderCounts() {
-  // Status filter counts lived in the old sidebar; the six-domain sidebar's
-  // per-domain badges (a later task) will replace this. No-op until then.
-  if (!$("count-all")) return;
   const running  = projects.filter(p => p.status === "running").length;
   const stopped  = projects.filter(p => p.status === "stopped").length;
   const conflict = projects.filter(p => p.status === "conflict").length;
@@ -2118,9 +2115,7 @@ function closeProjectModal() {
 // ── Group modal ────────────────────────────────────────────────────────────
 
 function initGroupModal() {
-  // "New group" trigger lived in the old sidebar's Groups section; the
-  // six-domain sidebar's Projects sub-nav (a later task) will re-add it.
-  $("addGroupBtn")?.addEventListener("click",    openGroupModal);
+  $("addGroupBtn").addEventListener("click",     openGroupModal);
   $("groupModalClose").addEventListener("click", closeGroupModal);
   $("groupCancelBtn").addEventListener("click",  closeGroupModal);
   $("groupModalOverlay").addEventListener("click", e => { if (e.target===$("groupModalOverlay")) closeGroupModal(); });

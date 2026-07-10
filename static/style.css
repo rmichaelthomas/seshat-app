@@ -192,6 +192,21 @@ html, body {
 .group-btn.stop:hover   { color: var(--red); }
 .group-btn.delete:hover { color: var(--red); }
 
+/* ── Filters + Groups bar (restored inside the Projects view; these reuse
+   the .filter-btn/.group-item styles above, which were originally written
+   for a vertical sidebar — here they lay out horizontally instead) ──────── */
+.filters-groups-bar {
+  display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.status-filter-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.status-filter-row .filter-btn { width: auto; }
+.groups-row { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+.groups-row .sidebar-section-header { padding: 0 0 4px; }
+.groups-row .sidebar-label { padding: 0; }
+.groups-row #groupList { display: flex; flex-wrap: wrap; gap: 4px; }
+.groups-row .group-item { min-width: 170px; }
+
 /* ── Main content ─────────────────────────────────────────────────────────── */
 
 .main { flex: 1; overflow-y: auto; min-width: 0; position: relative; }
