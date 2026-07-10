@@ -32,6 +32,15 @@ VAULT_PLAIN   = SESHAT_DIR / "vault.json"   # fallback (unencrypted)
 SERVICE_NAME  = "seshat"
 KEY_ITEM      = "vault_encryption_key"
 
+# Single source of truth for the Receipts platform API key's vault key name.
+# `vault set` always uppercases whatever key it's given (see vault_set in
+# cli.py — deliberate, so a typo'd-case project env var still matches its
+# uppercase declaration), so every reader must ask for the uppercase form.
+# Previously several call sites asked for the lowercase form directly and
+# never matched what `vault set`/the docs actually produce — reference this
+# constant instead of a literal string so the two can never diverge again.
+RECEIPTS_API_KEY_VAULT_KEY = "__RECEIPTS_API_KEY__"
+
 _EMPTY: dict = {"shared": {}, "overrides": {}}
 
 # ── Optional deps (graceful fallback if not installed) ─────────────────────

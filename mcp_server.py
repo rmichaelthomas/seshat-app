@@ -68,13 +68,14 @@ def _agreement_actor() -> str:
 
 
 def _emit(**kwargs) -> None:
-    """Wrap receipts.emit(), injecting revocation_state and (post-action)
-    the Invariant verification block so every MCP-emitted receipt carries
-    them from one source (§7 invariant 4)."""
+    """Wrap receipts.emit(), injecting revocation_state, agreement_hash, and
+    (post-action) the Invariant verification block so every MCP-emitted
+    receipt carries them from one source (§7 invariant 4)."""
     env_after = kwargs.get("env_after") or receipts.snapshot()
     kwargs["env_after"] = env_after
     receipts.emit(
         revocation_state=agreements.revocation_state(),
+        agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
         **kwargs,
     )

@@ -275,6 +275,85 @@ class TestConcurrentEmission:
         assert lock_path.exists()
 
 
+class TestAgreementHashField:
+    """TI-Q4 (v1.0i §50) — agreement_hash is an optional, omit-when-None
+    receipt field, exactly like revocation_state."""
+
+    def test_agreement_hash_omitted_when_none(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        files = sorted(receipts_dir.glob("*.json"))
+        receipt = json.loads(files[0].read_text())
+        assert "agreement_hash" not in receipt
+
+    def test_agreement_hash_present_when_supplied(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        h = "a" * 64
+        receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+            agreement_hash=h,
+        )
+        files = sorted(receipts_dir.glob("*.json"))
+        receipt = json.loads(files[0].read_text())
+        assert receipt["agreement_hash"] == h
+
+    def test_agreement_hash_is_hashed_field_changes_receipt_hash(self, receipts_dir, monkeypatch):
+        """agreement_hash must be part of the canonicalized dict before
+        hashing — two receipts identical except for agreement_hash must
+        produce different receipt_hash values."""
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+            agreement_hash="a" * 64,
+        )
+        files = sorted(receipts_dir.glob("*.json"))
+        for f in files:
+            f.unlink()
+
+        receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+            agreement_hash="b" * 64,
+        )
+        files = sorted(receipts_dir.glob("*.json"))
+        second = json.loads(files[0].read_text())
+
+        # Recompute what the hash would have been with the first hash.
+        tampered = dict(second)
+        tampered["agreement_hash"] = "a" * 64
+        verify_copy = {k: v for k, v in tampered.items() if k != "receipt_hash"}
+        canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
+        recomputed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        assert recomputed != second["receipt_hash"]
+
+
 class TestReceiptLoading:
     """Test the load() function from the extracted module."""
 

@@ -237,6 +237,27 @@ class TestRevocationState:
         assert state["last_checked"] == "2026-07-07T00:00:00+00:00"
 
 
+# ── TI-Q4: agreement_hash() (v1.0i §50) — mirrors revocation_state() ────────
+
+
+class TestAgreementHash:
+    def test_none_when_no_agreement_file(self, monkeypatch):
+        monkeypatch.setattr(agreements, "load_agreement", lambda: None)
+        assert agreements.agreement_hash() is None
+
+    def test_hash_matches_sha256_of_content(self, monkeypatch):
+        text = 'permit actor is "claude-code" and action is "start_project"\n'
+        monkeypatch.setattr(agreements, "load_agreement", lambda: text)
+        assert agreements.agreement_hash() == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def test_hash_changes_when_content_changes(self, monkeypatch):
+        monkeypatch.setattr(agreements, "load_agreement", lambda: "permit actor is a and action is b")
+        h1 = agreements.agreement_hash()
+        monkeypatch.setattr(agreements, "load_agreement", lambda: "permit actor is a and action is c")
+        h2 = agreements.agreement_hash()
+        assert h1 != h2
+
+
 class TestRevocationStateReceiptAdditivity:
     """revocation_state must be additive: omitted when None, present when
     given, and must never break hash-chain reproducibility either way."""

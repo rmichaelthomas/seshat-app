@@ -11,6 +11,7 @@ unchanged from the three-tab app this replaces.
 
 from __future__ import annotations
 
+import os
 import uuid
 
 from textual import work
@@ -23,7 +24,7 @@ import agreements
 import receipts as receipts_module
 from registry import Registry
 from scanner import Scanner
-from vault import Vault
+from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 
 from .colors import DOMAIN_ACCENTS, DOMAIN_GLYPHS, EMBLEM
 from .data import summarize_agreement_rules
@@ -34,6 +35,7 @@ from .domains.receipts import ReceiptsDomainMixin
 from .domains.revocations import RevocationsDomainMixin
 from .domains.vault import VaultDomainMixin
 from .graph import GovernanceGraph, GovernanceNode
+from . import platform_client
 from .palette import DomainCommandProvider
 from .screens import BootSplashScreen, DrillScreen, HelpOverlayScreen
 from .widgets import CliEcho
@@ -348,24 +350,50 @@ class SeshatApp(
 
     # ── Governance graph (drill-down authority trace) ──────────────────────
 
-    def _build_governance_graph(self) -> GovernanceGraph:
+    def _build_governance_graph(self, sentinel_verdicts: dict[str, dict] | None = None) -> GovernanceGraph:
         """Pure assembly from the same data the domains already load.
         Never itself writes to ~/.seshat/ (read-only, same trust boundary
-        as the rest of the TUI)."""
+        as the rest of the TUI). No network I/O — sentinel_verdicts is
+        supplied by the caller (see _rebuild_governance_graph), which keeps
+        this safe to call synchronously from the UI thread (push_drill's
+        cold-start fallback below)."""
         receipts_data = receipts_module.load(limit=200)
         agreement_text = agreements.load_agreement()
         revocations_text = agreements.load_revocations()
         agreement_rules = summarize_agreement_rules(agreement_text) if agreement_text else []
         revocation_rules = summarize_agreement_rules(revocations_text) if revocations_text else []
-        return GovernanceGraph(receipts_data, agreement_rules, revocation_rules)
+        return GovernanceGraph(receipts_data, agreement_rules, revocation_rules, sentinel_verdicts)
+
+    def _fetch_sentinel_verdicts(self, receipts_data: list[dict]) -> dict[str, dict]:
+        """TI-Q4 (v1.0i §49-50) — best-effort Sentinel verdict fetch, joined
+        by agreement_hash. Never raises: no platform key, no Agreement-
+        bearing receipts, a network error, or a non-200 response all degrade
+        to an empty map, so the drill behaves exactly as at f32b601 (§8
+        failure mode 3). Caller must run this off the UI thread."""
+        agreement_hashes = sorted({
+            r["agreement_hash"] for r in receipts_data if r.get("agreement_hash")
+        })
+        if not agreement_hashes:
+            return {}
+        api_key = _vault.get(RECEIPTS_API_KEY_VAULT_KEY)
+        if not api_key:
+            return {}
+        api_base = os.environ.get("SESHAT_RECEIPTS_API", platform_client.RECEIPTS_API_DEFAULT)
+        try:
+            return platform_client.fetch_sentinel_verdicts(api_base, api_key, agreement_hashes)
+        except Exception:
+            return {}
 
     @work(thread=True, group="governance-graph", exclusive=True)
     def _rebuild_governance_graph(self) -> None:
         # Off the hot 3s projects-refresh path deliberately (§8 failure
         # mode 1): this reads up to 200 receipt files plus both rule
-        # files, so it only runs at boot and on authority-domain tab
-        # activation, in a background thread.
-        graph = self._build_governance_graph()
+        # files, and does a best-effort platform fetch, so it only runs at
+        # boot and on authority-domain tab activation, in a background
+        # thread — never on the UI thread.
+        receipts_data = receipts_module.load(limit=200)
+        verdicts = self._fetch_sentinel_verdicts(receipts_data)
+        graph = self._build_governance_graph(sentinel_verdicts=verdicts)
         self.call_from_thread(self._set_governance_graph, graph)
 
     def _set_governance_graph(self, graph: GovernanceGraph) -> None:

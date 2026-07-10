@@ -15,6 +15,7 @@ from seshat_tui.graph import (
     ReceiptNode,
     RevocationNode,
     RuleNode,
+    SentinelVerdictNode,
 )
 
 
@@ -196,6 +197,86 @@ def test_receipt_list_node_edges_one_per_receipt():
     edges = node.edges(graph)
     assert len(edges) == 2
     assert all(isinstance(e.target, ReceiptNode) for e in edges)
+
+
+# ── TI-Q4: agreement_hash join + SentinelVerdictNode ────────────────────
+
+def test_receipt_with_matching_agreement_hash_yields_sentinel_edge():
+    receipt = _success_receipt()
+    receipt["agreement_hash"] = "h" * 64
+    verdict = {"sentinel_id": "sen1", "verdict": "drifted", "reason": "agreement changed", "agreement_hash": "h" * 64}
+    graph = GovernanceGraph(
+        receipts=[receipt], agreement_rules=[], revocation_rules=[],
+        sentinel_verdicts={"h" * 64: verdict},
+    )
+    node = ReceiptNode(receipt)
+    edges = node.edges(graph)
+    sentinel_edges = [e for e in edges if "watched by Sentinel" in e.label]
+    assert len(sentinel_edges) == 1
+    assert isinstance(sentinel_edges[0].target, SentinelVerdictNode)
+    assert "drifted" in sentinel_edges[0].label
+
+
+def test_receipt_with_no_agreement_hash_has_no_sentinel_edge():
+    receipt = _success_receipt()
+    graph = GovernanceGraph(
+        receipts=[receipt], agreement_rules=[], revocation_rules=[],
+        sentinel_verdicts={"h" * 64: {"verdict": "drifted"}},
+    )
+    node = ReceiptNode(receipt)
+    edges = node.edges(graph)
+    assert not any("watched by Sentinel" in e.label for e in edges)
+
+
+def test_receipt_with_unmatched_agreement_hash_has_no_sentinel_edge():
+    """Exact-match join only — a hash present in the receipt but absent
+    from the verdict map yields no edge (never a heuristic match)."""
+    receipt = _success_receipt()
+    receipt["agreement_hash"] = "a" * 64
+    graph = GovernanceGraph(
+        receipts=[receipt], agreement_rules=[], revocation_rules=[],
+        sentinel_verdicts={"b" * 64: {"verdict": "drifted"}},
+    )
+    node = ReceiptNode(receipt)
+    edges = node.edges(graph)
+    assert not any("watched by Sentinel" in e.label for e in edges)
+
+
+def test_sentinel_verdicts_default_empty_offline_additive():
+    """No sentinel_verdicts supplied at all (the offline/no-key case) —
+    behaves exactly as before this build, no Sentinel edge, no error."""
+    receipt = _success_receipt()
+    receipt["agreement_hash"] = "a" * 64
+    graph = GovernanceGraph(receipts=[receipt], agreement_rules=[], revocation_rules=[])
+    node = ReceiptNode(receipt)
+    edges = node.edges(graph)
+    assert not any("watched by Sentinel" in e.label for e in edges)
+
+
+def test_sentinel_verdict_for_exact_match_only():
+    graph = GovernanceGraph(
+        receipts=[], agreement_rules=[], revocation_rules=[],
+        sentinel_verdicts={"a" * 64: {"verdict": "holding"}},
+    )
+    assert graph.sentinel_verdict_for("a" * 64) == {"verdict": "holding"}
+    assert graph.sentinel_verdict_for("b" * 64) is None
+    assert graph.sentinel_verdict_for(None) is None
+
+
+def test_sentinel_verdict_node_is_terminal():
+    node = SentinelVerdictNode({"verdict": "holding", "sentinel_id": "s1"})
+    graph = GovernanceGraph(receipts=[], agreement_rules=[], revocation_rules=[])
+    assert node.edges(graph) == []
+
+
+def test_sentinel_verdict_node_uses_invariant_glyph_and_locked_colors():
+    from seshat_tui.colors import COLORS, DOMAIN_GLYPHS
+
+    holding = SentinelVerdictNode({"verdict": "holding"})
+    drifted = SentinelVerdictNode({"verdict": "drifted"})
+    assert holding.glyph == DOMAIN_GLYPHS["invariant"]
+    assert holding.accent == COLORS["green"]
+    assert drifted.accent == COLORS["red"]
 
 
 def test_graph_py_imports_no_textual():

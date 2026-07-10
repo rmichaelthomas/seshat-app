@@ -13,6 +13,7 @@ from textual import work
 from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Static, TabPane
 
+import agreements
 import receipts as receipts_module
 from registry import Registry
 from runner import Runner
@@ -343,6 +344,7 @@ class ProjectsDomainMixin:
                 session_id=self.session_id,
                 actor_type="tui_session",
                 agent_hint="tui",
+                agreement_hash=agreements.agreement_hash(),
             )
             return False, str(e)
 
@@ -354,6 +356,7 @@ class ProjectsDomainMixin:
             session_id=self.session_id,
             actor_type="tui_session",
             agent_hint="tui",
+            agreement_hash=agreements.agreement_hash(),
         )
         self.refresh_projects()
         self._show_echo("projects", f"seshat register (via TUI: {fields['name']})", "receipt emitted")
@@ -380,12 +383,14 @@ class ProjectsDomainMixin:
             receipts_module.emit(
                 action="start_project", target={"project": name}, result={"status": "success", "pid": pid},
                 env_before=env_before, session_id=self.session_id, actor_type="tui_session", agent_hint="tui",
+                agreement_hash=agreements.agreement_hash(),
             )
         except Exception as e:
             self.call_from_thread(self.notify, str(e), severity="error")
             receipts_module.emit(
                 action="start_project", target={"project": name}, result={"status": "failure", "error": str(e)},
                 env_before=env_before, session_id=self.session_id, actor_type="tui_session", agent_hint="tui",
+                agreement_hash=agreements.agreement_hash(),
             )
 
     @work(thread=True)
@@ -407,6 +412,7 @@ class ProjectsDomainMixin:
             target={"project": name, "port": project["port"] if project else 0},
             result={"status": "success", "stopped_pid": pid},
             env_before=env_before, session_id=self.session_id, actor_type="tui_session", agent_hint="tui",
+            agreement_hash=agreements.agreement_hash(),
         )
 
     @work(thread=True)
@@ -447,4 +453,5 @@ class ProjectsDomainMixin:
             action="start_group", target={"group": group_name},
             result={"status": "success", "group": group_name, "results": results},
             env_before=env_before, session_id=self.session_id, actor_type="tui_session", agent_hint="tui",
+            agreement_hash=agreements.agreement_hash(),
         )
