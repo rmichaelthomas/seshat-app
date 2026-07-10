@@ -5,10 +5,38 @@ let orphans      = [];
 let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
-let activeView   = "projects";   // "projects" | "vault" | "organize" | "receipts"
+let activeView   = "projects";   // "projects" | "agreements" | "receipts" | "invariant" | "revocations" | "vault" | "organize" (organize is a Projects sub-view, not a top-level domain-view)
 let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 let _refreshFailCount = 0;
+
+// ── Receipts / Vault detail-panel selection state ────────────────────────────
+// selectedName (above) tracks the selected Projects row; these track the
+// equivalent selection for the other domains that now share #detailPanel.
+let selectedReceiptHash = null;
+let selectedVaultKey    = null;
+let selectedAgreementRule  = null; // { source: "agreement"|"revocation", index } | null
+let selectedInvariantClaim = null; // index into invariantLastRunCache.invariant.claims | null
+let selectedRevocationRule = null; // index into revocationsCache.rules | null
+
+// ── Agreements / Invariant / Revocations domain data caches ──────────────────
+// Populated on domain entry (renderAgreementsView/renderInvariantView/
+// renderRevocationsView) — unlike `projects`, these three aren't polled, so
+// the cache is simply "whatever the last fetch on this domain returned."
+let agreementCache      = null; // last GET /api/agreement response
+let revocationsCache    = null; // last GET /api/revocations response
+let invariantCache      = null; // last GET /api/invariant response
+let invariantLastRunCache = null; // last GET /api/invariant/last-run response
+let revocationDenialCountsCache = {}; // { ruleIndex: count } from the best-effort receipts join
+
+// ── Receipts follow/tail-mode state ──────────────────────────────────────────
+let receiptsCache     = [];   // currently-rendered receipts, newest first
+let receiptsFollowing = true; // default-on, matches the reference
+let receiptsFollowTimer = null;
+
+// ── Vault detail-panel data cache (populated by renderVaultView()) ──────────
+let vaultAuditCache   = [];
+let vaultSummaryCache = null;
 
 const uiState = {
   searchQuery: "",
@@ -59,16 +87,15 @@ function initKeyboard() {
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-  initFilters();
   initSearchSort();
   initProjectModal();
   initGroupModal();
   initVaultKeyModal();
   initKeyboard();
   initSearchHint();
-  $("vaultBtn").addEventListener("click", toggleVaultView);
-  $("organizeBtn").addEventListener("click", toggleOrganizeView);
-  $("receiptsBtn").addEventListener("click", toggleReceiptsView);
+  renderSidebar();
+  // Organize is a Projects sub-view (not its own domain-view); hidden until toggled.
+  $("organizeView").style.display = "none";
   refresh();
   loadSetupStatus();
   loadHostnames();
@@ -120,6 +147,255 @@ function hideStaleBanner() {
   if (shelf) shelf.style.opacity = "";
 }
 
+// ── Domain nav (six-domain redesign) ────────────────────────────────────────
+//
+// The six top-level domains, each with its own <section class="domain-view"
+// id="view-{id}"> in templates/index.html. showDomain() is the single source
+// of truth for which one is visible; renderSidebar() builds the sidebar rows
+// from the same list and keeps the active row in sync.
+//
+// "organize" is NOT one of these six ids — it's a sub-view nested inside
+// view-projects (see showOrganizeView below), so it has no #view-organize
+// section of its own and is never passed to showDomain().
+
+const DOMAINS = [
+  ["projects",    "◈", "Projects"],
+  ["agreements",  "☰", "Agreements"],
+  ["receipts",    "⧫", "Receipts"],
+  ["invariant",   "◇", "Invariant"],
+  ["revocations", "⊘", "Revocations"],
+  ["vault",       "⚿", "Vault"],
+];
+
+// One subnav renderer per domain that has one. Agreements/Invariant/
+// Revocations extend the same mechanism Task 3 established for Projects
+// (renderProjectsSubnav) — a plain function returning subnav HTML, looked up
+// by domain id rather than chained in an ever-longer ternary.
+const DOMAIN_SUBNAV_RENDERERS = {
+  projects:    renderProjectsSubnav,
+  agreements:  renderAgreementsSubnav,
+  invariant:   renderInvariantSubnav,
+  revocations: renderRevocationsSubnav,
+};
+
+// ── Domain-contextual header primary action ─────────────────────────────────
+//
+// Each domain shows exactly one contextual action (or command hint) on the
+// header's right side, replacing the old "always show everything" pattern.
+// Projects is intentionally NOT in this table: it keeps its own static
+// Ports/Discover/GitHub/+Register Project controls (toggled directly in
+// showDomain() via #headerProjectsTools/#addProjectBtn) since it already has
+// more than one control and Register Project's existing handler must stay
+// untouched. Every other domain gets one entry here, looked up by id — same
+// lookup-table shape as DOMAIN_SUBNAV_RENDERERS above rather than a growing
+// if/else chain.
+const HEADER_ACTION_RENDERERS = {
+  agreements:  () => _openInEditorHeaderAction("agreement.limn", agreementCache?.exists, "~/.seshat/agreement.limn"),
+  invariant:   () => _openInEditorHeaderAction("invariant.limn", invariantCache?.exists, "~/.seshat/invariant.limn"),
+  receipts:    () => _cmdHintHeaderAction("seshat receipts sync"),
+  revocations: () => _cmdHintHeaderAction("seshat revocations sync"),
+  vault:       () => `<button class="btn btn-primary" onclick="openVaultKeyModal('shared')">+ Add Key</button>`,
+};
+
+function renderHeaderAction(id) {
+  const el = $("headerAction");
+  if (!el) return;
+  const fn = HEADER_ACTION_RENDERERS[id];
+  el.innerHTML = fn ? fn() : "";
+}
+
+// "Open in editor" — shared by Agreements/Invariant. Both call the existing
+// apiOpen() helper (POST /api/open, mode "editor"); no second implementation.
+// `exists` is read from the domain's own last-fetch cache (agreementCache /
+// invariantCache), never re-fetched just for this button. Disabled (not
+// hidden) with an explanatory title when there's no file to open, so the
+// header doesn't go silently blank.
+function _openInEditorHeaderAction(filename, exists, path) {
+  if (!exists) {
+    return `<button class="btn btn-ghost" disabled title="No ${esc(filename)} on this machine">Open in editor</button>`;
+  }
+  return `<button class="btn btn-primary" onclick="apiOpen('${path}', 'editor')" title="Open ${esc(filename)} in your editor">Open in editor</button>`;
+}
+
+// Copyable CLI command hint for domains with no real sync endpoint (Receipts/
+// Revocations sync is CLI-only) — per the build plan, never fabricate a
+// button wired to a route that doesn't exist. Reuses the .cmd-hint/.p/.copy
+// classes Task 2's CSS already styled.
+function _cmdHintHeaderAction(cmd) {
+  return `<div class="cmd-hint"><span class="p">$</span> ${esc(cmd)}<span class="copy" onclick="copyCmdHint('${esc(cmd)}')" title="Copy command">⧉</span></div>`;
+}
+
+async function copyCmdHint(cmd) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return; // Clipboard API unavailable (e.g. test environment) — silent no-op
+    await navigator.clipboard.writeText(cmd);
+    toast("Command copied", "success");
+  } catch (_) { /* clipboard write can reject (permissions, insecure context) — non-fatal */ }
+}
+
+function renderSidebar() {
+  // Organize is shown nested inside the Projects domain-view, so the
+  // Projects row stays highlighted while Organize is active.
+  const current = activeView === "organize" ? "projects" : activeView;
+  $("sidebar").innerHTML = DOMAINS.map(([id, glyph, label]) => {
+    const subnavFn = id === current ? DOMAIN_SUBNAV_RENDERERS[id] : null;
+    return `
+    <div class="nav-item${id === current ? " on" : ""}" onclick="showDomain('${id}')">
+      <span class="ng">${glyph}</span> ${esc(label)}
+    </div>${subnavFn ? subnavFn() : ""}`;
+  }).join("");
+  // Groups are data-driven (fetched separately from `groups`); populate/wire
+  // the #groupList placeholder the subnav string just created. renderGroups()
+  // itself no-ops when #groupList isn't in the DOM, so this is safe to call
+  // even when the projects subnav wasn't rendered above.
+  if (current === "projects") renderGroups();
+}
+
+// Projects sub-nav (replaces the Task-2-fix stopgap `.filters-groups-bar`):
+// Status rows reuse the same activeFilter/renderCounts() computation the old
+// bar used, Groups rows reuse renderGroups()'s existing data, and the Tools
+// row is the only click-trigger for the Organize sub-view Task 2 left dangling.
+function renderProjectsSubnav() {
+  const running    = projects.filter(p => p.status === "running").length;
+  const stopped    = projects.filter(p => p.status === "stopped").length;
+  const conflict   = projects.filter(p => p.status === "conflict").length;
+  const isOrganize = activeView === "organize";
+  const statusItem = (filter, dotCls, label, count, countId) => `
+    <div class="sub-item${(!isOrganize && activeFilter === filter) ? " on" : ""}" onclick="setProjectFilter('${filter}')">
+      <span class="sdot${dotCls ? ` ${dotCls}` : ""}"></span> <span class="lbl">${label}</span> <span class="sc" id="${countId}">${count}</span>
+    </div>`;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">Status</div>
+      ${statusItem("all",      "",  "All",       projects.length, "count-all")}
+      ${statusItem("running",  "g", "Running",   running,          "count-running")}
+      ${statusItem("stopped",  "",  "Stopped",   stopped,          "count-stopped")}
+      ${statusItem("conflict", "r", "Conflicts", conflict,         "count-conflict")}
+      ${statusItem("orphans",  "o", "Orphans",   orphans.length,   "count-orphans")}
+      <div class="subnav-h-row">
+        <span class="subnav-h">Groups</span>
+        <button class="sidebar-add-btn" id="addGroupBtn" title="New group" onclick="openGroupModal()">+</button>
+      </div>
+      <div id="groupList"><!-- rendered by JS: renderGroups() --></div>
+      <div class="subnav-h">Tools</div>
+      <div class="sub-item${isOrganize ? " on" : ""}" onclick="showOrganizeView()"><span class="lbl">Organize</span></div>
+    </div>`;
+}
+
+// Shared "click a sub-nav row, scroll the main view to the matching anchor"
+// mechanism for Agreements/Invariant/Revocations — the brief is explicit that
+// this should be a simple scrollIntoView(), not a second view-mode toggle
+// like Projects' activeFilter. `?.` guards the case where the anchor hasn't
+// rendered yet (e.g. the domain's data fetch hasn't resolved).
+function _scrollDomainAnchor(anchorId) {
+  $(anchorId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// "Sync log" has no backing endpoint (no sync-history API exists) — per the
+// build brief, this surfaces that honestly via a toast rather than pretending
+// to have data or silently doing nothing.
+function showSyncLogUnavailable() {
+  toast("Sync history isn't available yet.", "info");
+}
+
+// Agreements sub-nav: "Agreement rules" / "Platform revocations" (only when
+// there are any) / "Dry run". Counts come from agreementCache/revocationsCache
+// (populated by renderAgreementsView()); omitted (not "0") until that fetch
+// resolves so the sub-nav never shows a fabricated count mid-load.
+function renderAgreementsSubnav() {
+  const ruleCount = agreementCache?.exists ? (agreementCache.rules || []).length : null;
+  const revCount  = revocationsCache?.exists ? (revocationsCache.rules || []).length : 0;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-rules')">
+        <span class="lbl">Agreement rules</span>${ruleCount !== null ? ` <span class="sc">${ruleCount}</span>` : ""}
+      </div>
+      ${revCount > 0 ? `
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-revocations')">
+        <span class="lbl">Platform revocations</span> <span class="sc">${revCount}</span>
+      </div>` : ""}
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-dryrun')"><span class="lbl">Dry run</span></div>
+    </div>`;
+}
+
+// Invariant sub-nav: "Last run" / "Contract". Both are anchors within the
+// single populated view (the reference's SUBNAV implies two switchable
+// views, but per the brief's guidance for Agreements — "don't build a second
+// view-mode toggle" — these just scroll to the matching section instead).
+function renderInvariantSubnav() {
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('inv-anchor-lastrun')"><span class="lbl">Last run</span></div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('inv-anchor-contract')"><span class="lbl">Contract</span></div>
+    </div>`;
+}
+
+// Revocations sub-nav: "Active" / "Sync log". "Sync log" has no backing data
+// (see showSyncLogUnavailable()) so it's not a scroll target.
+function renderRevocationsSubnav() {
+  const count = revocationsCache?.exists ? (revocationsCache.rules || []).length : null;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('rev-anchor-active')">
+        <span class="lbl">Active</span>${count !== null ? ` <span class="sc">${count}</span>` : ""}
+      </div>
+      <div class="sub-item" onclick="showSyncLogUnavailable()"><span class="lbl">Sync log</span></div>
+    </div>`;
+}
+
+// Sets the Projects status filter from a sidebar sub-nav click. Same
+// activeFilter variable and render()-vs-switch-domain branching the old
+// initFilters()-bound .filter-btn click handler used — just invoked directly
+// from inline onclick since the sub-nav is re-rendered (not static markup),
+// so a boot-time-only addEventListener binding would go stale after the
+// first re-render.
+function setProjectFilter(filter) {
+  activeFilter = filter;
+  if (activeView !== "projects") { showProjectView(); return; }
+  renderSidebar();
+  render();
+}
+
+function _activateDomainSection(id) {
+  document.querySelectorAll(".domain-view").forEach(v => v.classList.remove("on"));
+  $("view-" + id).classList.add("on");
+}
+
+// showDomain() owns switching to one of the six real domains: it gates on
+// unsaved detail-panel edits (same protection showVaultView()/etc. always
+// had), flips the visible .domain-view section, updates activeView, keeps
+// the sidebar in sync, and triggers that domain's render/load.
+async function showDomain(id) {
+  if (id === activeView) return; // re-clicking the active nav-item is a no-op
+  if (await closeDetail(id) === false) return;
+  if (activeView === "receipts" && id !== "receipts") stopReceiptsFollow();
+  _activateDomainSection(id);
+  activeView = id;
+  renderSidebar();
+  $("addProjectBtn").style.display = (id === "projects") ? "" : "none";
+  $("searchSortBar").style.display = (id === "projects") ? "" : "none";
+  $("headerProjectsTools").style.display = (id === "projects") ? "" : "none";
+  renderHeaderAction(id);
+  if (id === "projects") {
+    $("organizeView").style.display = "none";
+    $("projectView").style.display  = "block";
+    render();
+  } else if (id === "vault") {
+    await renderVaultView();
+  } else if (id === "receipts") {
+    await renderReceiptsView();
+  } else if (id === "agreements") {
+    await renderAgreementsView();
+  } else if (id === "invariant") {
+    await renderInvariantView();
+  } else if (id === "revocations") {
+    await renderRevocationsView();
+  }
+}
+
 // ── View switching ─────────────────────────────────────────────────────────
 
 function toggleVaultView() {
@@ -138,23 +414,15 @@ function toggleOrganizeView() {
   }
 }
 
-function showProjectView() {
-  activeView = "projects";
-  $("projectView").style.display  = "block";
-  $("vaultView").style.display    = "none";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "none";
-  $("vaultBtn").classList.remove("active");
-  $("organizeBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "";
-  $("searchSortBar").style.display = "";
-  render();
+async function showProjectView() {
+  await showDomain("projects");
 }
 
 async function installVaultDeps() {
-  const badge = document.querySelector(".vault-enc-badge.warn");
-  const btn   = badge && badge.querySelector("button");
+  // Targets #vaultEncBanner/#vaultInstallDepsBtn (restyled to .banner.warn in
+  // this task) rather than the old .vault-enc-badge.warn markup those ids
+  // replaced — this function's install-deps flow itself is unchanged.
+  const btn = $("vaultInstallDepsBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
   try {
     const res  = await fetch("/api/vault/install-deps", { method: "POST" });
@@ -168,8 +436,9 @@ async function installVaultDeps() {
       if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
       return;
     }
-    if (badge) badge.innerHTML =
-      `<span style="color:var(--yellow)">✓ Installed — restart Seshat to activate encryption</span>`;
+    const banner = $("vaultEncBanner");
+    if (banner) banner.innerHTML =
+      `<span class="bi" style="color:var(--yellow)">⚠</span> Installed — restart Seshat to activate encryption`;
   } catch (e) {
     toast("Install failed: " + e.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
@@ -177,30 +446,21 @@ async function installVaultDeps() {
 }
 
 async function showVaultView() {
-  if (await closeDetail() === false) return;
-  activeView = "vault";
-  $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "block";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "none";
-  $("vaultBtn").classList.add("active");
-  $("organizeBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "none";
-  $("searchSortBar").style.display = "none";
-  await renderVaultView();
+  await showDomain("vault");
 }
 
+// Organize is a Projects sub-view (no #view-organize section of its own), so
+// it can't go through showDomain() — that would re-show #projectView, not
+// #organizeView. It duplicates showDomain()'s gating/section-activation
+// instead.
 async function showOrganizeView() {
+  if (activeView === "organize") return; // already showing; no-op
   if (await closeDetail() === false) return;
+  _activateDomainSection("projects");
   activeView = "organize";
+  renderSidebar();
   $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "none";
   $("organizeView").style.display = "block";
-  $("receiptsView").style.display = "none";
-  $("organizeBtn").classList.add("active");
-  $("vaultBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
@@ -215,21 +475,11 @@ function toggleReceiptsView() {
 }
 
 async function showReceiptsView() {
-  if (await closeDetail() === false) return;
-  activeView = "receipts";
-  $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "none";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "block";
-  $("receiptsBtn").classList.add("active");
-  $("vaultBtn").classList.remove("active");
-  $("organizeBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "none";
-  $("searchSortBar").style.display = "none";
-  await renderReceiptsView();
+  await showDomain("receipts");
 }
 
 async function renderReceiptsView() {
+  stopReceiptsFollow();
   $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>`;
   try {
     const [receiptsRes, statsRes] = await Promise.all([
@@ -239,6 +489,25 @@ async function renderReceiptsView() {
     const receipts = await receiptsRes.json();
     const stats    = await statsRes.json();
 
+    // No existing code verifies hash-chain integrity over the API surface
+    // this dashboard is allowed to call (seshat.py has no such endpoint; the
+    // only verification that exists is `seshat receipts verify` in cli.py, a
+    // local CLI-only command). So this view never claims "intact" — it shows
+    // real, unverified facts only: count and the head receipt's own hash.
+    if (stats.total === 0) {
+      $("receiptsContent").innerHTML = `
+        <div class="view-title"><h1>Receipts</h1></div>
+        <div class="empty-wrap"><div class="empty-card">
+          <div class="empty-glyph">⧫</div>
+          <div class="empty-title">No receipts yet</div>
+          <div class="empty-desc">Receipts are emitted as governed actions run. Start or stop a project, and its hash-chained receipt appears here.</div>
+        </div></div>`;
+      receiptsCache = [];
+      return;
+    }
+
+    receiptsCache = receipts;
+
     const sessionOptions = stats.sessions.map(s =>
       `<option value="${esc(s)}">${esc(s)}</option>`
     ).join("");
@@ -247,28 +516,46 @@ async function renderReceiptsView() {
       `<option value="${esc(a)}">${esc(a)} (${stats.actions[a]})</option>`
     ).join("");
 
+    const sessionsSummary = _receiptsSessionSummary(receipts);
+    const headHash  = receipts[0] && receipts[0].receipt_hash;
+    const headShort = headHash ? `${headHash.slice(0, 12)}…` : "—";
+
     $("receiptsContent").innerHTML = `
-      <div class="receipts-view">
-        <div class="receipts-view-header">
-          <div>
-            <div class="receipts-view-title">⧫ Machine Action Receipts</div>
-            <div class="receipts-view-meta">${stats.total} receipt${stats.total !== 1 ? "s" : ""} · ${stats.sessions.length} session${stats.sessions.length !== 1 ? "s" : ""}</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select id="receiptsFilterAction" onchange="filterReceipts()" style="font-size:12px">
-              <option value="">All actions</option>
-              ${actionOptions}
-            </select>
-            <select id="receiptsFilterSession" onchange="filterReceipts()" style="font-size:12px">
-              <option value="">All sessions</option>
-              ${sessionOptions}
-            </select>
-            <button class="btn btn-ghost btn-sm" onclick="renderReceiptsView()">↺ Refresh</button>
-            <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
-          </div>
-        </div>
-        <div id="receiptsList">${renderReceiptRows(receipts)}</div>
-      </div>`;
+      <div class="view-title"><h1>Receipts</h1><span class="vsub">${stats.total} receipt${stats.total !== 1 ? "s" : ""}</span></div>
+      <div class="stat-row">
+        <div class="stat-card"><div class="sl">Total</div><div class="sv">${stats.total}</div><div class="sm">receipts</div></div>
+        <div class="stat-card"><div class="sl">Sessions</div><div class="sv">${stats.sessions.length}</div><div class="sm">${esc(sessionsSummary)}</div></div>
+        <div class="stat-card"><div class="sl">Actions</div><div class="sv">${Object.keys(stats.actions).length}</div><div class="sm">types</div></div>
+        <div class="stat-card"><div class="sl">Chain</div><div class="sv" style="font-size:14px;color:var(--cyan)">${esc(headShort)}</div><div class="sm">head</div></div>
+      </div>
+      <div class="chain-strip">
+        <span class="bar-full">████████████</span>
+        <span>${stats.total} receipt${stats.total !== 1 ? "s" : ""}, hash-chained</span>
+        <span class="bspacer"></span>
+        <span class="num">head</span> <span class="hh">${esc(headShort)}</span>
+      </div>
+      <div class="follow-strip">
+        <span class="follow-toggle" id="followToggle" onclick="toggleReceiptsFollow()"><span class="pulse"></span> following</span>
+        <span>· new receipts prepend at the top (1s poll)</span>
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <select id="receiptsFilterAction" onchange="filterReceipts()" style="font-size:12px">
+            <option value="">All actions</option>
+            ${actionOptions}
+          </select>
+          <select id="receiptsFilterSession" onchange="filterReceipts()" style="font-size:12px">
+            <option value="">All sessions</option>
+            ${sessionOptions}
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="renderReceiptsView()">↺ Refresh</button>
+        </span>
+      </div>
+      <table class="tbl">
+        <thead><tr><th style="width:90px">Time</th><th style="width:160px">Action</th><th>Target</th><th style="width:140px">Actor</th><th style="width:40px"></th></tr></thead>
+        <tbody id="receiptsTbody">${renderReceiptRows(receipts)}</tbody>
+      </table>`;
+    wireReceiptRowClicks();
+    updateFollowStripUI();
+    if (receiptsFollowing) startReceiptsFollow();
   } catch (e) {
     $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load receipts</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
   }
@@ -283,27 +570,60 @@ async function filterReceipts() {
   try {
     const res      = await fetch(url);
     const receipts = await res.json();
-    $("receiptsList").innerHTML = renderReceiptRows(receipts);
+    receiptsCache = receipts;
+    $("receiptsTbody").innerHTML = renderReceiptRows(receipts);
+    wireReceiptRowClicks();
   } catch (e) {
-    $("receiptsList").innerHTML = `<div class="empty-state"><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+    $("receiptsTbody").innerHTML = `<tr><td colspan="5" class="receipts-empty">${esc(e.message)}</td></tr>`;
   }
+}
+
+function wireReceiptRowClicks() {
+  document.querySelectorAll("#receiptsTbody tr[data-hash]").forEach(row => {
+    row.addEventListener("click", () => selectReceipt(row.dataset.hash));
+  });
+}
+
+// Maps a receipt's action string to the reference's badge color families
+// (start=green, stop=red, register=blue, revoke=orange). Real action names
+// emitted by cli.py/mcp_server.py beyond the reference's four examples
+// (set_project_override, set_secret) are judgment calls, folded into the
+// "register" family since they're writes/declarations, not starts/stops.
+function badgeClassForAction(action) {
+  if (/^start/.test(action))    return "start";
+  if (/^stop/.test(action))     return "stop";
+  if (/^register/.test(action)) return "register";
+  if (/revoke/.test(action))    return "revoke";
+  if (/^set_/.test(action))     return "register";
+  return "";
+}
+
+// "N mcp · N cli" style breakdown for the Sessions stat card, computed from
+// the already-fetched receipts list (actor.type per distinct session_id) —
+// not a new backend field, /api/receipts/stats doesn't return this shape.
+function _receiptsSessionSummary(receipts) {
+  const seen = new Set();
+  const counts = {};
+  for (const r of receipts) {
+    const sid = r.actor && r.actor.session_id;
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    const t = ((r.actor && r.actor.type) || "unknown").replace("_session", "");
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  return Object.entries(counts).map(([t, n]) => `${n} ${t}`).join(" · ");
 }
 
 function renderReceiptRows(receipts) {
   if (!receipts || receipts.length === 0) {
-    return `<div class="receipts-empty">No receipts yet. Receipts are emitted when an agent uses Seshat's MCP tools.</div>`;
+    return `<tr><td colspan="5" class="receipts-empty">No receipts match this filter.</td></tr>`;
   }
   return receipts.map(r => {
     const ts      = new Date(r.timestamp);
-    const timeStr = ts.toLocaleString("en-US", {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
-    });
+    const timeStr = ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const isSuccess = r.result && r.result.status === "success";
-    const statusCls = isSuccess ? "receipt-success" : "receipt-failure";
-    const statusTxt = isSuccess ? "✓" : "✗";
-    const actor     = r.actor || {};
-    const agentHint = actor.agent_hint && actor.agent_hint !== "unknown"
-      ? ` · ${esc(actor.agent_hint)}` : "";
+    const actor      = r.actor || {};
+    const actorTypeCls = (actor.type || "").replace("_session", "");
     const sessionShort = (actor.session_id || "").replace("mcp_session_", "").slice(0, 8);
 
     const target = r.target || {};
@@ -314,40 +634,824 @@ function renderReceiptRows(receipts) {
     if (target.key)     targetParts.push(`key: ${target.key}`);
     const targetStr = targetParts.join(" · ") || "—";
 
-    const before       = r.environment_before || {};
-    const after        = r.environment_after  || {};
-    const portsBefore  = (before.listening_ports || []).length;
-    const portsAfter   = (after.listening_ports  || []).length;
-    const portDelta    = portsAfter - portsBefore;
-    const portDeltaStr = portDelta > 0
-      ? `+${portDelta} port${portDelta !== 1 ? "s" : ""}`
-      : portDelta < 0
-        ? `${portDelta} port${Math.abs(portDelta) !== 1 ? "s" : ""}`
-        : "no port change";
-
-    const resultDetail = [];
-    if (r.result) {
-      if (r.result.pid)         resultDetail.push(`PID ${r.result.pid}`);
-      if (r.result.stopped_pid) resultDetail.push(`stopped PID ${r.result.stopped_pid}`);
-      if (r.result.error)       resultDetail.push(r.result.error);
-    }
-    const resultStr = resultDetail.join(" · ") || "";
-
     return `
-      <div class="receipt-row ${statusCls}">
-        <div class="receipt-header">
-          <span class="receipt-status">${statusTxt}</span>
-          <span class="receipt-action">${esc(r.action)}</span>
-          <span class="receipt-target">${esc(targetStr)}</span>
-          <span class="receipt-time">${timeStr}</span>
-        </div>
-        <div class="receipt-detail">
-          <span class="receipt-actor">${esc(sessionShort)}${agentHint}</span>
-          <span class="receipt-delta">${esc(portDeltaStr)}</span>
-          ${resultStr ? `<span class="receipt-result">${esc(resultStr)}</span>` : ""}
-        </div>
-      </div>`;
+      <tr data-hash="${esc(r.receipt_hash)}">
+        <td class="num">${esc(timeStr)}</td>
+        <td><span class="badge ${badgeClassForAction(r.action)}">${esc(r.action)}</span></td>
+        <td>${esc(targetStr)}</td>
+        <td class="actor ${esc(actorTypeCls)}">${esc(actorTypeCls)}${sessionShort ? ` · ${esc(sessionShort)}` : ""}</td>
+        <td style="color:${isSuccess ? "var(--green)" : "var(--red)"}">${isSuccess ? "✓" : "✗"}</td>
+      </tr>`;
   }).join("");
+}
+
+// ── Receipts detail panel + follow/tail mode ─────────────────────────────────
+
+function selectReceipt(hash) {
+  const r = receiptsCache.find(x => x.receipt_hash === hash);
+  if (!r) return;
+  selectedReceiptHash = hash;
+  selectedVaultKey    = null;
+  selectedName        = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#receiptsTbody tr[data-hash="${CSS.escape(hash)}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderReceiptDetail(r);
+  $("detailPanel").classList.add("open");
+}
+
+function renderReceiptDetail(r) {
+  const ts      = new Date(r.timestamp);
+  const timeStr = ts.toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const isSuccess = r.result && r.result.status === "success";
+  const actor     = r.actor || {};
+  const agentHint = actor.agent_hint && actor.agent_hint !== "unknown" ? actor.agent_hint : null;
+  const sessionShort = (actor.session_id || "").replace("mcp_session_", "").slice(0, 8);
+
+  const target = r.target || {};
+  const targetRows = [];
+  if (target.project) targetRows.push(["project", target.project]);
+  if (target.group)   targetRows.push(["group", target.group]);
+  if (target.port)    targetRows.push(["port", `:${target.port}`]);
+  if (target.key)     targetRows.push(["key", target.key]);
+
+  const before = r.environment_before || {};
+  const after  = r.environment_after  || {};
+  const portsBefore = (before.listening_ports || []).length;
+  const portsAfter  = (after.listening_ports  || []).length;
+  const portDelta   = portsAfter - portsBefore;
+  const portDeltaStr = portDelta > 0
+    ? `+${portDelta} port${portDelta !== 1 ? "s" : ""}`
+    : portDelta < 0
+      ? `${portDelta} port${Math.abs(portDelta) !== 1 ? "s" : ""}`
+      : "no port change";
+
+  const resultDetail = [];
+  if (r.result) {
+    if (r.result.pid)         resultDetail.push(`PID ${r.result.pid}`);
+    if (r.result.stopped_pid) resultDetail.push(`stopped PID ${r.result.stopped_pid}`);
+    if (r.result.error)       resultDetail.push(r.result.error);
+  }
+
+  const short = h => h ? `${h.slice(0, 12)}…` : "—";
+
+  // Most receipts on a fresh Phase-1 machine have no `invariant` key (the
+  // harness is an optional external package) — omit the section entirely
+  // rather than render an empty one. Only fields confirmed present on the
+  // dataclass output (invariant_check.py) are shown; nothing fabricated.
+  const inv = r.invariant;
+  const invariantSection = inv ? `
+    <div class="d-h">Invariant</div>
+    <div class="d-row"><span class="k">result</span><span class="v" style="color:${inv.converged ? "var(--green)" : "var(--orange)"}">${inv.converged ? "converged" : "not converged"}</span></div>
+    <div class="d-row"><span class="k">claims</span><span class="v">${(inv.claims || []).length}</span></div>
+    <div class="d-row"><span class="k">cycles</span><span class="v">${inv.total_cycles ?? "—"}</span></div>
+    ${inv.error ? `<div class="d-row"><span class="k">error</span><span class="v" style="color:var(--red)">${esc(inv.error)}</span></div>` : ""}` : "";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(r.action)}</div>
+    <div class="d-meta">${esc(timeStr)} · ${isSuccess ? "✓ success" : "✗ failed"}</div>
+    <div class="d-h">Actor</div>
+    <div class="d-row"><span class="k">type</span><span class="v" style="color:var(--purple)">${esc(actor.type || "—")}</span></div>
+    <div class="d-row"><span class="k">session</span><span class="v">${esc(sessionShort || "—")}</span></div>
+    ${agentHint ? `<div class="d-row"><span class="k">agent hint</span><span class="v">${esc(agentHint)}</span></div>` : ""}
+    <div class="d-h">Target</div>
+    ${targetRows.length
+      ? targetRows.map(([k, v]) => `<div class="d-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")
+      : `<div class="d-row"><span class="k">—</span><span class="v">—</span></div>`}
+    <div class="d-h">Result</div>
+    <div class="d-row"><span class="k">environment</span><span class="v">${esc(portDeltaStr)}</span></div>
+    ${resultDetail.length ? `<div class="d-row"><span class="k">detail</span><span class="v">${esc(resultDetail.join(" · "))}</span></div>` : ""}
+    <div class="d-h">Chain</div>
+    <div class="d-row"><span class="k">receipt</span><span class="v" style="color:var(--cyan)">${short(r.receipt_hash)}</span></div>
+    <div class="d-row"><span class="k">previous</span><span class="v" style="color:var(--cyan)">${short(r.previous_hash)}</span></div>
+    ${invariantSection}`;
+}
+
+// Follow/tail mode: polls a small recent-receipts window every 1s and diffs
+// by receipt_hash against what's already rendered. Only ever inserts the new
+// row(s) — never re-fetches/redraws the whole table on a tick, which is the
+// flicker failure mode the build prompt explicitly calls out.
+function startReceiptsFollow() {
+  stopReceiptsFollow();
+  receiptsFollowTimer = setInterval(pollReceiptsFollow, 1000);
+}
+
+function stopReceiptsFollow() {
+  if (receiptsFollowTimer) { clearInterval(receiptsFollowTimer); receiptsFollowTimer = null; }
+}
+
+function toggleReceiptsFollow() {
+  receiptsFollowing = !receiptsFollowing;
+  updateFollowStripUI();
+  if (receiptsFollowing) startReceiptsFollow(); else stopReceiptsFollow();
+}
+
+function updateFollowStripUI() {
+  const el = $("followToggle");
+  if (!el) return;
+  el.innerHTML = receiptsFollowing
+    ? `<span class="pulse"></span> following`
+    : `<span class="pulse" style="animation:none;opacity:.35"></span> paused`;
+}
+
+async function pollReceiptsFollow() {
+  if (activeView !== "receipts") { stopReceiptsFollow(); return; }
+  try {
+    const action  = $("receiptsFilterAction")?.value || "";
+    const session = $("receiptsFilterSession")?.value || "";
+    let url = "/api/receipts?limit=5";
+    if (action)  url += `&action=${encodeURIComponent(action)}`;
+    if (session) url += `&session=${encodeURIComponent(session)}`;
+    const res    = await fetch(url);
+    const latest = await res.json();
+    if (!latest.length) return;
+
+    const known = new Set(receiptsCache.map(r => r.receipt_hash));
+    const fresh = latest.filter(r => !known.has(r.receipt_hash));
+    if (!fresh.length) return;
+
+    // `fresh` is newest-first (a prefix of `latest`); insert oldest-of-batch
+    // first so the final DOM order stays newest-at-top.
+    for (let i = fresh.length - 1; i >= 0; i--) prependReceiptRow(fresh[i]);
+    receiptsCache = [...fresh, ...receiptsCache];
+  } catch (_) { /* transient network error — try again next tick */ }
+}
+
+function prependReceiptRow(r) {
+  const tbody = $("receiptsTbody");
+  if (!tbody) return;
+  const tmp = document.createElement("tbody");
+  tmp.innerHTML = renderReceiptRows([r]);
+  const row = tmp.firstElementChild;
+  if (!row) return;
+  row.classList.add("receipt-row-new");
+  row.addEventListener("click", () => selectReceipt(row.dataset.hash));
+  tbody.insertBefore(row, tbody.firstChild);
+  setTimeout(() => row.classList.remove("receipt-row-new"), 1200);
+}
+
+// ── Shared formatting helpers (Agreements/Invariant/Revocations) ────────────
+
+// No existing relative-time helper in app.js — receipts render absolute
+// times only (renderReceiptRows/renderReceiptDetail use toLocaleTimeString).
+// Written fresh here for the Agreements "synced Xm ago" banner and the
+// Revocations sync-freshness banner. Returns null for missing/unparseable
+// input so callers can fall back to their own copy ("never synced" etc.)
+// instead of printing something meaningless.
+function _relativeTime(isoString) {
+  if (!isoString) return null;
+  const then = new Date(isoString).getTime();
+  if (Number.isNaN(then)) return null;
+  const deltaSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (deltaSec < 60) return "just now";
+  const deltaMin = Math.floor(deltaSec / 60);
+  if (deltaMin < 60) return `${deltaMin}m ago`;
+  const deltaHr = Math.floor(deltaMin / 60);
+  if (deltaHr < 24) return `${deltaHr}h ago`;
+  const deltaDay = Math.floor(deltaHr / 24);
+  return `${deltaDay}d ago`;
+}
+
+// Maps an Agreement/revocation rule's verb to the existing .verb-permit /
+// .verb-forbid classes. The endpoint's documented shape allows a verb other
+// than permit/forbid ("other") — that case renders as plain text with no
+// color class rather than guessing.
+function _agrVerbCls(verb) {
+  if (verb === "permit") return "verb-permit";
+  if (verb === "forbid") return "verb-forbid";
+  return "";
+}
+
+// Pulls a bare `action is X` / `actor is X` value out of a canonical rule
+// string. Real canonical output on this machine renders these unquoted
+// (`action is start_project`), but the pattern also accepts a quoted form
+// (`action is "start_project"`) since the interpreter's canonical renderer
+// quotes some literals (e.g. `because "..."` reason clauses) and not others.
+// This is intentionally simple substring extraction, not a parser — good
+// enough for the best-effort override-status / recent-matches features the
+// brief explicitly scopes down to "simple substring/field comparison."
+function _extractAgrField(canonical, field) {
+  if (!canonical) return null;
+  const m = canonical.match(new RegExp(`\\b${field} is "?([^"\\s]+)"?`));
+  return m ? m[1] : null;
+}
+
+// ── Agreements domain ─────────────────────────────────────────────────────
+
+async function renderAgreementsView() {
+  $("agreementsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading agreement…</div></div>`;
+  try {
+    const [agrRes, revRes] = await Promise.all([
+      fetch("/api/agreement"),
+      fetch("/api/revocations"),
+    ]);
+    const agreement   = await agrRes.json();
+    const revocations = await revRes.json();
+    agreementCache   = agreement;
+    revocationsCache = revocations;
+
+    if (!agreement.exists) {
+      $("agreementsContent").innerHTML = renderAgreementsEmptyState();
+      renderSidebar();
+      renderHeaderAction(activeView); // "Open in editor" needs the exists:false state just fetched
+      return;
+    }
+
+    const rules    = agreement.rules || [];
+    const revRules = revocations.exists ? (revocations.rules || []) : [];
+
+    let bannerWarn = "";
+    if (revocations.exists && revRules.length > 0) {
+      const syncedStr = revocations.sync && revocations.sync.last_checked
+        ? `synced ${_relativeTime(revocations.sync.last_checked) || "recently"}`
+        : "never synced";
+      bannerWarn = `
+      <div class="banner warn">
+        <span class="bi" style="color:var(--red)">⊘</span> ${revRules.length} platform revocation${revRules.length !== 1 ? "s" : ""} overlay this Agreement
+        <span class="bspacer"></span>
+        <span class="num">${esc(syncedStr)}</span>
+      </div>`;
+    }
+
+    $("agreementsContent").innerHTML = `
+      <div class="view-title"><h1>Agreements</h1><span class="vsub">${rules.length} rule${rules.length !== 1 ? "s" : ""} · deny-by-default</span></div>
+      <div class="banner ok"><span class="bi" style="color:var(--green)">☰</span> Agreement active at <code>~/.seshat/agreement.limn</code> <span class="bspacer"></span> <span class="num">${rules.length} rule${rules.length !== 1 ? "s" : ""}</span></div>
+      ${bannerWarn}
+      <table class="tbl" id="agr-anchor-rules">
+        <thead><tr><th style="width:36px">#</th><th style="width:70px">Verb</th><th>Condition</th><th style="width:110px">Window</th><th style="width:90px">Source</th></tr></thead>
+        <tbody>
+          <tr><td colspan="5" class="tbl-section-label">Agreement rules</td></tr>
+          ${renderAgreementRuleRows(rules, "agreement")}
+          ${revRules.length ? `
+          <tr id="agr-anchor-revocations"><td colspan="5" class="tbl-section-label">Platform revocations</td></tr>
+          ${renderAgreementRuleRows(revRules, "revocation")}` : ""}
+        </tbody>
+      </table>
+      <div class="dryrun" id="agr-anchor-dryrun">
+        <div class="dryrun-h">Dry run — evaluate against the live Agreement (no side effects)</div>
+        <div class="dryrun-form">
+          <input class="actor-i" id="dryrunActor" placeholder="actor">
+          <input class="action-i" id="dryrunAction" placeholder="action">
+          <input class="scope-i" id="dryrunScope" placeholder="scope (optional)">
+          <button class="btn btn-primary" onclick="runAgreementDryRun()">Check</button>
+        </div>
+        <div id="dryrunResultWrap"></div>
+      </div>`;
+
+    wireAgreementRowClicks();
+    renderSidebar(); // refresh sub-nav counts now that data has loaded
+    renderHeaderAction(activeView); // "Open in editor" needs the exists:true state just fetched
+  } catch (e) {
+    $("agreementsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Agreement</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderAgreementsEmptyState() {
+  return `
+    <div class="view-title"><h1>Agreements</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">☰</div>
+      <div class="empty-title">No Agreement governs this machine</div>
+      <div class="empty-desc">Agents are acting without deny-by-default enforcement. An Agreement defines what each actor may and may not do.</div>
+      <div class="init-cmd"><div class="cl">initialize a starter Agreement</div><div class="cc"><span class="p">$</span> seshat agreement init</div></div>
+      <div class="init-cmd"><div class="cl">or install an existing file</div><div class="cc"><span class="p">$</span> seshat agreement install &lt;path&gt;</div></div>
+      <div class="platform-hint">translate a policy from English → <span class="lnk">liminate.dev/translate</span></div>
+    </div></div>`;
+}
+
+// `source` is "agreement" | "revocation" — used for row numbering (1,2,3…
+// vs R1,R2,R3…), the .src-tag variant, and which cache selectAgreementRule()
+// re-reads the rule from on click.
+function renderAgreementRuleRows(rules, source) {
+  return rules.map((r, i) => {
+    const rowNum = source === "revocation" ? `R${i + 1}` : `${i + 1}`;
+    if (r.error) {
+      return `<tr><td colspan="5" style="color:var(--red)">${esc(rowNum)}: ${esc(r.error)}</td></tr>`;
+    }
+    const srcTag = source === "revocation"
+      ? `<span class="src-tag rev">revocation</span>`
+      : `<span class="src-tag">agreement</span>`;
+    const win = r.window || "unbounded";
+    return `
+      <tr data-source="${source}" data-index="${i}">
+        <td class="num">${esc(rowNum)}</td>
+        <td>${r.verb ? `<span class="${_agrVerbCls(r.verb)}">${esc(r.verb)}</span>` : "—"}</td>
+        <td><span class="canon">${esc(r.canonical)}</span></td>
+        <td><span class="win ${esc(win)}">${esc(win)}</span></td>
+        <td>${srcTag}</td>
+      </tr>`;
+  }).join("");
+}
+
+function wireAgreementRowClicks() {
+  document.querySelectorAll("#agr-anchor-rules tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectAgreementRule(row.dataset.source, parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectAgreementRule(source, index) {
+  const rules = source === "revocation" ? (revocationsCache?.rules || []) : (agreementCache?.rules || []);
+  const rule = rules[index];
+  if (!rule || rule.error) return;
+  selectedAgreementRule  = { source, index };
+  selectedRevocationRule = null;
+  selectedInvariantClaim = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#agr-anchor-rules tbody tr[data-source="${source}"][data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = `<div class="empty-state" style="padding:40px 20px"><div class="empty-state-sub">Loading…</div></div>`;
+  $("detailPanel").classList.add("open");
+  renderAgreementRuleDetail(source, index, rule);
+}
+
+// Async because "recent matches" needs a follow-up /api/receipts fetch.
+// Renders a loading skeleton synchronously first (see selectAgreementRule),
+// then patches #detailInner once the fetch resolves — guarded by a
+// still-selected check so a fast second click can't land a stale response.
+async function renderAgreementRuleDetail(source, index, rule) {
+  const verbCls        = _agrVerbCls(rule.verb);
+  const win             = rule.window || "unbounded";
+  const overrideStatus  = _computeOverrideStatus(source, rule);
+  const actionName      = _extractAgrField(rule.canonical, "action");
+
+  let recentMatchesHTML = "";
+  if (actionName) {
+    try {
+      const res = await fetch(`/api/receipts?action=${encodeURIComponent(actionName)}&limit=5`);
+      if (res.ok) {
+        const matches = await res.json();
+        if (matches.length) {
+          recentMatchesHTML = `
+            <div class="d-h">Recent matches</div>
+            ${matches.map(r => {
+              const ts     = new Date(r.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+              const status = r.result && r.result.status;
+              const label  = status === "success" ? "✓ permitted" : status === "denied" ? "✗ denied" : `— ${esc(status || "unknown")}`;
+              const color  = status === "success" ? "var(--green)" : status === "denied" ? "var(--red)" : "var(--text-dim)";
+              return `<div class="d-row"><span class="k">${esc(ts)}</span><span class="v" style="color:${color}">${label}</span></div>`;
+            }).join("")}`;
+        }
+      }
+    } catch (_) { /* best-effort only — omit the section on failure */ }
+  }
+
+  if (!selectedAgreementRule || selectedAgreementRule.source !== source || selectedAgreementRule.index !== index) return;
+
+  $("detailInner").innerHTML = `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${source === "revocation" ? `Revocation R${index + 1}` : `Rule ${index + 1}`}</div>
+    <div class="d-meta">${esc(rule.verb || "—")} · ${esc(win)} · ${source === "revocation" ? "revocation" : "agreement"}</div>
+    <div class="d-h">Canonical form</div>
+    <div class="d-canon">${esc(rule.canonical)}</div>
+    <div class="d-h">Properties</div>
+    <div class="d-row"><span class="k">verb</span><span class="v ${verbCls}">${esc(rule.verb || "—")}</span></div>
+    <div class="d-row"><span class="k">window</span><span class="v">${esc(win)}</span></div>
+    <div class="d-row"><span class="k">source</span><span class="v">${source === "revocation" ? "revocation" : "agreement"}</span></div>
+    ${overrideStatus}
+    ${recentMatchesHTML}`;
+}
+
+// Best-effort: does any revocation rule reference the same action or actor
+// as this Agreement rule? Simple field-string comparison, not real semantic
+// overlap detection (per the brief). Only meaningful for Agreement rules —
+// revocations always win by construction, so they have no "override status"
+// of their own. Returns "" (omit the section) when there's nothing to
+// compare against; states "no overlapping revocation found" only when a real
+// comparison against real revocation rules was actually performed.
+function _computeOverrideStatus(source, rule) {
+  if (source === "revocation") return "";
+  const revRules = revocationsCache?.exists ? (revocationsCache.rules || []) : [];
+  if (!revRules.length) return "";
+  const myAction = _extractAgrField(rule.canonical, "action");
+  const myActor  = _extractAgrField(rule.canonical, "actor");
+  const overlapping = [];
+  if (myAction || myActor) {
+    revRules.forEach((rr, i) => {
+      if (rr.error) return;
+      const rAction = _extractAgrField(rr.canonical, "action");
+      const rActor  = _extractAgrField(rr.canonical, "actor");
+      if ((myAction && rAction && myAction === rAction) || (myActor && rActor && myActor === rActor)) {
+        overlapping.push(i);
+      }
+    });
+  }
+  const rows = overlapping.length
+    ? overlapping.map(i => `<div class="d-row"><span class="k">revocation R${i + 1}</span><span class="v" style="color:var(--red)">narrows this</span></div>`).join("")
+    : `<div class="d-row"><span class="k">—</span><span class="v">no overlapping revocation found</span></div>`;
+  return `<div class="d-h">Override status</div>${rows}`;
+}
+
+async function runAgreementDryRun() {
+  const actor  = ($("dryrunActor")?.value || "").trim();
+  const action = ($("dryrunAction")?.value || "").trim();
+  const scope  = ($("dryrunScope")?.value || "").trim();
+  const wrap = $("dryrunResultWrap");
+  if (!wrap) return;
+  if (!actor || !action) {
+    wrap.innerHTML = `<div class="dryrun-result forbidden"><span class="drr-verdict">Enter both actor and action</span></div>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="dryrun-result" style="opacity:.6">Checking…</div>`;
+  try {
+    const body = { actor, action };
+    if (scope) body.scope = scope; // omit scope from the body when blank, matching the endpoint's own handling
+    const res  = await fetch("/api/agreement/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    wrap.innerHTML = renderDryRunResult(data);
+  } catch (e) {
+    wrap.innerHTML = `<div class="dryrun-result forbidden"><span class="drr-verdict">✗ ERROR</span><div class="drr-reason">${esc(e.message)}</div></div>`;
+  }
+}
+
+// Only a true `mode === "permitted"` gets the green/permitted treatment —
+// every denial mode (forbidden/default-deny/no-agreement/error) gets the
+// red/forbidden treatment. The reference only defines two dryrun-result
+// variants (.permitted/.forbidden); per the brief this is an explicit,
+// documented judgment call rather than inventing a third CSS variant for
+// edge cases (error/no-agreement) the reference doesn't cover.
+function renderDryRunResult(data) {
+  if (data.error && !data.mode) {
+    return `<div class="dryrun-result forbidden"><span class="drr-verdict">✗ ERROR</span><div class="drr-reason">${esc(data.error)}</div></div>`;
+  }
+  const isPermitted = data.mode === "permitted";
+  const cls          = isPermitted ? "permitted" : "forbidden";
+  const verdictLabel = isPermitted ? "✓ PERMITTED" : `✗ ${(data.mode || "DENIED").toUpperCase()}`;
+  const ruleBlock = data.rule
+    ? `<div class="drr-rule">decided by <span class="canon">${esc(data.rule)}</span></div>` : "";
+  return `
+    <div class="dryrun-result ${cls}">
+      <span class="drr-verdict">${verdictLabel}</span> <span class="num">· mode: ${esc(data.mode || "—")}</span>
+      ${ruleBlock}
+      <div class="drr-reason">${esc(data.reason || "")}</div>
+    </div>`;
+}
+
+// ── Invariant domain ───────────────────────────────────────────────────────
+
+async function renderInvariantView() {
+  $("invariantContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading invariant…</div></div>`;
+  try {
+    const [invRes, lastRunRes] = await Promise.all([
+      fetch("/api/invariant"),
+      fetch("/api/invariant/last-run"),
+    ]);
+    const invariant = await invRes.json();
+    const lastRun    = await lastRunRes.json();
+    invariantCache        = invariant;
+    invariantLastRunCache = lastRun;
+
+    if (!invariant.exists) {
+      $("invariantContent").innerHTML = renderInvariantEmptyState();
+      renderSidebar();
+      renderHeaderAction(activeView); // "Open in editor" needs the exists:false state just fetched
+      return;
+    }
+
+    const hasLastRun = !!lastRun.exists;
+    const inv = hasLastRun ? lastRun.invariant : null;
+
+    const harnessChip = (hasLastRun && inv && inv.harness_version)
+      ? `<span class="num">harness v${esc(inv.harness_version)}</span>` : "";
+
+    const lastRunTimeShort = (hasLastRun && lastRun.receipt_timestamp)
+      ? new Date(lastRun.receipt_timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })
+      : null;
+    const subtitle = lastRunTimeShort
+      ? `semantic verification · last run ${lastRunTimeShort}`
+      : "semantic verification";
+
+    let bodyHTML;
+    if (!hasLastRun) {
+      // A contract can exist with zero runs so far — this is a legitimate
+      // intermediate state, not an error or a domain-empty-state.
+      bodyHTML = `<div style="padding:24px 4px;color:var(--text-muted);font-size:12px">No verification runs yet. Runs appear here after Invariant checks a permitted action.</div>`;
+    } else {
+      bodyHTML = await renderInvariantLastRunBody(inv, lastRun);
+    }
+
+    $("invariantContent").innerHTML = `
+      <div class="view-title"><h1>Invariant</h1><span class="vsub">${esc(subtitle)}</span></div>
+      <div class="banner ok" id="inv-anchor-contract"><span class="bi" style="color:var(--cyan)">◇</span> Verification contract at <code>~/.seshat/invariant.limn</code> <span class="bspacer"></span> ${harnessChip}</div>
+      <div id="inv-anchor-lastrun">${bodyHTML}</div>`;
+
+    if (hasLastRun) wireInvariantClaimRowClicks();
+    renderSidebar();
+    renderHeaderAction(activeView); // "Open in editor" needs the exists:true state just fetched
+  } catch (e) {
+    $("invariantContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Invariant</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderInvariantEmptyState() {
+  return `
+    <div class="view-title"><h1>Invariant</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">◇</div>
+      <div class="empty-title">No verification contract</div>
+      <div class="empty-desc">Invariant runs semantic checks after each permitted action — confirming the environment actually matches what the action claimed. Without a contract, actions run unverified.</div>
+      <div class="init-cmd"><div class="cl">initialize a verification contract</div><div class="cc"><span class="p">$</span> seshat invariant init</div></div>
+    </div></div>`;
+}
+
+// Claim status vocabulary, confirmed against liminate_invariant.types
+// (ClaimOutcome.status): "verified" | "corrected" | "escalated" | "pending"
+// ("pending" is reserved for a deferred prediction capability this harness
+// version never assigns — handled here as a graceful "unknown" fallback,
+// not a crash, in case a future harness version does emit it).
+function _claimStatusCls(status) {
+  if (status === "verified")  return "claim-verified";
+  if (status === "corrected") return "claim-corrected";
+  if (status === "escalated") return "claim-escalated";
+  return "";
+}
+function _claimStatusGlyph(status) {
+  if (status === "verified")  return "●";
+  if (status === "corrected") return "◐";
+  if (status === "escalated") return "▲";
+  return "○";
+}
+
+// Builds the stat-row + claim table for a last-run that exists. Async: the
+// "From receipt" card's action name is a best-effort join against
+// /api/receipts by receipt_hash (not fabricated — omitted if the join fails
+// or the receipt can't be found, per the brief: "if that join is awkward,
+// showing just the hash is fine").
+async function renderInvariantLastRunBody(inv, lastRun) {
+  const claims = inv.claims || [];
+  const verifiedCount  = claims.filter(c => c.status === "verified").length;
+  const correctedCount = claims.filter(c => c.status === "corrected").length;
+  const escalatedCount = claims.filter(c => c.status === "escalated").length;
+  const otherCount     = claims.length - verifiedCount - correctedCount - escalatedCount;
+  const breakdownParts = [];
+  if (verifiedCount)  breakdownParts.push(`${verifiedCount} verified`);
+  if (correctedCount) breakdownParts.push(`${correctedCount} corrected`);
+  if (escalatedCount) breakdownParts.push(`${escalatedCount} escalated`);
+  if (otherCount)      breakdownParts.push(`${otherCount} other`);
+  const breakdownStr = breakdownParts.join(" · ") || "—";
+
+  const lastRunTs = lastRun.receipt_timestamp
+    ? new Date(lastRun.receipt_timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : "—";
+  const receiptShort = lastRun.receipt_hash ? `${lastRun.receipt_hash.slice(0, 12)}…` : "—";
+
+  let actionHint = "";
+  if (lastRun.receipt_hash) {
+    try {
+      const res = await fetch("/api/receipts?limit=200");
+      if (res.ok) {
+        const receipts = await res.json();
+        const match = receipts.find(r => r.receipt_hash === lastRun.receipt_hash);
+        if (match) actionHint = match.action;
+      }
+    } catch (_) { /* best-effort — hash-only fallback below is fine */ }
+  }
+
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(3,1fr)">
+      <div class="stat-card"><div class="sl">Last run</div><div class="sv${inv.converged ? " g" : ""}">${inv.converged ? "converged" : "not converged"}</div><div class="sm">${inv.total_cycles ?? "—"} cycle${inv.total_cycles === 1 ? "" : "s"} · ${esc(lastRunTs)}</div></div>
+      <div class="stat-card"><div class="sl">Claims</div><div class="sv">${claims.length}</div><div class="sm">${esc(breakdownStr)}</div></div>
+      <div class="stat-card"><div class="sl">From receipt</div><div class="sv" style="font-size:14px;color:var(--cyan)">${esc(receiptShort)}</div><div class="sm">${esc(actionHint)}</div></div>
+    </div>
+    ${inv.error ? `<div class="banner err"><span class="bi">⚠</span> ${esc(inv.error)}</div>` : ""}
+    <table class="tbl" id="inv-claims-table">
+      <thead><tr><th>Claim</th><th style="width:120px">Status</th></tr></thead>
+      <tbody>${renderInvariantClaimRows(claims)}</tbody>
+    </table>`;
+}
+
+function renderInvariantClaimRows(claims) {
+  if (!claims.length) return `<tr><td colspan="2" class="receipts-empty">No claims recorded for this run.</td></tr>`;
+  return claims.map((c, i) => `
+    <tr data-index="${i}">
+      <td class="canon">${esc(c.name || "—")}</td>
+      <td class="${_claimStatusCls(c.status)}">${_claimStatusGlyph(c.status)} ${esc(c.status || "unknown")}</td>
+    </tr>`).join("");
+}
+
+function wireInvariantClaimRowClicks() {
+  document.querySelectorAll("#inv-claims-table tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectInvariantClaim(parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectInvariantClaim(index) {
+  const claims = invariantLastRunCache?.invariant?.claims || [];
+  const c = claims[index];
+  if (!c) return;
+  selectedInvariantClaim = index;
+  selectedAgreementRule   = null;
+  selectedRevocationRule  = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#inv-claims-table tbody tr[data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderInvariantClaimDetail(c);
+  $("detailPanel").classList.add("open");
+}
+
+// "Environment snapshot" (per the reference's DETAILS.invariant) is NOT
+// rendered here — confirmed against invariant_check.py/liminate_invariant's
+// ClaimOutcome dataclass that no raw snapshot is retained per-claim in the
+// receipt's invariant block (the snapshot is only ever an internal input to
+// the verification agent, never part of its output). Likewise per-claim
+// history via receipts is omitted rather than attempted: there's no stable
+// way to join a claim identity across receipts beyond matching claim-name
+// text, and this machine has zero receipts carrying an invariant block to
+// validate that join against — the brief explicitly allows omission here
+// ("otherwise omit") over shipping an unverified best-effort feature.
+function renderInvariantClaimDetail(c) {
+  const lastRun      = invariantLastRunCache;
+  const receiptShort = lastRun?.receipt_hash ? `${lastRun.receipt_hash.slice(0, 12)}…` : "—";
+  const totalCycles  = lastRun?.invariant?.total_cycles;
+  const cycleStr     = (c.cycles != null && totalCycles != null) ? `${c.cycles} of ${totalCycles}` : (c.cycles ?? "—");
+
+  const escalationBlock = c.escalation_reason
+    ? `<div class="d-row"><span class="k">escalation reason</span><span class="v" style="color:var(--red)">${esc(c.escalation_reason)}</span></div>` : "";
+  const handlerBlock = c.handler
+    ? `<div class="d-row"><span class="k">handler</span><span class="v">${esc(c.handler)}</span></div>` : "";
+  const correctionsBlock = (c.corrections && c.corrections.length)
+    ? `<div class="d-h">Corrections</div>${c.corrections.map(x => `<div class="d-row"><span class="k">—</span><span class="v">${esc(x)}</span></div>`).join("")}`
+    : "";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(c.name || "Claim")}</div>
+    <div class="d-meta"><span class="${_claimStatusCls(c.status)}">${_claimStatusGlyph(c.status)} ${esc(c.status || "unknown")}</span></div>
+    <div class="d-h">Checked against</div>
+    <div class="d-row"><span class="k">receipt</span><span class="v" style="color:var(--cyan)">${esc(receiptShort)}</span></div>
+    <div class="d-row"><span class="k">cycle</span><span class="v">${esc(String(cycleStr))}</span></div>
+    ${escalationBlock}
+    ${handlerBlock}
+    ${correctionsBlock}`;
+}
+
+// ── Revocations domain ─────────────────────────────────────────────────────
+
+async function renderRevocationsView() {
+  $("revocationsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading revocations…</div></div>`;
+  try {
+    const res  = await fetch("/api/revocations");
+    const data = await res.json();
+    revocationsCache = data;
+
+    if (!data.exists) {
+      $("revocationsContent").innerHTML = renderRevocationsEmptyState();
+      renderSidebar();
+      return;
+    }
+
+    const rules = data.rules || [];
+    const sync  = data.sync || {};
+    const freshness = _revocationsSyncFreshness(sync.last_checked);
+    const headShort = sync.head_hash ? `${sync.head_hash.slice(0, 4)}…${sync.head_hash.slice(-4)}` : "—";
+
+    // Best-effort denial-count join against /api/receipts (see
+    // _computeDenialCounts). Never fabricated — "—" when the join can't be
+    // performed (fetch failure) rather than 0 (0 is a real, meaningful count
+    // when the join succeeds and finds nothing).
+    let denialCounts = null;
+    try {
+      denialCounts = await _computeDenialCounts(rules);
+    } catch (_) { denialCounts = null; }
+    revocationDenialCountsCache = denialCounts || {};
+
+    $("revocationsContent").innerHTML = `
+      <div class="view-title"><h1>Revocations</h1><span class="vsub">platform overlay · forbid-only</span></div>
+      <div class="banner ${freshness.cls}"><span class="bi" style="color:var(--${freshness.dotColor})">${freshness.glyph}</span> ${esc(freshness.label)} <span class="bspacer"></span> <span class="num">head ${esc(headShort)}</span></div>
+      <table class="tbl" id="rev-anchor-active">
+        <thead><tr><th style="width:40px">#</th><th style="width:70px">Verb</th><th>Condition</th><th style="width:110px">Window</th><th style="width:90px">Denials</th></tr></thead>
+        <tbody>${renderRevocationRows(rules, revocationDenialCountsCache)}</tbody>
+      </table>`;
+
+    wireRevocationRowClicks();
+    renderSidebar();
+  } catch (e) {
+    $("revocationsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load revocations</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderRevocationsEmptyState() {
+  return `
+    <div class="view-title"><h1>Revocations</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">⊘</div>
+      <div class="empty-title">No platform revocations</div>
+      <div class="empty-desc">Revocations are forbid-only kill orders authored on the platform and synced down. They subtract authority the Agreement grants, and always win.</div>
+      <div class="init-cmd"><div class="cl">sync revocations from the platform</div><div class="cc"><span class="p">$</span> seshat revocations sync</div></div>
+      <div class="platform-hint">revocations are authored on <span class="lnk">liminate.dev</span></div>
+    </div></div>`;
+}
+
+// Sync-freshness thresholds (client-computed per the build plan — the
+// backend deliberately only exposes raw last_checked): fresh = synced within
+// the last hour (green/.banner.ok), stale = synced longer ago than that
+// (amber/.banner.warn), never = last_checked is null (red/.banner.err).
+// There's no single "correct" threshold specified anywhere in the brief;
+// documented here and in the task report as a judgment call.
+function _revocationsSyncFreshness(lastChecked) {
+  if (!lastChecked) {
+    return { cls: "err", glyph: "○", dotColor: "red", label: "Never synced" };
+  }
+  const then = new Date(lastChecked).getTime();
+  if (Number.isNaN(then)) {
+    return { cls: "err", glyph: "○", dotColor: "red", label: "Never synced" };
+  }
+  const ageMs = Date.now() - then;
+  const rel = _relativeTime(lastChecked) || "recently";
+  if (ageMs <= 60 * 60 * 1000) {
+    return { cls: "ok", glyph: "●", dotColor: "green", label: `Synced ${rel}` };
+  }
+  return { cls: "warn", glyph: "●", dotColor: "orange", label: `Synced ${rel} (stale)` };
+}
+
+// Best-effort denial count per rule: joins on exact string equality between
+// a rule's canonical form and a denied receipt's result.rule. This is a real
+// field, not a guess — mcp_server.py's _enforce() writes result.rule =
+// decision.rule (the exact canonical string of the deciding Agreement rule)
+// on every denial receipt, confirmed by reading mcp_server.py directly. When
+// the fetch itself fails, the caller shows "—"; when it succeeds, a rule
+// with zero matches legitimately shows 0, not "—".
+async function _computeDenialCounts(rules) {
+  const counts = {};
+  if (!rules.length) return counts;
+  const res = await fetch("/api/receipts?limit=200");
+  if (!res.ok) throw new Error("receipts fetch failed");
+  const receipts = await res.json();
+  const denied = receipts.filter(r => r.result && r.result.status === "denied" && r.result.rule);
+  rules.forEach((rule, i) => {
+    if (rule.error) return;
+    counts[i] = denied.filter(r => r.result.rule === rule.canonical).length;
+  });
+  return counts;
+}
+
+function renderRevocationRows(rules, denialCounts) {
+  if (!rules.length) return `<tr><td colspan="5" class="receipts-empty">No revocation rules parsed.</td></tr>`;
+  return rules.map((r, i) => {
+    const rowNum = `R${i + 1}`;
+    if (r.error) {
+      return `<tr><td colspan="5" style="color:var(--red)">${esc(rowNum)}: ${esc(r.error)}</td></tr>`;
+    }
+    const win   = r.window || "unbounded";
+    const count = denialCounts && denialCounts[i] !== undefined ? denialCounts[i] : null;
+    return `
+      <tr data-index="${i}">
+        <td class="num">${esc(rowNum)}</td>
+        <td>${r.verb ? `<span class="${_agrVerbCls(r.verb)}">${esc(r.verb)}</span>` : "—"}</td>
+        <td><span class="canon">${esc(r.canonical)}</span></td>
+        <td><span class="win ${esc(win)}">${esc(win)}</span></td>
+        <td class="num">${count === null ? "—" : count}</td>
+      </tr>`;
+  }).join("");
+}
+
+function wireRevocationRowClicks() {
+  document.querySelectorAll("#rev-anchor-active tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectRevocationRule(parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectRevocationRule(index) {
+  const rule = (revocationsCache?.rules || [])[index];
+  if (!rule || rule.error) return;
+  selectedRevocationRule = index;
+  selectedAgreementRule   = null;
+  selectedInvariantClaim  = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#rev-anchor-active tbody tr[data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderRevocationDetail(rule, index);
+  $("detailPanel").classList.add("open");
+}
+
+function renderRevocationDetail(rule, index) {
+  const sync         = revocationsCache?.sync || {};
+  const headShort    = sync.head_hash ? `${sync.head_hash.slice(0, 12)}…` : "—";
+  const lastChecked  = sync.last_checked ? (_relativeTime(sync.last_checked) || "recently") : "never synced";
+  const count        = revocationDenialCountsCache[index];
+  const win          = rule.window || "unbounded";
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">Revocation R${index + 1}</div>
+    <div class="d-meta">${esc(rule.verb || "forbid")} · ${esc(win)} · from platform</div>
+    <div class="d-h">Canonical form</div>
+    <div class="d-canon">${esc(rule.canonical)}</div>
+    <div class="d-h">Sync metadata</div>
+    <div class="d-row"><span class="k">head hash</span><span class="v" style="color:var(--cyan)">${esc(headShort)}</span></div>
+    <div class="d-row"><span class="k">last checked</span><span class="v">${esc(lastChecked)}</span></div>
+    <div class="d-h">Enforcement</div>
+    <div class="d-row"><span class="k">denials (recent)</span><span class="v" style="color:var(--red)">${count === undefined || count === null ? "—" : count}</span></div>`;
 }
 
 // ── Router setup ──────────────────────────────────────────────────────────
@@ -604,6 +1708,10 @@ function render() {
 }
 
 function renderCounts() {
+  // #count-* elements only exist in the DOM while the Projects sub-nav is
+  // rendered (see renderProjectsSubnav()); no-op on other domains, same as
+  // renderGroups()'s `if (!list) return;` guard just above.
+  if (!$("count-all")) return;
   const running  = projects.filter(p => p.status === "running").length;
   const stopped  = projects.filter(p => p.status === "stopped").length;
   const conflict = projects.filter(p => p.status === "conflict").length;
@@ -750,24 +1858,26 @@ function renderOrphans() {
   });
 }
 
+// Re-skinned into sidebar sub-nav `.sub-item` rows (was `.group-item` in the
+// Task-2-fix stopgap bar) — same `groups` data and the same start/stop/delete
+// action wiring, just a different wrapper markup/target element.
 function renderGroups() {
   const list = $("groupList");
   if (!list) return;
   if (groups.length === 0) {
-    list.innerHTML = `<div style="padding:4px 10px;font-size:11px;color:var(--text-muted)">No groups yet</div>`;
+    list.innerHTML = `<div class="sub-item" style="cursor:default;color:var(--text-dim)"><span class="lbl">No groups yet</span></div>`;
     return;
   }
   list.innerHTML = groups.map(g => {
     const count = (g.projects || []).length;
     return `
-      <div class="group-item" title="${esc((g.projects||[]).join(', '))}">
-        <span class="group-name">${esc(g.name)}</span>
-        <span style="font-size:10px;color:var(--text-muted);margin-right:4px">${count}</span>
-        <div class="group-actions">
+      <div class="sub-item group-sub-item" title="${esc((g.projects||[]).join(', '))}">
+        <span class="sdot b"></span> <span class="lbl">${esc(g.name)}</span> <span class="sc">${count}</span>
+        <span class="group-actions">
           <button class="group-btn start"  data-action="start-group"  data-name="${esc(g.name)}" title="Start all">▶</button>
           <button class="group-btn stop"   data-action="stop-group"   data-name="${esc(g.name)}" title="Stop all">■</button>
           <button class="group-btn delete" data-action="delete-group" data-name="${esc(g.name)}" title="Remove group">✕</button>
-        </div>
+        </span>
       </div>`;
   }).join("");
   // Wire group action buttons via delegation (avoids inline JS string escaping issues)
@@ -1204,7 +2314,29 @@ async function linkProjectSource(name) {
   await refresh();
 }
 
-async function closeDetail() {
+// Domain-appropriate empty-panel copy. Falls back to the original generic
+// message for any id not listed here (e.g. the "organize" sub-view, which
+// has no row-selection detail panel of its own).
+const DETAIL_EMPTY_LABELS = {
+  projects:    "Select a project…",
+  agreements:  "Select a rule…",
+  receipts:    "Select a receipt…",
+  invariant:   "Select a claim…",
+  revocations: "Select a revocation…",
+  vault:       "Select a key…",
+};
+
+function _detailEmptyHTML(forDomain) {
+  const label = DETAIL_EMPTY_LABELS[forDomain] || "Select a row to view details";
+  return `<div class="empty-state" style="padding:60px 20px"><div class="empty-state-sub">${esc(label)}</div></div>`;
+}
+
+// `forDomain` defaults to the current activeView (correct for every caller
+// that closes the panel without switching domains — Escape, the panel's own
+// ✕ button, etc.). showDomain() passes the domain it's switching *to*, since
+// it calls closeDetail() before activeView itself has been updated — without
+// that, the placeholder would briefly show the outgoing domain's copy.
+async function closeDetail(forDomain = activeView) {
   if (uiState.editingConfig && _isConfigDirty()) {
     const yes = await confirmAction({
       title: "Discard changes?",
@@ -1216,9 +2348,16 @@ async function closeDetail() {
     uiState.editingConfig = null;
     uiState.dirtyFields = {};
   }
-  selectedName = null;
+  selectedName        = null;
+  selectedReceiptHash = null;
+  selectedVaultKey    = null;
+  selectedAgreementRule  = null;
+  selectedInvariantClaim = null;
+  selectedRevocationRule = null;
   document.querySelectorAll(".project-row").forEach(r => r.classList.remove("selected"));
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(r => r.classList.remove("sel"));
   $("detailPanel").classList.remove("open");
+  $("detailInner").innerHTML = _detailEmptyHTML(forDomain);
 }
 
 // ── Log viewer ─────────────────────────────────────────────────────────────
@@ -1327,45 +2466,42 @@ async function renderVaultView() {
     ]);
     const summary = await summaryRes.json();
     const audit   = await auditRes.json();
+    vaultSummaryCache = summary;
+    vaultAuditCache   = audit;
 
-    const encBadge = summary.encrypted
-      ? `<span class="vault-enc-badge">🔒 Encrypted · Keychain</span>`
-      : `<span class="vault-enc-badge warn">⚠ Unencrypted &nbsp;<button class="btn btn-sm" style="font-size:11px;padding:2px 8px;vertical-align:middle" onclick="installVaultDeps()">Fix: Install deps</button></span>`;
-
-    const missingAudit = audit.filter(a => a.missing_from.length > 0);
-    const unusedAudit  = audit.filter(a => a.unused);
+    const overrideProjCount = Object.keys(summary.project_overrides || {}).length;
 
     $("vaultContent").innerHTML = `
       <div class="vault-view">
 
         <div class="vault-view-header">
-          <div>
-            <div class="vault-view-title">⚿ Vault ${encBadge}</div>
-            <div class="vault-view-meta">${summary.key_count} shared key${summary.key_count !== 1 ? "s" : ""}</div>
-          </div>
-          <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
+          <!-- "+ Add Key" moved to the header's contextual action slot
+               (#headerAction, populated by renderHeaderAction("vault")) so
+               Vault has a single primary action like every other domain,
+               instead of duplicating it here. -->
+          <div class="view-title" style="margin-bottom:0"><h1>Vault</h1><span class="vsub">${summary.key_count} key${summary.key_count !== 1 ? "s" : ""} · ${summary.encrypted ? "encrypted" : "unencrypted"}</span></div>
         </div>
 
-        <!-- Audit findings -->
-        ${missingAudit.length || unusedAudit.length ? `
-        <div class="vault-section">
-          <div class="vault-section-header">
-            <div class="vault-section-title">Audit</div>
-            <button class="btn btn-ghost btn-sm" onclick="renderVaultView()">Re-audit</button>
-          </div>
-          <div>${renderAuditRows(missingAudit, unusedAudit)}</div>
-        </div>` : ""}
-
-        <!-- Shared keys -->
-        <div class="vault-section">
-          <div class="vault-section-header">
-            <div class="vault-section-title">Shared Keys</div>
-            <button class="btn btn-ghost btn-sm" onclick="openVaultKeyModal('shared')">+ Add Key</button>
-          </div>
-          <div id="sharedKeysList">${renderSharedKeyRows(summary.keys, audit)}</div>
+        <!-- Status banner: same encrypted/unencrypted detection logic as
+             before (summary.encrypted), restyled to .banner.ok/.banner.warn.
+             installVaultDeps() targets #vaultEncBanner/#vaultInstallDepsBtn. -->
+        <div class="banner ${summary.encrypted ? "ok" : "warn"}" id="vaultEncBanner">
+          <span class="bi" style="color:var(--blue)">⚿</span>
+          ${summary.encrypted ? "Vault encrypted (keyring + cryptography)" : "Vault unencrypted"}
+          <span class="bspacer"></span>
+          ${!summary.encrypted ? `<button class="btn btn-sm" id="vaultInstallDepsBtn" onclick="installVaultDeps()">Fix: Install deps</button>` : ""}
+          <span class="num">${summary.key_count} key${summary.key_count !== 1 ? "s" : ""} · ${overrideProjCount} project override${overrideProjCount !== 1 ? "s" : ""}</span>
         </div>
 
-        <!-- Per-project overrides -->
+        <!-- Unified key table: reuses vault.audit()'s existing response shape
+             for aud-ok/aud-unused/aud-missing coloring, replacing the old
+             separate Shared-Keys-list + Audit-findings-list. -->
+        <table class="tbl">
+          <thead><tr><th>Key</th><th style="width:120px">Audit</th><th>Used by</th></tr></thead>
+          <tbody id="vaultKeyTbody">${renderVaultKeyRows(audit)}</tbody>
+        </table>
+
+        <!-- Per-project overrides (existing capability, untouched) -->
         <div class="vault-section">
           <div class="vault-section-header">
             <div class="vault-section-title">Per-Project Overrides</div>
@@ -1373,7 +2509,7 @@ async function renderVaultView() {
           <div id="overridesList">${renderOverrideGroups(summary.project_overrides, audit)}</div>
         </div>
 
-        <!-- Import from .env -->
+        <!-- Import from .env (existing capability, untouched) -->
         <div class="vault-section">
           <div class="vault-section-header">
             <div class="vault-section-title">Import from .env</div>
@@ -1389,28 +2525,31 @@ async function renderVaultView() {
   }
 }
 
-function renderSharedKeyRows(keys, audit) {
-  if (!keys || keys.length === 0) {
-    return `<div class="vault-empty">No shared keys yet. Add your first key above.</div>`;
+// One row per vault.audit() entry — shared keys AND keys some project
+// declares but that don't resolve anywhere (in_shared is always false for
+// those, per vault.py's audit(); missing_from is only ever non-empty then).
+// aud-missing rows aren't real vault keys (nothing to reveal), so clicking
+// one pre-fills the add-key modal instead of opening the detail panel — see
+// the click wiring in initVaultViewEvents(), same behavior the old
+// .audit-row-missing handler had.
+function renderVaultKeyRows(audit) {
+  if (!audit || audit.length === 0) {
+    return `<tr><td colspan="3"><div class="vault-empty">No shared keys yet. Add your first key above.</div></td></tr>`;
   }
-  return keys.map(key => {
-    const a = audit.find(x => x.key === key) || {};
-    const usage = a.declared_by && a.declared_by.length
-      ? a.declared_by.join(", ")
-      : `<span style="color:var(--text-muted)">unused</span>`;
+  return audit.map(a => {
+    const isMissing = a.missing_from.length > 0;
+    const isUnused  = !isMissing && a.unused;
+    const statusCls = isMissing ? "aud-missing" : (isUnused ? "aud-unused" : "aud-ok");
+    const statusTxt = isMissing ? "✗ missing" : (isUnused ? "○ unused" : "● ok");
+    const usedBy = isMissing
+      ? `referenced by ${esc(a.missing_from.join(", "))}`
+      : (a.declared_by.length ? esc(a.declared_by.join(", ")) : "—");
     return `
-      <div class="vault-key-row" data-key="${esc(key)}">
-        <div>
-          <div class="vault-key-name">${esc(key)}</div>
-          <div class="vault-key-usage">${usage}</div>
-        </div>
-        <div class="vault-key-value" id="keyval-${esc(key)}">••••••••</div>
-        <div class="vault-row-actions">
-          <button class="vault-row-btn reveal-key-btn" data-key="${esc(key)}" title="Reveal">👁</button>
-          <button class="vault-row-btn edit-key-btn"   data-key="${esc(key)}" title="Edit">✎</button>
-          <button class="vault-row-btn delete delete-key-btn" data-key="${esc(key)}" title="Delete">✕</button>
-        </div>
-      </div>`;
+      <tr data-key="${esc(a.key)}" data-missing="${isMissing}">
+        <td class="canon">${esc(a.key)}</td>
+        <td class="${statusCls}">${statusTxt}</td>
+        <td class="num">${usedBy}</td>
+      </tr>`;
   }).join("");
 }
 
@@ -1442,25 +2581,6 @@ function renderOverrideGroups(overrides, audit) {
         ${rows}
       </div>`;
   }).join("");
-}
-
-function renderAuditRows(missing, unused) {
-  const rows = [];
-  missing.forEach(a => {
-    rows.push(`
-      <div class="audit-row audit-row-missing" data-missing-key="${esc(a.key)}" style="cursor:pointer" title="Click to add this key">
-        <div class="audit-key">${esc(a.key)}</div>
-        <div class="audit-status warn">⚠ Missing for: ${esc(a.missing_from.join(", "))}</div>
-      </div>`);
-  });
-  unused.forEach(a => {
-    rows.push(`
-      <div class="audit-row audit-row-unused">
-        <div class="audit-key">${esc(a.key)}</div>
-        <div class="audit-status unused">No project declares this key</div>
-      </div>`);
-  });
-  return rows.join("");
 }
 
 function renderImportSection() {
@@ -1509,49 +2629,22 @@ function buildLocalhostHint(value, key, proj) {
 }
 
 function initVaultViewEvents() {
-  // Reveal shared key
-  document.querySelectorAll(".reveal-key-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const key = btn.dataset.key;
-      const el  = $(`keyval-${key}`);
-      if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed");
-        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+  // Unified key table rows: reuses the existing missing/unused audit fields
+  // (see renderVaultKeyRows()) to decide the click behavior — a "missing" row
+  // isn't an actual vault key (nothing to reveal), so it pre-fills the
+  // add-key modal instead, matching the old .audit-row-missing click.
+  document.querySelectorAll("#vaultKeyTbody tr[data-key]").forEach(row => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.key;
+      if (row.dataset.missing === "true") {
+        openVaultKeyModal("shared", null, null);
+        setTimeout(() => {
+          const input = document.querySelector("#vaultKeyForm [name=key]");
+          if (input) { input.value = key; input.readOnly = false; }
+        }, 100);
         return;
       }
-      try {
-        const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
-        const d   = await res.json();
-        el.textContent = d.value; el.classList.add("revealed");
-        const hint = buildLocalhostHint(d.value, key, null);
-        if (hint) {
-          el.closest(".vault-key-row")
-            .querySelector(".vault-row-actions")
-            .insertAdjacentHTML("beforebegin", hint);
-        }
-      } catch (_) { toast("Could not reveal key", "error"); }
-    });
-  });
-
-  // Edit shared key
-  document.querySelectorAll(".edit-key-btn").forEach(btn => {
-    btn.addEventListener("click", () => openVaultKeyModal("shared", null, btn.dataset.key));
-  });
-
-  // Delete shared key
-  document.querySelectorAll(".delete-key-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const key = btn.dataset.key;
-      const yes = await confirmAction({
-        title: "Delete key?",
-        message: `Remove "${key}" from the vault. Projects using it will lose access.`,
-        confirmText: "Delete",
-        danger: true,
-      });
-      if (!yes) return;
-      await fetch(`/api/vault/keys/${encodeURIComponent(key)}`, { method: "DELETE" });
-      toast(`${key} deleted`, "success");
-      await renderVaultView();
+      selectVaultKey(key);
     });
   });
 
@@ -1605,18 +2698,105 @@ function initVaultViewEvents() {
       await renderVaultView();
     });
   });
+}
 
-  // Clickable audit rows — open add-key modal pre-filled
-  document.querySelectorAll(".audit-row-missing").forEach(row => {
-    row.addEventListener("click", () => {
-      const key = row.dataset.missingKey;
-      openVaultKeyModal("shared", null, null);
-      setTimeout(() => {
-        const input = document.querySelector("#vaultKeyForm [name=key]");
-        if (input) { input.value = key; input.readOnly = false; }
-      }, 100);
-    });
+// ── Vault detail panel (key-row selection) ───────────────────────────────────
+
+function selectVaultKey(key) {
+  selectedVaultKey    = key;
+  selectedReceiptHash = null;
+  selectedName        = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#vaultKeyTbody tr[data-key="${CSS.escape(key)}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderVaultDetail(key);
+  wireVaultDetailEvents(key);
+  $("detailPanel").classList.add("open");
+}
+
+function renderVaultDetail(key) {
+  const a = vaultAuditCache.find(x => x.key === key) || { declared_by: [], overridden_by: [], unused: true };
+  const usedByRows = a.declared_by.length
+    ? a.declared_by.map(proj => {
+        const isOverride = a.overridden_by.includes(proj);
+        return `<div class="d-row"><span class="k">${esc(proj)}</span><span class="v"${isOverride ? ' style="color:var(--amber)"' : ""}>${isOverride ? "override" : "shared"}</span></div>`;
+      }).join("")
+    : `<div class="d-row"><span class="k">—</span><span class="v">unused</span></div>`;
+
+  // vault.summary() only exposes an `encrypted` boolean, no store-name field
+  // — this shows exactly that fact rather than naming a specific backend
+  // (e.g. "keyring") the API response doesn't actually confirm.
+  const storeLabel = vaultSummaryCache && vaultSummaryCache.encrypted ? "encrypted" : "unencrypted";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(key)}</div>
+    <div class="d-meta">${a.unused ? "○ unused" : "● ok"} · shared</div>
+    <div class="d-h">Value</div>
+    <div class="d-canon" id="vaultDetailValue" data-revealed="false">••••••••••••••••••••••••</div>
+    <div class="d-actions">
+      <button class="reveal-btn" id="vaultDetailReveal">Reveal</button>
+      <button class="reveal-btn" id="vaultDetailCopy">Copy</button>
+      <button class="reveal-btn" id="vaultDetailEdit">Edit</button>
+      <button class="reveal-btn" id="vaultDetailDelete">Delete</button>
+    </div>
+    <div class="d-h">Used by</div>
+    ${usedByRows}
+    <div class="d-h">Backend</div>
+    <div class="d-row"><span class="k">store</span><span class="v">${esc(storeLabel)}</span></div>`;
+}
+
+// Attached via addEventListener (not inline onclick) so key names containing
+// quotes/backslashes never need string-escaping into an HTML attribute.
+function wireVaultDetailEvents(key) {
+  $("vaultDetailReveal")?.addEventListener("click", () => toggleVaultDetailReveal(key));
+  $("vaultDetailCopy")?.addEventListener("click", copyVaultDetailValue);
+  $("vaultDetailEdit")?.addEventListener("click", () => openVaultKeyModal("shared", null, key));
+  $("vaultDetailDelete")?.addEventListener("click", () => deleteVaultKey(key));
+}
+
+// Reuses the existing GET /api/vault/keys/<key> endpoint — same fetch the old
+// inline reveal-key-btn used, no new backend call.
+async function toggleVaultDetailReveal(key) {
+  const el  = $("vaultDetailValue");
+  const btn = $("vaultDetailReveal");
+  if (!el || !btn) return;
+  if (el.dataset.revealed === "true") {
+    el.textContent = "••••••••••••••••••••••••";
+    el.dataset.revealed = "false";
+    btn.textContent = "Reveal";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
+    const d   = await res.json();
+    el.textContent = d.value;
+    el.dataset.revealed = "true";
+    btn.textContent = "Hide";
+  } catch (_) { toast("Could not reveal key", "error"); }
+}
+
+function copyVaultDetailValue() {
+  const el = $("vaultDetailValue");
+  if (!el || el.dataset.revealed !== "true") { toast("Reveal the value first", "info"); return; }
+  navigator.clipboard.writeText(el.textContent)
+    .then(() => toast("Copied", "success"))
+    .catch(() => toast("Could not copy", "error"));
+}
+
+// Same confirm copy + endpoint the old inline delete-key-btn used, relocated
+// here since that markup no longer exists (folded into the unified table).
+async function deleteVaultKey(key) {
+  const yes = await confirmAction({
+    title: "Delete key?",
+    message: `Remove "${key}" from the vault. Projects using it will lose access.`,
+    confirmText: "Delete",
+    danger: true,
   });
+  if (!yes) return;
+  await fetch(`/api/vault/keys/${encodeURIComponent(key)}`, { method: "DELETE" });
+  toast(`${key} deleted`, "success");
+  closeDetail();
+  await renderVaultView();
 }
 
 async function runImport() {
@@ -2014,20 +3194,6 @@ function _sortProjects(list) {
   });
 }
 
-// ── Filters ────────────────────────────────────────────────────────────────
-
-function initFilters() {
-  document.querySelectorAll(".filter-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      activeFilter = btn.dataset.filter;
-      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      if (activeView !== "projects") showProjectView();
-      else render();
-    });
-  });
-}
-
 // ── Project modal ──────────────────────────────────────────────────────────
 
 function initProjectModal() {
@@ -2085,7 +3251,10 @@ function closeProjectModal() {
 // ── Group modal ────────────────────────────────────────────────────────────
 
 function initGroupModal() {
-  $("addGroupBtn").addEventListener("click",    openGroupModal);
+  // #addGroupBtn now lives inside the dynamically-rendered Projects sub-nav
+  // (renderProjectsSubnav()), not static boot-time markup — it wires
+  // openGroupModal() via inline onclick instead, since it doesn't exist yet
+  // when initGroupModal() runs (would throw on a null element otherwise).
   $("groupModalClose").addEventListener("click", closeGroupModal);
   $("groupCancelBtn").addEventListener("click",  closeGroupModal);
   $("groupModalOverlay").addEventListener("click", e => { if (e.target===$("groupModalOverlay")) closeGroupModal(); });

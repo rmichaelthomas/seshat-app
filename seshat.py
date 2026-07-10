@@ -21,6 +21,9 @@ from router    import Router
 from github        import GitHubImporter
 from local_scanner import LocalScanner
 import deps as deps_module
+import agreements
+import invariant_check
+import liminate
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -80,6 +83,54 @@ def _compute_composite_status(status: str, dep_results: list) -> str:
     if any(d.get("status") == "disconnected" for d in (dep_results or [])):
         return "degraded"
     return status
+
+
+def _summarize_agreement_rules(text: str) -> list:
+    """Parse `.limn` Agreement/revocations text and enumerate each rule.
+
+    No facts are injected — this is enumeration, not evaluation of a
+    specific (actor, action, scope). Mirrors the composition pattern
+    `agreements.check_action` uses (see agreements.py), but without the
+    `remember actor/action/scope` prelude. Verb and temporal-window
+    extraction always defer to `agreements._verb_of` /
+    `agreements._temporal_window` — never reimplemented here, so this stays
+    consistent with the enforcement path. Read-only; never writes to
+    ~/.seshat/.
+
+    `liminate.run()` does not raise on malformed input — a true parse
+    failure surfaces in-band as `result.results[i].canonical is None`. That
+    is the only reliable error signal here: because no `actor`/`action`/
+    `scope` facts are injected (this function enumerates rules, it does not
+    evaluate one), a perfectly well-formed rule routinely comes back with
+    `status.name == "ERROR_SEMANTIC"` (e.g. "I can't find 'actor'.") even
+    though `r.canonical` parsed correctly and is fully populated. That
+    status-based signal is what `agreements.check_action` uses (see
+    `agreements._ERROR_STATUS_NAMES`), but check_action always runs with
+    facts remembered first, so ERROR_SEMANTIC there means something is
+    actually broken — not so here. Gate on `r.canonical is None` instead so
+    this function only reports `{"error": ...}` for genuine parse failures,
+    and otherwise reports the normal canonical/verb/window shape regardless
+    of status name.
+    """
+    try:
+        result = liminate.run(text, enter_phase2=False, auto_confirm_amber=True)
+    except Exception as e:
+        return [{"error": str(e)}]
+
+    rules = []
+    for r in result.results:
+        if r.canonical is None:
+            rules.append({"error": r.message or r.status.name})
+            continue
+        rule = {
+            "canonical": r.canonical,
+            "verb":      agreements._verb_of(r.canonical),
+            "window":    agreements._temporal_window(r.canonical),
+        }
+        if r.line is not None:
+            rule["line"] = r.line
+        rules.append(rule)
+    return rules
 
 
 def build_project_view(project: dict, scan: dict, state: dict) -> dict:
@@ -975,6 +1026,94 @@ def get_receipts_stats():
         "sessions": sorted(sessions),
         "actions":  actions,
     })
+
+
+# ── Agreement ──────────────────────────────────────────────────────────────
+
+
+@app.route("/api/agreement", methods=["GET"])
+def get_agreement():
+    """Return the current Agreement: raw text, existence, and a parsed rule
+    summary. Read-only — never writes to ~/.seshat/."""
+    text = agreements.load_agreement()
+    if text is None:
+        return jsonify({"exists": False, "text": None, "rules": []})
+    rules = _summarize_agreement_rules(text)
+    return jsonify({"exists": True, "text": text, "rules": rules})
+
+
+@app.route("/api/agreement/check", methods=["POST"])
+def agreement_check():
+    """Evaluate a hypothetical (actor, action, scope) against the live Agreement
+    WITHOUT executing anything or writing any receipt. Pure read-only evaluation
+    for the dashboard's dry-run strip."""
+    data   = request.json or {}
+    actor  = (data.get("actor") or "").strip()
+    action = (data.get("action") or "").strip()
+    scope  = data.get("scope")
+    scope  = scope.strip() if isinstance(scope, str) and scope.strip() else None
+    if not actor or not action:
+        return jsonify({"error": "actor and action are required"}), 400
+    decision = agreements.check_action(actor, action, scope)
+    return jsonify({
+        "allowed": decision.allowed,
+        "mode":    decision.mode,
+        "rule":    decision.rule,
+        "reason":  decision.reason,
+    })
+
+
+# ── Revocations ────────────────────────────────────────────────────────────
+
+
+@app.route("/api/revocations", methods=["GET"])
+def get_revocations():
+    """Return the current platform revocations overlay: raw text, existence,
+    forbid-only rule summary, and sync state. Read-only."""
+    text = agreements.load_revocations()
+    state = agreements.revocation_state()  # None if no revocations file
+    if text is None:
+        return jsonify({"exists": False, "text": None, "rules": [], "sync": None})
+    rules = _summarize_agreement_rules(text)  # revocations are forbid-only
+    return jsonify({"exists": True, "text": text, "rules": rules, "sync": state})
+
+
+# ── Invariant ──────────────────────────────────────────────────────────────
+
+
+@app.route("/api/invariant", methods=["GET"])
+def get_invariant():
+    """Return the Invariant verification contract text and existence. Read-only.
+    Does NOT run verification (that happens post-action in the receipt path)."""
+    text = agreements.load_invariant()
+    return jsonify({"exists": text is not None, "text": text})
+
+
+@app.route("/api/invariant/last-run", methods=["GET"])
+def get_invariant_last_run():
+    """Return the most recent receipt carrying an `invariant` block, walked
+    newest-first over RECEIPTS_DIR (same glob/sort pattern as get_receipts()).
+    Read-only — never runs verification itself; that only happens on the
+    action path via invariant_check.run_verification."""
+    if not RECEIPTS_DIR.exists():
+        return jsonify({"exists": False})
+
+    files = sorted(RECEIPTS_DIR.glob("*.json"), reverse=True)
+    for f in files:
+        try:
+            receipt = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        invariant_block = receipt.get("invariant")
+        if invariant_block is not None:
+            return jsonify({
+                "exists":           True,
+                "invariant":        invariant_block,
+                "receipt_timestamp": receipt.get("timestamp"),
+                "receipt_hash":      receipt.get("receipt_hash"),
+            })
+
+    return jsonify({"exists": False})
 
 
 # ── Background dep checker ─────────────────────────────────────────────────
