@@ -133,15 +133,7 @@ html, body {
 .sub-item .sdot.b { background: var(--blue); }
 .sub-item .sc { margin-left: auto; font-size: 11px; color: var(--text-dim); }
 
-.sidebar-label {
-  font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--text-muted); padding: 4px 10px 8px;
-}
 .sidebar-divider { height: 1px; background: var(--border); margin: 8px 4px; }
-.sidebar-section-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 4px 4px 10px;
-}
 .sidebar-add-btn {
   display: flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; border: 1px solid var(--border); border-radius: 4px;
@@ -150,37 +142,11 @@ html, body {
 }
 .sidebar-add-btn:hover { background: var(--surface-2); color: var(--text); }
 
-.filter-btn {
-  display: flex; align-items: center; justify-content: space-between;
-  width: 100%; padding: 7px 10px; border: none; border-radius: var(--radius);
-  background: transparent; color: var(--text-dim); font-size: 13px;
-  cursor: pointer; transition: background 0.1s, color 0.1s;
-}
-.filter-btn:hover  { background: var(--surface-2); color: var(--text); }
-.filter-btn.active { background: var(--surface-3); color: var(--text); }
-.filter-left { display: flex; align-items: center; gap: 8px; }
-.filter-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--surface-3);
-}
-.filter-dot.green  { background: var(--green); }
-.filter-dot.red    { background: var(--red); }
-.filter-dot.orange { background: var(--orange); }
-.count {
-  font-size: 11px; color: var(--text-muted); background: var(--surface-2);
-  border-radius: 10px; padding: 1px 7px; min-width: 22px; text-align: center;
-}
-.filter-btn.active .count { background: var(--bg); }
-
-.group-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 6px 5px 10px; border-radius: var(--radius); transition: background 0.1s;
-}
-.group-item:hover { background: var(--surface-2); }
-.group-name {
-  font-size: 12px; color: var(--text-dim); flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.group-actions { display: flex; gap: 2px; flex-shrink: 0; }
+/* Group action icons (start/stop/delete), reused inside the sidebar sub-nav's
+   .group-sub-item rows (see renderGroups() in app.js) — the wrapper markup
+   moved from a standalone .group-item to the shared .sub-item, but these
+   action-button styles are unchanged. */
+.group-actions { display: flex; gap: 2px; flex-shrink: 0; margin-left: 4px; }
 .group-btn {
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border: none; border-radius: 4px;
@@ -191,21 +157,15 @@ html, body {
 .group-btn.start:hover  { color: var(--green); }
 .group-btn.stop:hover   { color: var(--red); }
 .group-btn.delete:hover { color: var(--red); }
+.group-sub-item { padding-right: 10px; }
 
-/* ── Filters + Groups bar (restored inside the Projects view; these reuse
-   the .filter-btn/.group-item styles above, which were originally written
-   for a vertical sidebar — here they lay out horizontally instead) ──────── */
-.filters-groups-bar {
-  display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start;
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
+/* Sidebar sub-nav section header with a trailing action button, e.g.
+   "Groups" + "+ New Group" (reuses .sidebar-add-btn). */
+.subnav-h-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px 4px 30px;
 }
-.status-filter-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.status-filter-row .filter-btn { width: auto; }
-.groups-row { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
-.groups-row .sidebar-section-header { padding: 0 0 4px; }
-.groups-row .sidebar-label { padding: 0; }
-.groups-row #groupList { display: flex; flex-wrap: wrap; gap: 4px; }
-.groups-row .group-item { min-width: 170px; }
+.subnav-h-row .subnav-h { padding: 0; }
 
 /* ── Main content ─────────────────────────────────────────────────────────── */
 
@@ -318,19 +278,7 @@ html, body {
 
 .vault-view-header {
   display: flex; align-items: flex-start; justify-content: space-between;
-  margin-bottom: 28px;
-}
-.vault-view-title { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-.vault-view-meta  { font-size: 13px; color: var(--text-muted); }
-.vault-enc-badge {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11px; padding: 3px 8px; border-radius: 10px;
-  background: rgba(34,197,94,0.1); color: var(--green);
-  border: 1px solid rgba(34,197,94,0.2); margin-left: 8px;
-}
-.vault-enc-badge.warn {
-  background: rgba(245,158,11,0.1); color: var(--yellow);
-  border-color: rgba(245,158,11,0.25);
+  margin-bottom: 20px;
 }
 
 .vault-section { margin-bottom: 32px; }
@@ -391,18 +339,6 @@ html, body {
   padding: 8px 12px; background: var(--surface-2);
   font-size: 12px; font-weight: 500; color: var(--text-dim);
 }
-
-/* Audit rows */
-.audit-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px; border-bottom: 1px solid var(--border);
-}
-.audit-row:last-child { border-bottom: none; }
-.audit-key { font-family: var(--mono); font-size: 12px; color: var(--text); min-width: 200px; }
-.audit-status { font-size: 11px; }
-.audit-status.ok      { color: var(--green); }
-.audit-status.warn    { color: var(--orange); }
-.audit-status.unused  { color: var(--text-muted); }
 
 /* Import section */
 .vault-import-form { display: flex; flex-direction: column; gap: 12px; }
@@ -1200,11 +1136,6 @@ textarea { resize: vertical; }
 }
 .sort-field-btn:hover, .sort-dir-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
-/* ── Vault audit row enhancements ────────────────────────────────────────── */
-
-.audit-row-missing:hover { background: rgba(239,68,68,0.06); border-radius: var(--radius); }
-.audit-row-unused        { opacity: 0.7; }
-
 /* ── Dirty edit indicator ────────────────────────────────────────────────── */
 
 .detail-section-action.dirty {
@@ -1269,28 +1200,10 @@ textarea { resize: vertical; }
 
 .btn-receipts.active { color: #a855f7; border-color: rgba(168,85,247,0.35); background: rgba(168,85,247,0.08); }
 
-.receipts-view {
-  padding: 24px;
-  max-width: 900px;
-  margin: 0 auto;
-}
-.receipts-view-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
-  gap: 16px;
-}
-.receipts-view-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-.receipts-view-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-}
+/* Reused as a <td colspan> fallback for "no receipts match this filter" in
+   the reference-styled .tbl (see renderReceiptRows() in app.js). The card
+   markup this section used to style (.receipts-view/.receipt-row/etc.) was
+   replaced by the .tbl/.badge/.stat-row reference-language rendering. */
 .receipts-empty {
   padding: 32px 0;
   text-align: center;
@@ -1298,66 +1211,12 @@ textarea { resize: vertical; }
   color: var(--text-muted);
 }
 
-.receipt-row {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 8px;
-  padding: 10px 14px;
-  background: var(--surface);
+/* Follow-mode "new row" highlight (Receipts tail mode) */
+@keyframes receiptRowIn {
+  from { background: color-mix(in srgb, var(--green) 22%, transparent); }
+  to   { background: transparent; }
 }
-.receipt-row.receipt-success { background: rgba(34, 197, 94, 0.03); }
-.receipt-row.receipt-failure { background: rgba(239, 68, 68, 0.03); }
-
-.receipt-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-.receipt-status {
-  font-weight: 700;
-  font-size: 12px;
-  width: 14px;
-  flex-shrink: 0;
-}
-.receipt-success .receipt-status { color: var(--green); }
-.receipt-failure .receipt-status { color: var(--red); }
-
-.receipt-action {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.receipt-target {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-dim);
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.receipt-time {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.receipt-detail {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--text-muted);
-  padding-left: 24px;
-}
-.receipt-actor  { font-family: var(--mono); color: #a855f7; }
-.receipt-delta  { color: var(--text-muted); }
-.receipt-result { color: var(--text-dim); font-family: var(--mono); }
+.tbl tbody tr.receipt-row-new { animation: receiptRowIn 1.1s ease-out; }
 
 /* ── Stale data banner ────────────────────────────────────────────────────── */
 

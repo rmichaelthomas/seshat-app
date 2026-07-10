@@ -72,40 +72,6 @@
             </div>
           </div>
 
-          <!-- ── Status filters + Groups (restored reachability; formerly the
-               old sidebar's Status/Groups sections) ────────────────────── -->
-          <div class="filters-groups-bar" id="filtersGroupsBar">
-            <div class="status-filter-row" id="statusFilterRow">
-              <button class="filter-btn active" data-filter="all">
-                <span class="filter-left"><span class="filter-dot"></span>All Projects</span>
-                <span class="count" id="count-all">0</span>
-              </button>
-              <button class="filter-btn" data-filter="running">
-                <span class="filter-left"><span class="filter-dot green"></span>Running</span>
-                <span class="count" id="count-running">0</span>
-              </button>
-              <button class="filter-btn" data-filter="stopped">
-                <span class="filter-left"><span class="filter-dot"></span>Stopped</span>
-                <span class="count" id="count-stopped">0</span>
-              </button>
-              <button class="filter-btn" data-filter="conflict">
-                <span class="filter-left"><span class="filter-dot red"></span>Conflicts</span>
-                <span class="count" id="count-conflict">0</span>
-              </button>
-              <button class="filter-btn" data-filter="orphans">
-                <span class="filter-left"><span class="filter-dot orange"></span>Orphans</span>
-                <span class="count" id="count-orphans">0</span>
-              </button>
-            </div>
-            <div class="groups-row" id="groupsRow">
-              <div class="sidebar-section-header">
-                <span class="sidebar-label">Groups</span>
-                <button class="sidebar-add-btn" id="addGroupBtn" title="New group">+</button>
-              </div>
-              <div id="groupList"><!-- rendered by JS: static/app.js renderGroups() --></div>
-            </div>
-          </div>
-
           <div class="shelf-header">
             <div></div>
             <div class="shelf-header-cell">Project</div>
@@ -212,7 +178,7 @@
     <aside class="detail-panel" id="detailPanel">
       <div class="detail-inner" id="detailInner">
         <div class="empty-state" style="padding:60px 20px">
-          <div class="empty-state-sub">Select a project to view details</div>
+          <div class="empty-state-sub">Select a row to view details</div>
         </div>
       </div>
     </aside>

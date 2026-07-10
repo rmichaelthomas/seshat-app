@@ -10,6 +10,21 @@ let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 let _refreshFailCount = 0;
 
+// ── Receipts / Vault detail-panel selection state ────────────────────────────
+// selectedName (above) tracks the selected Projects row; these track the
+// equivalent selection for the other two domains that now share #detailPanel.
+let selectedReceiptHash = null;
+let selectedVaultKey    = null;
+
+// ── Receipts follow/tail-mode state ──────────────────────────────────────────
+let receiptsCache     = [];   // currently-rendered receipts, newest first
+let receiptsFollowing = true; // default-on, matches the reference
+let receiptsFollowTimer = null;
+
+// ── Vault detail-panel data cache (populated by renderVaultView()) ──────────
+let vaultAuditCache   = [];
+let vaultSummaryCache = null;
+
 const uiState = {
   searchQuery: "",
   sortField: "name",
@@ -59,7 +74,6 @@ function initKeyboard() {
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-  initFilters();
   initSearchSort();
   initProjectModal();
   initGroupModal();
@@ -147,7 +161,56 @@ function renderSidebar() {
   $("sidebar").innerHTML = DOMAINS.map(([id, glyph, label]) => `
     <div class="nav-item${id === current ? " on" : ""}" onclick="showDomain('${id}')">
       <span class="ng">${glyph}</span> ${esc(label)}
-    </div>`).join("");
+    </div>${id === current && id === "projects" ? renderProjectsSubnav() : ""}`).join("");
+  // Groups are data-driven (fetched separately from `groups`); populate/wire
+  // the #groupList placeholder the subnav string just created. renderGroups()
+  // itself no-ops when #groupList isn't in the DOM, so this is safe to call
+  // even when the projects subnav wasn't rendered above.
+  if (current === "projects") renderGroups();
+}
+
+// Projects sub-nav (replaces the Task-2-fix stopgap `.filters-groups-bar`):
+// Status rows reuse the same activeFilter/renderCounts() computation the old
+// bar used, Groups rows reuse renderGroups()'s existing data, and the Tools
+// row is the only click-trigger for the Organize sub-view Task 2 left dangling.
+function renderProjectsSubnav() {
+  const running    = projects.filter(p => p.status === "running").length;
+  const stopped    = projects.filter(p => p.status === "stopped").length;
+  const conflict   = projects.filter(p => p.status === "conflict").length;
+  const isOrganize = activeView === "organize";
+  const statusItem = (filter, dotCls, label, count, countId) => `
+    <div class="sub-item${(!isOrganize && activeFilter === filter) ? " on" : ""}" onclick="setProjectFilter('${filter}')">
+      <span class="sdot${dotCls ? ` ${dotCls}` : ""}"></span> <span class="lbl">${label}</span> <span class="sc" id="${countId}">${count}</span>
+    </div>`;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">Status</div>
+      ${statusItem("all",      "",  "All",       projects.length, "count-all")}
+      ${statusItem("running",  "g", "Running",   running,          "count-running")}
+      ${statusItem("stopped",  "",  "Stopped",   stopped,          "count-stopped")}
+      ${statusItem("conflict", "r", "Conflicts", conflict,         "count-conflict")}
+      ${statusItem("orphans",  "o", "Orphans",   orphans.length,   "count-orphans")}
+      <div class="subnav-h-row">
+        <span class="subnav-h">Groups</span>
+        <button class="sidebar-add-btn" id="addGroupBtn" title="New group" onclick="openGroupModal()">+</button>
+      </div>
+      <div id="groupList"><!-- rendered by JS: renderGroups() --></div>
+      <div class="subnav-h">Tools</div>
+      <div class="sub-item${isOrganize ? " on" : ""}" onclick="showOrganizeView()"><span class="lbl">Organize</span></div>
+    </div>`;
+}
+
+// Sets the Projects status filter from a sidebar sub-nav click. Same
+// activeFilter variable and render()-vs-switch-domain branching the old
+// initFilters()-bound .filter-btn click handler used — just invoked directly
+// from inline onclick since the sub-nav is re-rendered (not static markup),
+// so a boot-time-only addEventListener binding would go stale after the
+// first re-render.
+function setProjectFilter(filter) {
+  activeFilter = filter;
+  if (activeView !== "projects") { showProjectView(); return; }
+  renderSidebar();
+  render();
 }
 
 function _activateDomainSection(id) {
@@ -164,6 +227,7 @@ function _activateDomainSection(id) {
 async function showDomain(id) {
   if (id === activeView) return; // re-clicking the active nav-item is a no-op
   if (await closeDetail() === false) return;
+  if (activeView === "receipts" && id !== "receipts") stopReceiptsFollow();
   _activateDomainSection(id);
   activeView = id;
   renderSidebar();
@@ -203,8 +267,10 @@ async function showProjectView() {
 }
 
 async function installVaultDeps() {
-  const badge = document.querySelector(".vault-enc-badge.warn");
-  const btn   = badge && badge.querySelector("button");
+  // Targets #vaultEncBanner/#vaultInstallDepsBtn (restyled to .banner.warn in
+  // this task) rather than the old .vault-enc-badge.warn markup those ids
+  // replaced — this function's install-deps flow itself is unchanged.
+  const btn = $("vaultInstallDepsBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
   try {
     const res  = await fetch("/api/vault/install-deps", { method: "POST" });
@@ -218,8 +284,9 @@ async function installVaultDeps() {
       if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
       return;
     }
-    if (badge) badge.innerHTML =
-      `<span style="color:var(--yellow)">✓ Installed — restart Seshat to activate encryption</span>`;
+    const banner = $("vaultEncBanner");
+    if (banner) banner.innerHTML =
+      `<span class="bi" style="color:var(--yellow)">⚠</span> Installed — restart Seshat to activate encryption`;
   } catch (e) {
     toast("Install failed: " + e.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "Fix: Install deps"; }
@@ -260,6 +327,7 @@ async function showReceiptsView() {
 }
 
 async function renderReceiptsView() {
+  stopReceiptsFollow();
   $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>`;
   try {
     const [receiptsRes, statsRes] = await Promise.all([
@@ -269,6 +337,25 @@ async function renderReceiptsView() {
     const receipts = await receiptsRes.json();
     const stats    = await statsRes.json();
 
+    // No existing code verifies hash-chain integrity over the API surface
+    // this dashboard is allowed to call (seshat.py has no such endpoint; the
+    // only verification that exists is `seshat receipts verify` in cli.py, a
+    // local CLI-only command). So this view never claims "intact" — it shows
+    // real, unverified facts only: count and the head receipt's own hash.
+    if (stats.total === 0) {
+      $("receiptsContent").innerHTML = `
+        <div class="view-title"><h1>Receipts</h1></div>
+        <div class="empty-wrap"><div class="empty-card">
+          <div class="empty-glyph">⧫</div>
+          <div class="empty-title">No receipts yet</div>
+          <div class="empty-desc">Receipts are emitted as governed actions run. Start or stop a project, and its hash-chained receipt appears here.</div>
+        </div></div>`;
+      receiptsCache = [];
+      return;
+    }
+
+    receiptsCache = receipts;
+
     const sessionOptions = stats.sessions.map(s =>
       `<option value="${esc(s)}">${esc(s)}</option>`
     ).join("");
@@ -277,28 +364,46 @@ async function renderReceiptsView() {
       `<option value="${esc(a)}">${esc(a)} (${stats.actions[a]})</option>`
     ).join("");
 
+    const sessionsSummary = _receiptsSessionSummary(receipts);
+    const headHash  = receipts[0] && receipts[0].receipt_hash;
+    const headShort = headHash ? `${headHash.slice(0, 12)}…` : "—";
+
     $("receiptsContent").innerHTML = `
-      <div class="receipts-view">
-        <div class="receipts-view-header">
-          <div>
-            <div class="receipts-view-title">⧫ Machine Action Receipts</div>
-            <div class="receipts-view-meta">${stats.total} receipt${stats.total !== 1 ? "s" : ""} · ${stats.sessions.length} session${stats.sessions.length !== 1 ? "s" : ""}</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select id="receiptsFilterAction" onchange="filterReceipts()" style="font-size:12px">
-              <option value="">All actions</option>
-              ${actionOptions}
-            </select>
-            <select id="receiptsFilterSession" onchange="filterReceipts()" style="font-size:12px">
-              <option value="">All sessions</option>
-              ${sessionOptions}
-            </select>
-            <button class="btn btn-ghost btn-sm" onclick="renderReceiptsView()">↺ Refresh</button>
-            <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
-          </div>
-        </div>
-        <div id="receiptsList">${renderReceiptRows(receipts)}</div>
-      </div>`;
+      <div class="view-title"><h1>Receipts</h1><span class="vsub">${stats.total} receipt${stats.total !== 1 ? "s" : ""}</span></div>
+      <div class="stat-row">
+        <div class="stat-card"><div class="sl">Total</div><div class="sv">${stats.total}</div><div class="sm">receipts</div></div>
+        <div class="stat-card"><div class="sl">Sessions</div><div class="sv">${stats.sessions.length}</div><div class="sm">${esc(sessionsSummary)}</div></div>
+        <div class="stat-card"><div class="sl">Actions</div><div class="sv">${Object.keys(stats.actions).length}</div><div class="sm">types</div></div>
+        <div class="stat-card"><div class="sl">Chain</div><div class="sv" style="font-size:14px;color:var(--cyan)">${esc(headShort)}</div><div class="sm">head</div></div>
+      </div>
+      <div class="chain-strip">
+        <span class="bar-full">████████████</span>
+        <span>${stats.total} receipt${stats.total !== 1 ? "s" : ""}, hash-chained</span>
+        <span class="bspacer"></span>
+        <span class="num">head</span> <span class="hh">${esc(headShort)}</span>
+      </div>
+      <div class="follow-strip">
+        <span class="follow-toggle" id="followToggle" onclick="toggleReceiptsFollow()"><span class="pulse"></span> following</span>
+        <span>· new receipts prepend at the top (1s poll)</span>
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <select id="receiptsFilterAction" onchange="filterReceipts()" style="font-size:12px">
+            <option value="">All actions</option>
+            ${actionOptions}
+          </select>
+          <select id="receiptsFilterSession" onchange="filterReceipts()" style="font-size:12px">
+            <option value="">All sessions</option>
+            ${sessionOptions}
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="renderReceiptsView()">↺ Refresh</button>
+        </span>
+      </div>
+      <table class="tbl">
+        <thead><tr><th style="width:90px">Time</th><th style="width:160px">Action</th><th>Target</th><th style="width:140px">Actor</th><th style="width:40px"></th></tr></thead>
+        <tbody id="receiptsTbody">${renderReceiptRows(receipts)}</tbody>
+      </table>`;
+    wireReceiptRowClicks();
+    updateFollowStripUI();
+    if (receiptsFollowing) startReceiptsFollow();
   } catch (e) {
     $("receiptsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load receipts</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
   }
@@ -313,27 +418,60 @@ async function filterReceipts() {
   try {
     const res      = await fetch(url);
     const receipts = await res.json();
-    $("receiptsList").innerHTML = renderReceiptRows(receipts);
+    receiptsCache = receipts;
+    $("receiptsTbody").innerHTML = renderReceiptRows(receipts);
+    wireReceiptRowClicks();
   } catch (e) {
-    $("receiptsList").innerHTML = `<div class="empty-state"><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+    $("receiptsTbody").innerHTML = `<tr><td colspan="5" class="receipts-empty">${esc(e.message)}</td></tr>`;
   }
+}
+
+function wireReceiptRowClicks() {
+  document.querySelectorAll("#receiptsTbody tr[data-hash]").forEach(row => {
+    row.addEventListener("click", () => selectReceipt(row.dataset.hash));
+  });
+}
+
+// Maps a receipt's action string to the reference's badge color families
+// (start=green, stop=red, register=blue, revoke=orange). Real action names
+// emitted by cli.py/mcp_server.py beyond the reference's four examples
+// (set_project_override, set_secret) are judgment calls, folded into the
+// "register" family since they're writes/declarations, not starts/stops.
+function badgeClassForAction(action) {
+  if (/^start/.test(action))    return "start";
+  if (/^stop/.test(action))     return "stop";
+  if (/^register/.test(action)) return "register";
+  if (/revoke/.test(action))    return "revoke";
+  if (/^set_/.test(action))     return "register";
+  return "";
+}
+
+// "N mcp · N cli" style breakdown for the Sessions stat card, computed from
+// the already-fetched receipts list (actor.type per distinct session_id) —
+// not a new backend field, /api/receipts/stats doesn't return this shape.
+function _receiptsSessionSummary(receipts) {
+  const seen = new Set();
+  const counts = {};
+  for (const r of receipts) {
+    const sid = r.actor && r.actor.session_id;
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    const t = ((r.actor && r.actor.type) || "unknown").replace("_session", "");
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  return Object.entries(counts).map(([t, n]) => `${n} ${t}`).join(" · ");
 }
 
 function renderReceiptRows(receipts) {
   if (!receipts || receipts.length === 0) {
-    return `<div class="receipts-empty">No receipts yet. Receipts are emitted when an agent uses Seshat's MCP tools.</div>`;
+    return `<tr><td colspan="5" class="receipts-empty">No receipts match this filter.</td></tr>`;
   }
   return receipts.map(r => {
     const ts      = new Date(r.timestamp);
-    const timeStr = ts.toLocaleString("en-US", {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
-    });
+    const timeStr = ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const isSuccess = r.result && r.result.status === "success";
-    const statusCls = isSuccess ? "receipt-success" : "receipt-failure";
-    const statusTxt = isSuccess ? "✓" : "✗";
-    const actor     = r.actor || {};
-    const agentHint = actor.agent_hint && actor.agent_hint !== "unknown"
-      ? ` · ${esc(actor.agent_hint)}` : "";
+    const actor      = r.actor || {};
+    const actorTypeCls = (actor.type || "").replace("_session", "");
     const sessionShort = (actor.session_id || "").replace("mcp_session_", "").slice(0, 8);
 
     const target = r.target || {};
@@ -344,40 +482,162 @@ function renderReceiptRows(receipts) {
     if (target.key)     targetParts.push(`key: ${target.key}`);
     const targetStr = targetParts.join(" · ") || "—";
 
-    const before       = r.environment_before || {};
-    const after        = r.environment_after  || {};
-    const portsBefore  = (before.listening_ports || []).length;
-    const portsAfter   = (after.listening_ports  || []).length;
-    const portDelta    = portsAfter - portsBefore;
-    const portDeltaStr = portDelta > 0
-      ? `+${portDelta} port${portDelta !== 1 ? "s" : ""}`
-      : portDelta < 0
-        ? `${portDelta} port${Math.abs(portDelta) !== 1 ? "s" : ""}`
-        : "no port change";
-
-    const resultDetail = [];
-    if (r.result) {
-      if (r.result.pid)         resultDetail.push(`PID ${r.result.pid}`);
-      if (r.result.stopped_pid) resultDetail.push(`stopped PID ${r.result.stopped_pid}`);
-      if (r.result.error)       resultDetail.push(r.result.error);
-    }
-    const resultStr = resultDetail.join(" · ") || "";
-
     return `
-      <div class="receipt-row ${statusCls}">
-        <div class="receipt-header">
-          <span class="receipt-status">${statusTxt}</span>
-          <span class="receipt-action">${esc(r.action)}</span>
-          <span class="receipt-target">${esc(targetStr)}</span>
-          <span class="receipt-time">${timeStr}</span>
-        </div>
-        <div class="receipt-detail">
-          <span class="receipt-actor">${esc(sessionShort)}${agentHint}</span>
-          <span class="receipt-delta">${esc(portDeltaStr)}</span>
-          ${resultStr ? `<span class="receipt-result">${esc(resultStr)}</span>` : ""}
-        </div>
-      </div>`;
+      <tr data-hash="${esc(r.receipt_hash)}">
+        <td class="num">${esc(timeStr)}</td>
+        <td><span class="badge ${badgeClassForAction(r.action)}">${esc(r.action)}</span></td>
+        <td>${esc(targetStr)}</td>
+        <td class="actor ${esc(actorTypeCls)}">${esc(actorTypeCls)}${sessionShort ? ` · ${esc(sessionShort)}` : ""}</td>
+        <td style="color:${isSuccess ? "var(--green)" : "var(--red)"}">${isSuccess ? "✓" : "✗"}</td>
+      </tr>`;
   }).join("");
+}
+
+// ── Receipts detail panel + follow/tail mode ─────────────────────────────────
+
+function selectReceipt(hash) {
+  const r = receiptsCache.find(x => x.receipt_hash === hash);
+  if (!r) return;
+  selectedReceiptHash = hash;
+  selectedVaultKey    = null;
+  selectedName        = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#receiptsTbody tr[data-hash="${CSS.escape(hash)}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderReceiptDetail(r);
+  $("detailPanel").classList.add("open");
+}
+
+function renderReceiptDetail(r) {
+  const ts      = new Date(r.timestamp);
+  const timeStr = ts.toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const isSuccess = r.result && r.result.status === "success";
+  const actor     = r.actor || {};
+  const agentHint = actor.agent_hint && actor.agent_hint !== "unknown" ? actor.agent_hint : null;
+  const sessionShort = (actor.session_id || "").replace("mcp_session_", "").slice(0, 8);
+
+  const target = r.target || {};
+  const targetRows = [];
+  if (target.project) targetRows.push(["project", target.project]);
+  if (target.group)   targetRows.push(["group", target.group]);
+  if (target.port)    targetRows.push(["port", `:${target.port}`]);
+  if (target.key)     targetRows.push(["key", target.key]);
+
+  const before = r.environment_before || {};
+  const after  = r.environment_after  || {};
+  const portsBefore = (before.listening_ports || []).length;
+  const portsAfter  = (after.listening_ports  || []).length;
+  const portDelta   = portsAfter - portsBefore;
+  const portDeltaStr = portDelta > 0
+    ? `+${portDelta} port${portDelta !== 1 ? "s" : ""}`
+    : portDelta < 0
+      ? `${portDelta} port${Math.abs(portDelta) !== 1 ? "s" : ""}`
+      : "no port change";
+
+  const resultDetail = [];
+  if (r.result) {
+    if (r.result.pid)         resultDetail.push(`PID ${r.result.pid}`);
+    if (r.result.stopped_pid) resultDetail.push(`stopped PID ${r.result.stopped_pid}`);
+    if (r.result.error)       resultDetail.push(r.result.error);
+  }
+
+  const short = h => h ? `${h.slice(0, 12)}…` : "—";
+
+  // Most receipts on a fresh Phase-1 machine have no `invariant` key (the
+  // harness is an optional external package) — omit the section entirely
+  // rather than render an empty one. Only fields confirmed present on the
+  // dataclass output (invariant_check.py) are shown; nothing fabricated.
+  const inv = r.invariant;
+  const invariantSection = inv ? `
+    <div class="d-h">Invariant</div>
+    <div class="d-row"><span class="k">result</span><span class="v" style="color:${inv.converged ? "var(--green)" : "var(--orange)"}">${inv.converged ? "converged" : "not converged"}</span></div>
+    <div class="d-row"><span class="k">claims</span><span class="v">${(inv.claims || []).length}</span></div>
+    <div class="d-row"><span class="k">cycles</span><span class="v">${inv.total_cycles ?? "—"}</span></div>
+    ${inv.error ? `<div class="d-row"><span class="k">error</span><span class="v" style="color:var(--red)">${esc(inv.error)}</span></div>` : ""}` : "";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(r.action)}</div>
+    <div class="d-meta">${esc(timeStr)} · ${isSuccess ? "✓ success" : "✗ failed"}</div>
+    <div class="d-h">Actor</div>
+    <div class="d-row"><span class="k">type</span><span class="v" style="color:var(--purple)">${esc(actor.type || "—")}</span></div>
+    <div class="d-row"><span class="k">session</span><span class="v">${esc(sessionShort || "—")}</span></div>
+    ${agentHint ? `<div class="d-row"><span class="k">agent hint</span><span class="v">${esc(agentHint)}</span></div>` : ""}
+    <div class="d-h">Target</div>
+    ${targetRows.length
+      ? targetRows.map(([k, v]) => `<div class="d-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")
+      : `<div class="d-row"><span class="k">—</span><span class="v">—</span></div>`}
+    <div class="d-h">Result</div>
+    <div class="d-row"><span class="k">environment</span><span class="v">${esc(portDeltaStr)}</span></div>
+    ${resultDetail.length ? `<div class="d-row"><span class="k">detail</span><span class="v">${esc(resultDetail.join(" · "))}</span></div>` : ""}
+    <div class="d-h">Chain</div>
+    <div class="d-row"><span class="k">receipt</span><span class="v" style="color:var(--cyan)">${short(r.receipt_hash)}</span></div>
+    <div class="d-row"><span class="k">previous</span><span class="v" style="color:var(--cyan)">${short(r.previous_hash)}</span></div>
+    ${invariantSection}`;
+}
+
+// Follow/tail mode: polls a small recent-receipts window every 1s and diffs
+// by receipt_hash against what's already rendered. Only ever inserts the new
+// row(s) — never re-fetches/redraws the whole table on a tick, which is the
+// flicker failure mode the build prompt explicitly calls out.
+function startReceiptsFollow() {
+  stopReceiptsFollow();
+  receiptsFollowTimer = setInterval(pollReceiptsFollow, 1000);
+}
+
+function stopReceiptsFollow() {
+  if (receiptsFollowTimer) { clearInterval(receiptsFollowTimer); receiptsFollowTimer = null; }
+}
+
+function toggleReceiptsFollow() {
+  receiptsFollowing = !receiptsFollowing;
+  updateFollowStripUI();
+  if (receiptsFollowing) startReceiptsFollow(); else stopReceiptsFollow();
+}
+
+function updateFollowStripUI() {
+  const el = $("followToggle");
+  if (!el) return;
+  el.innerHTML = receiptsFollowing
+    ? `<span class="pulse"></span> following`
+    : `<span class="pulse" style="animation:none;opacity:.35"></span> paused`;
+}
+
+async function pollReceiptsFollow() {
+  if (activeView !== "receipts") { stopReceiptsFollow(); return; }
+  try {
+    const action  = $("receiptsFilterAction")?.value || "";
+    const session = $("receiptsFilterSession")?.value || "";
+    let url = "/api/receipts?limit=5";
+    if (action)  url += `&action=${encodeURIComponent(action)}`;
+    if (session) url += `&session=${encodeURIComponent(session)}`;
+    const res    = await fetch(url);
+    const latest = await res.json();
+    if (!latest.length) return;
+
+    const known = new Set(receiptsCache.map(r => r.receipt_hash));
+    const fresh = latest.filter(r => !known.has(r.receipt_hash));
+    if (!fresh.length) return;
+
+    // `fresh` is newest-first (a prefix of `latest`); insert oldest-of-batch
+    // first so the final DOM order stays newest-at-top.
+    for (let i = fresh.length - 1; i >= 0; i--) prependReceiptRow(fresh[i]);
+    receiptsCache = [...fresh, ...receiptsCache];
+  } catch (_) { /* transient network error — try again next tick */ }
+}
+
+function prependReceiptRow(r) {
+  const tbody = $("receiptsTbody");
+  if (!tbody) return;
+  const tmp = document.createElement("tbody");
+  tmp.innerHTML = renderReceiptRows([r]);
+  const row = tmp.firstElementChild;
+  if (!row) return;
+  row.classList.add("receipt-row-new");
+  row.addEventListener("click", () => selectReceipt(row.dataset.hash));
+  tbody.insertBefore(row, tbody.firstChild);
+  setTimeout(() => row.classList.remove("receipt-row-new"), 1200);
 }
 
 // ── Router setup ──────────────────────────────────────────────────────────
@@ -780,24 +1040,26 @@ function renderOrphans() {
   });
 }
 
+// Re-skinned into sidebar sub-nav `.sub-item` rows (was `.group-item` in the
+// Task-2-fix stopgap bar) — same `groups` data and the same start/stop/delete
+// action wiring, just a different wrapper markup/target element.
 function renderGroups() {
   const list = $("groupList");
   if (!list) return;
   if (groups.length === 0) {
-    list.innerHTML = `<div style="padding:4px 10px;font-size:11px;color:var(--text-muted)">No groups yet</div>`;
+    list.innerHTML = `<div class="sub-item" style="cursor:default;color:var(--text-dim)"><span class="lbl">No groups yet</span></div>`;
     return;
   }
   list.innerHTML = groups.map(g => {
     const count = (g.projects || []).length;
     return `
-      <div class="group-item" title="${esc((g.projects||[]).join(', '))}">
-        <span class="group-name">${esc(g.name)}</span>
-        <span style="font-size:10px;color:var(--text-muted);margin-right:4px">${count}</span>
-        <div class="group-actions">
+      <div class="sub-item group-sub-item" title="${esc((g.projects||[]).join(', '))}">
+        <span class="sdot b"></span> <span class="lbl">${esc(g.name)}</span> <span class="sc">${count}</span>
+        <span class="group-actions">
           <button class="group-btn start"  data-action="start-group"  data-name="${esc(g.name)}" title="Start all">▶</button>
           <button class="group-btn stop"   data-action="stop-group"   data-name="${esc(g.name)}" title="Stop all">■</button>
           <button class="group-btn delete" data-action="delete-group" data-name="${esc(g.name)}" title="Remove group">✕</button>
-        </div>
+        </span>
       </div>`;
   }).join("");
   // Wire group action buttons via delegation (avoids inline JS string escaping issues)
@@ -1246,9 +1508,13 @@ async function closeDetail() {
     uiState.editingConfig = null;
     uiState.dirtyFields = {};
   }
-  selectedName = null;
+  selectedName        = null;
+  selectedReceiptHash = null;
+  selectedVaultKey    = null;
   document.querySelectorAll(".project-row").forEach(r => r.classList.remove("selected"));
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(r => r.classList.remove("sel"));
   $("detailPanel").classList.remove("open");
+  $("detailInner").innerHTML = `<div class="empty-state" style="padding:60px 20px"><div class="empty-state-sub">Select a row to view details</div></div>`;
 }
 
 // ── Log viewer ─────────────────────────────────────────────────────────────
@@ -1357,45 +1623,39 @@ async function renderVaultView() {
     ]);
     const summary = await summaryRes.json();
     const audit   = await auditRes.json();
+    vaultSummaryCache = summary;
+    vaultAuditCache   = audit;
 
-    const encBadge = summary.encrypted
-      ? `<span class="vault-enc-badge">🔒 Encrypted · Keychain</span>`
-      : `<span class="vault-enc-badge warn">⚠ Unencrypted &nbsp;<button class="btn btn-sm" style="font-size:11px;padding:2px 8px;vertical-align:middle" onclick="installVaultDeps()">Fix: Install deps</button></span>`;
-
-    const missingAudit = audit.filter(a => a.missing_from.length > 0);
-    const unusedAudit  = audit.filter(a => a.unused);
+    const overrideProjCount = Object.keys(summary.project_overrides || {}).length;
 
     $("vaultContent").innerHTML = `
       <div class="vault-view">
 
         <div class="vault-view-header">
-          <div>
-            <div class="vault-view-title">⚿ Vault ${encBadge}</div>
-            <div class="vault-view-meta">${summary.key_count} shared key${summary.key_count !== 1 ? "s" : ""}</div>
-          </div>
-          <button class="btn btn-ghost btn-sm" onclick="showProjectView()">← Projects</button>
+          <div class="view-title" style="margin-bottom:0"><h1>Vault</h1><span class="vsub">${summary.key_count} key${summary.key_count !== 1 ? "s" : ""} · ${summary.encrypted ? "encrypted" : "unencrypted"}</span></div>
+          <button class="btn btn-ghost btn-sm" onclick="openVaultKeyModal('shared')">+ Add Key</button>
         </div>
 
-        <!-- Audit findings -->
-        ${missingAudit.length || unusedAudit.length ? `
-        <div class="vault-section">
-          <div class="vault-section-header">
-            <div class="vault-section-title">Audit</div>
-            <button class="btn btn-ghost btn-sm" onclick="renderVaultView()">Re-audit</button>
-          </div>
-          <div>${renderAuditRows(missingAudit, unusedAudit)}</div>
-        </div>` : ""}
-
-        <!-- Shared keys -->
-        <div class="vault-section">
-          <div class="vault-section-header">
-            <div class="vault-section-title">Shared Keys</div>
-            <button class="btn btn-ghost btn-sm" onclick="openVaultKeyModal('shared')">+ Add Key</button>
-          </div>
-          <div id="sharedKeysList">${renderSharedKeyRows(summary.keys, audit)}</div>
+        <!-- Status banner: same encrypted/unencrypted detection logic as
+             before (summary.encrypted), restyled to .banner.ok/.banner.warn.
+             installVaultDeps() targets #vaultEncBanner/#vaultInstallDepsBtn. -->
+        <div class="banner ${summary.encrypted ? "ok" : "warn"}" id="vaultEncBanner">
+          <span class="bi" style="color:var(--blue)">⚿</span>
+          ${summary.encrypted ? "Vault encrypted (keyring + cryptography)" : "Vault unencrypted"}
+          <span class="bspacer"></span>
+          ${!summary.encrypted ? `<button class="btn btn-sm" id="vaultInstallDepsBtn" onclick="installVaultDeps()">Fix: Install deps</button>` : ""}
+          <span class="num">${summary.key_count} key${summary.key_count !== 1 ? "s" : ""} · ${overrideProjCount} project override${overrideProjCount !== 1 ? "s" : ""}</span>
         </div>
 
-        <!-- Per-project overrides -->
+        <!-- Unified key table: reuses vault.audit()'s existing response shape
+             for aud-ok/aud-unused/aud-missing coloring, replacing the old
+             separate Shared-Keys-list + Audit-findings-list. -->
+        <table class="tbl">
+          <thead><tr><th>Key</th><th style="width:120px">Audit</th><th>Used by</th></tr></thead>
+          <tbody id="vaultKeyTbody">${renderVaultKeyRows(audit)}</tbody>
+        </table>
+
+        <!-- Per-project overrides (existing capability, untouched) -->
         <div class="vault-section">
           <div class="vault-section-header">
             <div class="vault-section-title">Per-Project Overrides</div>
@@ -1403,7 +1663,7 @@ async function renderVaultView() {
           <div id="overridesList">${renderOverrideGroups(summary.project_overrides, audit)}</div>
         </div>
 
-        <!-- Import from .env -->
+        <!-- Import from .env (existing capability, untouched) -->
         <div class="vault-section">
           <div class="vault-section-header">
             <div class="vault-section-title">Import from .env</div>
@@ -1419,28 +1679,31 @@ async function renderVaultView() {
   }
 }
 
-function renderSharedKeyRows(keys, audit) {
-  if (!keys || keys.length === 0) {
-    return `<div class="vault-empty">No shared keys yet. Add your first key above.</div>`;
+// One row per vault.audit() entry — shared keys AND keys some project
+// declares but that don't resolve anywhere (in_shared is always false for
+// those, per vault.py's audit(); missing_from is only ever non-empty then).
+// aud-missing rows aren't real vault keys (nothing to reveal), so clicking
+// one pre-fills the add-key modal instead of opening the detail panel — see
+// the click wiring in initVaultViewEvents(), same behavior the old
+// .audit-row-missing handler had.
+function renderVaultKeyRows(audit) {
+  if (!audit || audit.length === 0) {
+    return `<tr><td colspan="3"><div class="vault-empty">No shared keys yet. Add your first key above.</div></td></tr>`;
   }
-  return keys.map(key => {
-    const a = audit.find(x => x.key === key) || {};
-    const usage = a.declared_by && a.declared_by.length
-      ? a.declared_by.join(", ")
-      : `<span style="color:var(--text-muted)">unused</span>`;
+  return audit.map(a => {
+    const isMissing = a.missing_from.length > 0;
+    const isUnused  = !isMissing && a.unused;
+    const statusCls = isMissing ? "aud-missing" : (isUnused ? "aud-unused" : "aud-ok");
+    const statusTxt = isMissing ? "✗ missing" : (isUnused ? "○ unused" : "● ok");
+    const usedBy = isMissing
+      ? `referenced by ${esc(a.missing_from.join(", "))}`
+      : (a.declared_by.length ? esc(a.declared_by.join(", ")) : "—");
     return `
-      <div class="vault-key-row" data-key="${esc(key)}">
-        <div>
-          <div class="vault-key-name">${esc(key)}</div>
-          <div class="vault-key-usage">${usage}</div>
-        </div>
-        <div class="vault-key-value" id="keyval-${esc(key)}">••••••••</div>
-        <div class="vault-row-actions">
-          <button class="vault-row-btn reveal-key-btn" data-key="${esc(key)}" title="Reveal">👁</button>
-          <button class="vault-row-btn edit-key-btn"   data-key="${esc(key)}" title="Edit">✎</button>
-          <button class="vault-row-btn delete delete-key-btn" data-key="${esc(key)}" title="Delete">✕</button>
-        </div>
-      </div>`;
+      <tr data-key="${esc(a.key)}" data-missing="${isMissing}">
+        <td class="canon">${esc(a.key)}</td>
+        <td class="${statusCls}">${statusTxt}</td>
+        <td class="num">${usedBy}</td>
+      </tr>`;
   }).join("");
 }
 
@@ -1472,25 +1735,6 @@ function renderOverrideGroups(overrides, audit) {
         ${rows}
       </div>`;
   }).join("");
-}
-
-function renderAuditRows(missing, unused) {
-  const rows = [];
-  missing.forEach(a => {
-    rows.push(`
-      <div class="audit-row audit-row-missing" data-missing-key="${esc(a.key)}" style="cursor:pointer" title="Click to add this key">
-        <div class="audit-key">${esc(a.key)}</div>
-        <div class="audit-status warn">⚠ Missing for: ${esc(a.missing_from.join(", "))}</div>
-      </div>`);
-  });
-  unused.forEach(a => {
-    rows.push(`
-      <div class="audit-row audit-row-unused">
-        <div class="audit-key">${esc(a.key)}</div>
-        <div class="audit-status unused">No project declares this key</div>
-      </div>`);
-  });
-  return rows.join("");
 }
 
 function renderImportSection() {
@@ -1539,49 +1783,22 @@ function buildLocalhostHint(value, key, proj) {
 }
 
 function initVaultViewEvents() {
-  // Reveal shared key
-  document.querySelectorAll(".reveal-key-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const key = btn.dataset.key;
-      const el  = $(`keyval-${key}`);
-      if (el.classList.contains("revealed")) {
-        el.textContent = "••••••••"; el.classList.remove("revealed");
-        el.closest(".vault-key-row").querySelector(".vault-hostname-hint")?.remove();
+  // Unified key table rows: reuses the existing missing/unused audit fields
+  // (see renderVaultKeyRows()) to decide the click behavior — a "missing" row
+  // isn't an actual vault key (nothing to reveal), so it pre-fills the
+  // add-key modal instead, matching the old .audit-row-missing click.
+  document.querySelectorAll("#vaultKeyTbody tr[data-key]").forEach(row => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.key;
+      if (row.dataset.missing === "true") {
+        openVaultKeyModal("shared", null, null);
+        setTimeout(() => {
+          const input = document.querySelector("#vaultKeyForm [name=key]");
+          if (input) { input.value = key; input.readOnly = false; }
+        }, 100);
         return;
       }
-      try {
-        const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
-        const d   = await res.json();
-        el.textContent = d.value; el.classList.add("revealed");
-        const hint = buildLocalhostHint(d.value, key, null);
-        if (hint) {
-          el.closest(".vault-key-row")
-            .querySelector(".vault-row-actions")
-            .insertAdjacentHTML("beforebegin", hint);
-        }
-      } catch (_) { toast("Could not reveal key", "error"); }
-    });
-  });
-
-  // Edit shared key
-  document.querySelectorAll(".edit-key-btn").forEach(btn => {
-    btn.addEventListener("click", () => openVaultKeyModal("shared", null, btn.dataset.key));
-  });
-
-  // Delete shared key
-  document.querySelectorAll(".delete-key-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const key = btn.dataset.key;
-      const yes = await confirmAction({
-        title: "Delete key?",
-        message: `Remove "${key}" from the vault. Projects using it will lose access.`,
-        confirmText: "Delete",
-        danger: true,
-      });
-      if (!yes) return;
-      await fetch(`/api/vault/keys/${encodeURIComponent(key)}`, { method: "DELETE" });
-      toast(`${key} deleted`, "success");
-      await renderVaultView();
+      selectVaultKey(key);
     });
   });
 
@@ -1635,18 +1852,105 @@ function initVaultViewEvents() {
       await renderVaultView();
     });
   });
+}
 
-  // Clickable audit rows — open add-key modal pre-filled
-  document.querySelectorAll(".audit-row-missing").forEach(row => {
-    row.addEventListener("click", () => {
-      const key = row.dataset.missingKey;
-      openVaultKeyModal("shared", null, null);
-      setTimeout(() => {
-        const input = document.querySelector("#vaultKeyForm [name=key]");
-        if (input) { input.value = key; input.readOnly = false; }
-      }, 100);
-    });
+// ── Vault detail panel (key-row selection) ───────────────────────────────────
+
+function selectVaultKey(key) {
+  selectedVaultKey    = key;
+  selectedReceiptHash = null;
+  selectedName        = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#vaultKeyTbody tr[data-key="${CSS.escape(key)}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderVaultDetail(key);
+  wireVaultDetailEvents(key);
+  $("detailPanel").classList.add("open");
+}
+
+function renderVaultDetail(key) {
+  const a = vaultAuditCache.find(x => x.key === key) || { declared_by: [], overridden_by: [], unused: true };
+  const usedByRows = a.declared_by.length
+    ? a.declared_by.map(proj => {
+        const isOverride = a.overridden_by.includes(proj);
+        return `<div class="d-row"><span class="k">${esc(proj)}</span><span class="v"${isOverride ? ' style="color:var(--amber)"' : ""}>${isOverride ? "override" : "shared"}</span></div>`;
+      }).join("")
+    : `<div class="d-row"><span class="k">—</span><span class="v">unused</span></div>`;
+
+  // vault.summary() only exposes an `encrypted` boolean, no store-name field
+  // — this shows exactly that fact rather than naming a specific backend
+  // (e.g. "keyring") the API response doesn't actually confirm.
+  const storeLabel = vaultSummaryCache && vaultSummaryCache.encrypted ? "encrypted" : "unencrypted";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(key)}</div>
+    <div class="d-meta">${a.unused ? "○ unused" : "● ok"} · shared</div>
+    <div class="d-h">Value</div>
+    <div class="d-canon" id="vaultDetailValue" data-revealed="false">••••••••••••••••••••••••</div>
+    <div class="d-actions">
+      <button class="reveal-btn" id="vaultDetailReveal">Reveal</button>
+      <button class="reveal-btn" id="vaultDetailCopy">Copy</button>
+      <button class="reveal-btn" id="vaultDetailEdit">Edit</button>
+      <button class="reveal-btn" id="vaultDetailDelete">Delete</button>
+    </div>
+    <div class="d-h">Used by</div>
+    ${usedByRows}
+    <div class="d-h">Backend</div>
+    <div class="d-row"><span class="k">store</span><span class="v">${esc(storeLabel)}</span></div>`;
+}
+
+// Attached via addEventListener (not inline onclick) so key names containing
+// quotes/backslashes never need string-escaping into an HTML attribute.
+function wireVaultDetailEvents(key) {
+  $("vaultDetailReveal")?.addEventListener("click", () => toggleVaultDetailReveal(key));
+  $("vaultDetailCopy")?.addEventListener("click", copyVaultDetailValue);
+  $("vaultDetailEdit")?.addEventListener("click", () => openVaultKeyModal("shared", null, key));
+  $("vaultDetailDelete")?.addEventListener("click", () => deleteVaultKey(key));
+}
+
+// Reuses the existing GET /api/vault/keys/<key> endpoint — same fetch the old
+// inline reveal-key-btn used, no new backend call.
+async function toggleVaultDetailReveal(key) {
+  const el  = $("vaultDetailValue");
+  const btn = $("vaultDetailReveal");
+  if (!el || !btn) return;
+  if (el.dataset.revealed === "true") {
+    el.textContent = "••••••••••••••••••••••••";
+    el.dataset.revealed = "false";
+    btn.textContent = "Reveal";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/vault/keys/${encodeURIComponent(key)}`);
+    const d   = await res.json();
+    el.textContent = d.value;
+    el.dataset.revealed = "true";
+    btn.textContent = "Hide";
+  } catch (_) { toast("Could not reveal key", "error"); }
+}
+
+function copyVaultDetailValue() {
+  const el = $("vaultDetailValue");
+  if (!el || el.dataset.revealed !== "true") { toast("Reveal the value first", "info"); return; }
+  navigator.clipboard.writeText(el.textContent)
+    .then(() => toast("Copied", "success"))
+    .catch(() => toast("Could not copy", "error"));
+}
+
+// Same confirm copy + endpoint the old inline delete-key-btn used, relocated
+// here since that markup no longer exists (folded into the unified table).
+async function deleteVaultKey(key) {
+  const yes = await confirmAction({
+    title: "Delete key?",
+    message: `Remove "${key}" from the vault. Projects using it will lose access.`,
+    confirmText: "Delete",
+    danger: true,
   });
+  if (!yes) return;
+  await fetch(`/api/vault/keys/${encodeURIComponent(key)}`, { method: "DELETE" });
+  toast(`${key} deleted`, "success");
+  closeDetail();
+  await renderVaultView();
 }
 
 async function runImport() {
@@ -2044,20 +2348,6 @@ function _sortProjects(list) {
   });
 }
 
-// ── Filters ────────────────────────────────────────────────────────────────
-
-function initFilters() {
-  document.querySelectorAll(".filter-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      activeFilter = btn.dataset.filter;
-      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      if (activeView !== "projects") showProjectView();
-      else render();
-    });
-  });
-}
-
 // ── Project modal ──────────────────────────────────────────────────────────
 
 function initProjectModal() {
@@ -2115,7 +2405,10 @@ function closeProjectModal() {
 // ── Group modal ────────────────────────────────────────────────────────────
 
 function initGroupModal() {
-  $("addGroupBtn").addEventListener("click",     openGroupModal);
+  // #addGroupBtn now lives inside the dynamically-rendered Projects sub-nav
+  // (renderProjectsSubnav()), not static boot-time markup — it wires
+  // openGroupModal() via inline onclick instead, since it doesn't exist yet
+  // when initGroupModal() runs (would throw on a null element otherwise).
   $("groupModalClose").addEventListener("click", closeGroupModal);
   $("groupCancelBtn").addEventListener("click",  closeGroupModal);
   $("groupModalOverlay").addEventListener("click", e => { if (e.target===$("groupModalOverlay")) closeGroupModal(); });
