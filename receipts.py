@@ -174,6 +174,14 @@ def emit(
                 "type": actor_type,
                 "session_id": session_id,
                 "agent_hint": agent_hint,
+                # F-02 (acute): agent_hint is a self-declared string (from
+                # MCP_AGENT_HINT), never an authenticated identity. This is
+                # unconditional — not derived from agent_hint's value — so
+                # no receipt or downstream reader (including actor-scoped
+                # Agreement permit/forbid rules) can mistake it for a
+                # verified one until real per-agent credentials exist
+                # (identity-plane arc).
+                "identity_verified": False,
             },
             "action": action,
             "target": target,

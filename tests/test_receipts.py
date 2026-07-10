@@ -511,6 +511,31 @@ class TestChainAnchor:
         assert receipts_mod.recover_chain_head() == h1
 
 
+class TestIdentityLabeling:
+    """F-02 acute: agent_hint is a self-declared string (MCP_AGENT_HINT),
+    never an authenticated identity. Every receipt must say so explicitly
+    rather than let a reader assume it's verified."""
+
+    def test_receipt_marks_identity_unverified(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="claude-code",
+        )
+        assert receipt["actor"]["identity_verified"] is False
+        # The field itself is unconditional — even a plausible-looking
+        # agent_hint must not be mistaken for an authenticated identity.
+        assert receipt["actor"]["agent_hint"] == "claude-code"
+
+
 class TestReceiptLoading:
     """Test the load() function from the extracted module."""
 

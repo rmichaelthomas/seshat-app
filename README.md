@@ -139,7 +139,7 @@ starting "2026-07-01" until "2026-07-31" permit actor is "contractor-agent" and 
 
 → Your agent can help you write Agreements too — [liminate-mcp](https://github.com/rmichaelthomas/liminate-mcp) lets agents validate, explain, draft, and test Agreements locally. `pip install liminate-mcp`
 
-**Facts available:** `actor` (from `MCP_AGENT_HINT`), `action` (the MCP tool name), `scope` (project or group name, or `"none"`).
+**Facts available:** `actor` (from `MCP_AGENT_HINT` — self-declared by the calling process, not authenticated; treat actor-scoped rules as advisory, not a security boundary), `action` (the MCP tool name), `scope` (project or group name, or `"none"`).
 
 **Tools governed:** `start_project`, `stop_project`, `start_group`, `stop_group`, `register_project`, `stop_orphan`, `set_secret`, `set_project_override`.
 
@@ -159,7 +159,7 @@ The [Invariant](https://github.com/rmichaelthomas/liminate-invariant) harness ru
 
 ## Receipts
 
-Every agent action produces a SHA-256 hash-chained receipt in `~/.seshat/receipts/`:
+Every agent action produces a hash-chained receipt in `~/.seshat/receipts/`. Each receipt's hash is a keyed HMAC-SHA256 (a per-install key, Keychain-backed) rather than a plain hash anyone could recompute, and a separate `.chain_head` anchor records the head + count so a deleted tail is detectable, not just an edited receipt:
 
 ```json
 {
@@ -168,17 +168,21 @@ Every agent action produces a SHA-256 hash-chained receipt in `~/.seshat/receipt
   "actor": {
     "type": "mcp_session",
     "session_id": "mcp_session_a1b2c3d4e5f6",
-    "agent_hint": "claude-code"
+    "agent_hint": "claude-code",
+    "identity_verified": false
   },
   "action": "start_project",
   "target": { "project": "my-api", "port": 3000 },
   "result": { "status": "success", "pid": 12345 },
   "previous_hash": "abc123...",
+  "receipt_version": 2,
   "receipt_hash": "def456..."
 }
 ```
 
-Tamper with any receipt and `seshat receipts verify` catches it.
+`agent_hint` is self-declared (whatever the calling process sets `MCP_AGENT_HINT` to) — `identity_verified` is always `false` today, so nothing downstream mistakes it for an authenticated identity.
+
+Tamper with any receipt, or delete one off the end of the chain, and `seshat receipts verify` catches it.
 
 ```bash
 seshat receipts                    # list recent receipts
