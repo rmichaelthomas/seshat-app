@@ -79,3 +79,107 @@ def test_enforced_tool_still_calls_the_body_when_permitted(monkeypatch):
     result = json.loads(mcp_server.stop_orphan(port=4242))
     assert result["status"] == "failure"
     assert "No process found" in result["error"]
+
+
+class TestIdentityTokenWiring:
+    """Identity-plane Stage 1: SESHAT_IDENTITY_TOKEN, when present and
+    valid, becomes the actor (overriding MCP_AGENT_HINT) and every emitted
+    receipt for that call carries identity_verified: true."""
+
+    def test_agreement_actor_falls_back_without_a_token(self, monkeypatch):
+        monkeypatch.delenv("SESHAT_IDENTITY_TOKEN", raising=False)
+        monkeypatch.setenv("MCP_AGENT_HINT", "claude-code")
+        assert mcp_server._agreement_actor() == "claude-code"
+
+    def test_agreement_actor_uses_verified_identifier_with_a_valid_token(self, monkeypatch):
+        import identity
+        token = identity.mint("agent-x")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
+        monkeypatch.setenv("MCP_AGENT_HINT", "claude-code")
+        assert mcp_server._agreement_actor() == "agent-x"
+
+    def test_agreement_actor_falls_back_on_an_invalid_token(self, monkeypatch):
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", "not-a-real-token")
+        monkeypatch.setenv("MCP_AGENT_HINT", "claude-code")
+        assert mcp_server._agreement_actor() == "claude-code"
+
+    def test_enforced_tool_permits_with_a_valid_token_and_matching_agreement(self, monkeypatch):
+        import identity
+        token = identity.mint("agent-x")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-x" and action is "stop_orphan"',
+        )
+        monkeypatch.setattr(mcp_server.scanner, "scan", lambda: {})
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        import json
+        result = json.loads(mcp_server.stop_orphan(port=4242))
+        assert result["status"] == "failure"
+        assert "No process found" in result["error"]
+
+    def test_enforced_tool_denies_identity_invalid_with_a_forged_token(self, monkeypatch):
+        import identity
+        token = identity.mint("agent-x")
+        header_b64, payload_b64, sig_b64 = token.split(".")
+        forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:])
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", forged)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-x" and action is "stop_orphan"',
+        )
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        result = mcp_server.stop_orphan(port=4242)
+        assert "DENIED" in result
+        assert "Identity token failed verification" in result
+
+    def test_emit_marks_identity_verified_true_when_token_present(self, monkeypatch, tmp_path):
+        import identity
+        token = identity.mint("agent-x")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
+        monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
+        monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(mcp_server.receipts, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-x" and action is "stop_orphan"',
+        )
+        monkeypatch.setattr(mcp_server.scanner, "scan", lambda: {})
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        mcp_server.stop_orphan(port=4242)
+        import json
+        files = sorted(tmp_path.glob("*.json"))
+        assert len(files) == 1
+        receipt = json.loads(files[0].read_text())
+        assert receipt["actor"]["identity_verified"] is True
+        assert receipt["actor"]["agent_hint"] == "agent-x"
+
+    def test_emit_marks_identity_verified_false_without_a_token(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SESHAT_IDENTITY_TOKEN", raising=False)
+        monkeypatch.setenv("MCP_AGENT_HINT", "claude-code")
+        monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
+        monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(mcp_server.receipts, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "claude-code" and action is "stop_orphan"',
+        )
+        monkeypatch.setattr(mcp_server.scanner, "scan", lambda: {})
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        mcp_server.stop_orphan(port=4242)
+        import json
+        files = sorted(tmp_path.glob("*.json"))
+        receipt = json.loads(files[0].read_text())
+        assert receipt["actor"]["identity_verified"] is False

@@ -34,3 +34,15 @@ def _no_invariant_by_default(monkeypatch):
     _no_revocations_by_default above. Tests that need specific Invariant
     contract content override load_invariant explicitly in the test body."""
     monkeypatch.setattr(agreements, "load_invariant", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _test_identity_root_key(monkeypatch):
+    """Isolate every test from the real macOS Keychain for the identity
+    root key, mirroring _test_mac_key above. Without this, mint()/verify()
+    calls in the test suite would read/write the developer's real Keychain
+    entry."""
+    import identity as identity_mod
+    monkeypatch.setattr(
+        identity_mod, "_root_key", lambda: b"test-only-identity-root-key-not-for-real-use"
+    )

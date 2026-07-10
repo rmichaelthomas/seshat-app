@@ -148,6 +148,7 @@ def emit(
     revocation_state: dict | None = None,
     agreement_hash: str | None = None,
     invariant: dict | None = None,
+    identity_verified: bool = False,
 ) -> dict:
     """Write a hash-chained receipt to disk with file locking. Returns the
     written receipt dict (including its receipt_hash) so callers that need
@@ -174,14 +175,16 @@ def emit(
                 "type": actor_type,
                 "session_id": session_id,
                 "agent_hint": agent_hint,
-                # F-02 (acute): agent_hint is a self-declared string (from
-                # MCP_AGENT_HINT), never an authenticated identity. This is
-                # unconditional — not derived from agent_hint's value — so
-                # no receipt or downstream reader (including actor-scoped
-                # Agreement permit/forbid rules) can mistake it for a
-                # verified one until real per-agent credentials exist
-                # (identity-plane arc).
-                "identity_verified": False,
+                # F-02 (acute → structural): true only when a verified HMAC
+                # capability token backed this action (threaded from the
+                # caller via check_action's Decision, never hardcoded here
+                # — see identity.py). False remains the honest default for
+                # every token-absent call, exactly as before the identity
+                # plane existed.
+                "identity_verified": identity_verified,
+                # Stage 2 (delegation) of the identity-plane arc populates
+                # this; Stage 1 never does.
+                "delegation_path": [],
             },
             "action": action,
             "target": target,

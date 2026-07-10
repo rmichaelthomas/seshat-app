@@ -38,6 +38,7 @@ import deps as deps_module
 import agreements
 import receipts as receipts_module
 import invariant_check
+import identity
 
 # ── Module instances ────────────────────────────────────────────────────────
 
@@ -1484,6 +1485,101 @@ def entrench_remove(verb, subject):
 
 
 cli.add_command(entrench_cmd, name="entrench")
+
+
+# ── Identity command (identity-plane Stage 1) ───────────────────────────────
+#
+# Human-only surface — mint requires the root key and issues authority, so
+# it must never be an MCP tool (§9.4). Minted-identity metadata lives under
+# ~/.seshat/identity/, never in the four enforcement files (§9.1).
+
+def _identity_meta_path(identifier: str) -> Path:
+    return identity.IDENTITY_DIR / f"{identifier}.json"
+
+
+@cli.group(name="identity")
+def identity_cmd():
+    """Mint and inspect agent identity tokens (HMAC capability tokens)."""
+
+
+@identity_cmd.command(name="mint")
+@click.argument("agent")
+@click.option("--caveat", "caveats", multiple=True, help="A Liminate caveat line (repeatable).")
+def identity_mint(agent, caveats):
+    """Mint a new identity token for AGENT and print it.
+
+    The printed token is what SESHAT_IDENTITY_TOKEN should carry for that
+    agent's MCP session. This command never writes to agreement.limn,
+    revocations.limn, invariant.limn, or entrenched.limn.
+
+    There is deliberately no blanket "--until" expiry flag here: caveats
+    may only forbid (see identity.is_legal_caveat's docstring for why a
+    permissive caveat is unsafe), and forbidding a specific (actor,
+    action, scope) triple after a date is not the same as expiring the
+    whole token — there is no way to say "forbid every action" without a
+    wildcard/negation the locked caveat grammar doesn't have. Token
+    lifecycle (short-lived tokens, revocation) is Stage 3's job, not
+    approximated here.
+    """
+    caveat_list = list(caveats)
+
+    try:
+        token = identity.mint(agent, caveats=caveat_list)
+    except identity.IllegalCaveatError as e:
+        console.print(f"[red]Refused to mint — illegal caveat:[/red] {e}")
+        sys.exit(1)
+
+    identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "identifier": agent,
+        "caveats": caveat_list,
+        "minted_at": datetime.now(timezone.utc).isoformat(),
+        "token": token,
+    }
+    _identity_meta_path(agent).write_text(json.dumps(meta, indent=2))
+
+    console.print(f"[green]✓[/green] Minted identity token for [bold]{agent}[/bold]:\n")
+    console.print(token)
+    console.print(f"\n  [dim]Set SESHAT_IDENTITY_TOKEN to this value for {agent}'s MCP session.[/dim]")
+
+
+@identity_cmd.command(name="list")
+def identity_list():
+    """List minted identities."""
+    identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(identity.IDENTITY_DIR.glob("*.json"))
+    if not files:
+        console.print("[dim]No identities minted yet. Run: seshat identity mint <agent>[/dim]")
+        return
+    for f in files:
+        meta = json.loads(f.read_text())
+        console.print(
+            f"  [bold]{meta['identifier']}[/bold]  "
+            f"[dim]{len(meta.get('caveats', []))} caveat(s), minted {meta.get('minted_at', '?')}[/dim]"
+        )
+
+
+@identity_cmd.command(name="show")
+@click.argument("agent")
+def identity_show(agent):
+    """Show a minted identity's caveats and token."""
+    path = _identity_meta_path(agent)
+    if not path.exists():
+        console.print(f"[red]No identity minted for '{agent}'.[/red]")
+        sys.exit(1)
+    meta = json.loads(path.read_text())
+    console.print(f"[bold]{meta['identifier']}[/bold]")
+    console.print(f"  Minted: [dim]{meta.get('minted_at', '?')}[/dim]")
+    console.print("  Caveats:")
+    if meta.get("caveats"):
+        for c in meta["caveats"]:
+            console.print(f"    [dim]{c}[/dim]")
+    else:
+        console.print("    [dim](none)[/dim]")
+    console.print(f"  Token:  [dim]{meta['token']}[/dim]")
+
+
+cli.add_command(identity_cmd, name="identity")
 
 
 # ── Serve and MCP commands ──────────────────────────────────────────────────
