@@ -18,6 +18,7 @@ from pathlib import Path
 import liminate
 
 import amendment_diff
+import identity
 
 AGREEMENT_PATH = Path.home() / ".seshat" / "agreement.limn"
 REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
@@ -250,6 +251,7 @@ def check_action(
     action: str,
     scope: str | None = None,
     agreement_text: str | None = None,
+    token: str | None = None,
 ) -> Decision:
     """Evaluate whether `actor` may perform `action` (optionally scoped).
 
@@ -257,13 +259,39 @@ def check_action(
     has no project/group target — so an Agreement conditioning on scope
     never hits an unknown-name error on scope-less actions.
 
-    F-02 (acute): `actor` is a self-declared string (MCP_AGENT_HINT), not
-    an authenticated identity — nothing here verifies who is actually
-    calling. Actor-scoped permit/forbid rules are therefore advisory, not
-    a security boundary, until real per-agent credentials exist
-    (identity-plane arc). Every receipt records this explicitly via
-    actor.identity_verified: false.
+    Identity-plane Stage 1: when `token` is supplied, it is verified here
+    (identity.verify) BEFORE anything else — an invalid token (forged,
+    tampered, or carrying an illegal caveat) denies immediately with
+    mode="identity-invalid", regardless of whether an Agreement even
+    exists. On success, `actor` is OVERRIDDEN by the token's verified
+    identifier (the passed-in string is now untrusted and ignored), and
+    the token's caveats are spliced into the same Liminate program the
+    Agreement evaluates against — deny-by-default and forbid-wins,
+    identical to Agreement semantics, because it is the same evaluator.
+
+    F-02 (acute): when `token` is None, behavior is byte-for-byte
+    unchanged from before the identity plane existed — `actor` is a
+    self-declared string (MCP_AGENT_HINT), not an authenticated identity.
+    Actor-scoped permit/forbid rules remain advisory, not a security
+    boundary. Every receipt still records this explicitly via
+    actor.identity_verified.
     """
+    caveat_text: str | None = None
+    if token is not None:
+        verified = identity.verify(token)
+        if verified is None:
+            return Decision(
+                allowed=False,
+                mode="identity-invalid",
+                rule=None,
+                reason=(
+                    "Identity token failed verification — forged, tampered, "
+                    "or carrying an illegal caveat. Denying by default."
+                ),
+            )
+        actor = verified.identifier
+        caveat_text = "\n".join(verified.caveats) if verified.caveats else None
+
     if agreement_text is None:
         agreement_text = load_agreement()
     if agreement_text is None:
@@ -315,6 +343,7 @@ def check_action(
         f'remember a string called action with "{action}"\n'
         f'remember a string called scope with "{scope_value}"\n'
         "\n"
+        + (f"{caveat_text}\n" if caveat_text else "")
         + (f"{revocations_text}\n" if revocations_text else "")
         + f"{agreement_text}"
     )
