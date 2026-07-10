@@ -17,6 +17,7 @@ import receipts as receipts_module
 
 from ..colors import COLORS
 from ..data import denial_count_for_rule, summarize_agreement_rules, sync_freshness
+from ..graph import RevocationNode
 from ..palette import PaletteCommand
 from ..widgets import EmptyState
 from .agreements import _condition_text
@@ -38,6 +39,7 @@ class RevocationsDomainMixin:
     def on_mount_revocations(self) -> None:
         self._revocations_cache: dict[str, dict] = {}
         self._revocations_built = False
+        self._revocations_detailed_key: str | None = None
 
     def get_revocations_palette_commands(self) -> list[PaletteCommand]:
         return [
@@ -124,10 +126,19 @@ class RevocationsDomainMixin:
         row_id = str(event.row_key.value)
         rule = self._revocations_cache.get(row_id)
         detail = self.query_one("#revocations-detail", Vertical)
-        detail.remove_children()
         if not rule or "error" in rule:
+            detail.remove_children()
             detail.mount(Static("[#9A8B6E]select a revocation[/#9A8B6E]"))
+            self._revocations_detailed_key = None
             return
+
+        if row_id == self._revocations_detailed_key:
+            node = RevocationNode(rule["canonical"], rule.get("verb"), rule.get("window", "unbounded"))
+            self.push_drill(node)
+            return
+        self._revocations_detailed_key = row_id
+
+        detail.remove_children()
         state = getattr(self, "_revocations_state", None) or {}
         lines = [
             f"[b]Revocation {row_id}[/b]",
@@ -144,6 +155,7 @@ class RevocationsDomainMixin:
             f"denials   [#DD6E5A]{rule.get('_denials', 0)}[/#DD6E5A]",
         ]
         detail.mount(Static("\n".join(lines)))
+        detail.mount(Static("[#E8AE52 b]↵[/#E8AE52 b] trace authority", classes="cta-block"))
 
     def action_revocations_sync_info(self) -> None:
         if self._current_domain() != "revocations":

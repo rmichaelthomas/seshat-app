@@ -16,6 +16,7 @@ import receipts as receipts_module
 
 from ..colors import COLORS
 from ..data import last_invariant_block
+from ..graph import ClaimNode
 from ..palette import PaletteCommand
 from ..widgets import EmptyState
 
@@ -36,6 +37,7 @@ class InvariantDomainMixin:
     def on_mount_invariant(self) -> None:
         self._invariant_claims_cache: dict[str, dict] = {}
         self._invariant_state: str | None = None
+        self._invariant_detailed_key: str | None = None
 
     def get_invariant_palette_commands(self) -> list[PaletteCommand]:
         return [
@@ -125,19 +127,28 @@ class InvariantDomainMixin:
         key = str(event.row_key.value)
         claim = self._invariant_claims_cache.get(key)
         detail = self.query_one("#invariant-detail", Vertical)
-        detail.remove_children()
         if not claim:
+            detail.remove_children()
             detail.mount(Static("[#9A8B6E]select a claim[/#9A8B6E]"))
+            self._invariant_detailed_key = None
             return
+
+        receipt = getattr(self, "_invariant_source_receipt", None)
+        if key == self._invariant_detailed_key:
+            if receipt:
+                self.push_drill(ClaimNode(claim, receipt))
+            return
+        self._invariant_detailed_key = key
+
         status = claim.get("status", "?")
         style = _STATUS_STYLE.get(status, COLORS["text_3"])
+        detail.remove_children()
         lines = [
             f"[b]{claim.get('name', '')}[/b]",
             f"[{style}]{_STATUS_GLYPH.get(status, '○')} {status}[/{style}]",
         ]
         if claim.get("escalation_reason"):
             lines += ["", "[#9A8B6E b]ESCALATION[/#9A8B6E b]", claim["escalation_reason"]]
-        receipt = getattr(self, "_invariant_source_receipt", None)
         if receipt:
             env = receipt.get("environment_after", {})
             lines += ["", "[#9A8B6E b]SNAPSHOT (FROM RECEIPT)[/#9A8B6E b]",
@@ -146,6 +157,7 @@ class InvariantDomainMixin:
                       f"hash    [#63C6BE]{receipt.get('receipt_hash', '')[:16]}…[/#63C6BE]",
                       f"cycle   {claim.get('cycles', '?')} of {receipt.get('invariant', {}).get('total_cycles', '?')}"]
         detail.mount(Static("\n".join(lines)))
+        detail.mount(Static("[#E8AE52 b]↵[/#E8AE52 b] trace to receipt", classes="cta-block"))
 
     def action_invariant_edit(self) -> None:
         if self._current_domain() != "invariant":

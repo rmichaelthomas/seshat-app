@@ -22,6 +22,7 @@ import receipts as receipts_module
 from vault import Vault
 
 from ..colors import COLORS
+from ..graph import ReceiptNode
 from ..palette import PaletteCommand
 from ..widgets import EmptyState
 
@@ -75,6 +76,7 @@ class ReceiptsDomainMixin:
         self._receipts_cache: dict[str, dict] = {}
         self._receipts_follow_timer = None
         self._receipts_built = False
+        self._receipts_detailed_key: str | None = None
 
     def get_receipts_palette_commands(self) -> list[PaletteCommand]:
         return [
@@ -207,12 +209,17 @@ class ReceiptsDomainMixin:
             return
         key = event.item.id[len("rk-"):]
         receipt = self._receipts_cache.get(key)
-        if receipt:
-            self.notify(
-                f"{receipt.get('action')} · {json.dumps(receipt.get('target', {}))}",
-                title=f"Receipt {key}",
-                timeout=6,
-            )
+        if not receipt:
+            return
+        if key == self._receipts_detailed_key:
+            self.push_drill(ReceiptNode(receipt))
+            return
+        self._receipts_detailed_key = key
+        self.notify(
+            f"{receipt.get('action')} · {json.dumps(receipt.get('target', {}))}",
+            title=f"Receipt {key}",
+            timeout=6,
+        )
 
     # ── Actions ──────────────────────────────────────────────────────────
 

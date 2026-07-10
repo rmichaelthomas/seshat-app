@@ -160,3 +160,43 @@ def test_push_drill_builds_graph_lazily_and_pushes_screen():
             assert len(app.screen_stack) == 1
 
     asyncio.run(run())
+
+
+def test_receipts_second_enter_on_same_row_opens_drill(monkeypatch):
+    from seshat_tui.screens import DrillScreen
+    import receipts as receipts_module
+
+    fake_receipt = {
+        "receipt_hash": "d" * 40, "previous_hash": None,
+        "timestamp": "2026-07-10T12:00:00+00:00",
+        "actor": {"session_id": "tui_x", "agent_hint": "tui"},
+        "action": "stop_orphan", "target": {"port": 1111},
+        "result": {"status": "denied", "mode": "forbidden", "rule": "forbid action is stop_orphan", "reason": "no"},
+        "environment_after": {"listening_ports": [1111]},
+    }
+    monkeypatch.setattr(receipts_module, "load", lambda **kwargs: [fake_receipt])
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+            app.action_jump_domain("receipts")
+            await pilot.pause()
+            app.refresh_receipts()
+            await pilot.pause(0.2)
+
+            key = fake_receipt["receipt_hash"][:16]
+            from textual.widgets import ListView
+            list_view = app.query_one("#receipts-chain", ListView)
+            list_view.focus()
+            list_view.index = 0
+            await pilot.pause()
+            await pilot.press("enter")  # first: notify
+            await pilot.pause()
+            assert app._receipts_detailed_key == key
+            await pilot.press("enter")  # second: drill
+            await pilot.pause()
+            assert isinstance(app.screen_stack[-1], DrillScreen)
+
+    asyncio.run(run())
