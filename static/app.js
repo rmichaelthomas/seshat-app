@@ -894,6 +894,10 @@ function render() {
 }
 
 function renderCounts() {
+  // #count-* elements only exist in the DOM while the Projects sub-nav is
+  // rendered (see renderProjectsSubnav()); no-op on other domains, same as
+  // renderGroups()'s `if (!list) return;` guard just above.
+  if (!$("count-all")) return;
   const running  = projects.filter(p => p.status === "running").length;
   const stopped  = projects.filter(p => p.status === "stopped").length;
   const conflict = projects.filter(p => p.status === "conflict").length;
