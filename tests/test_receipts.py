@@ -536,6 +536,61 @@ class TestIdentityLabeling:
         assert receipt["actor"]["agent_hint"] == "claude-code"
 
 
+class TestIdentityVerifiedThreading:
+    """Identity-plane Stage 1: identity_verified is threaded from the
+    caller, never hardcoded true or false (§10 failure mode 7)."""
+
+    def test_identity_verified_defaults_false(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        assert receipt["actor"]["identity_verified"] is False
+
+    def test_identity_verified_true_when_supplied(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="agent-x",
+            identity_verified=True,
+        )
+        assert receipt["actor"]["identity_verified"] is True
+        assert receipt["actor"]["agent_hint"] == "agent-x"
+
+    def test_delegation_path_present_and_empty_in_stage_1(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        assert receipt["actor"]["delegation_path"] == []
+
+
 class TestReceiptLoading:
     """Test the load() function from the extracted module."""
 
