@@ -67,6 +67,8 @@ html, body {
 }
 .header-left  { display: flex; align-items: center; gap: 12px; }
 .header-right { display: flex; align-items: center; gap: 8px; }
+.header-projects-tools { display: flex; align-items: center; gap: 8px; }
+.header-action:empty { display: none; }
 
 .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 .logo-glyph { color: var(--blue); }
@@ -507,6 +509,8 @@ html, body {
 .btn-ghost         { background: transparent; color: var(--text-dim); border-color: var(--border); }
 .btn-ghost:hover   { background: var(--surface-2); color: var(--text); }
 .btn-sm            { padding: 5px 10px; font-size: 12px; }
+.btn:disabled      { opacity: 0.4; cursor: not-allowed; }
+.btn:disabled:hover { background: transparent; }
 
 .icon-btn {
   display: flex; align-items: center; justify-content: center;

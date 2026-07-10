@@ -17,9 +17,18 @@
       <span class="subtitle">Local Registry</span>
     </div>
     <div class="header-right">
-      <button class="btn btn-ghost" onclick="openPortsModal()" title="All listening ports">⚡ Ports</button>
-      <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
-      <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
+      <!-- Projects-only utilities: kept visible only while Projects is active
+           (see showDomain() in app.js) so the header becomes genuinely
+           domain-contextual rather than always showing everything. -->
+      <div class="header-projects-tools" id="headerProjectsTools">
+        <button class="btn btn-ghost" onclick="openPortsModal()" title="All listening ports">⚡ Ports</button>
+        <button class="btn btn-ghost" onclick="openDiscover()" title="Discover local projects">⌖ Discover</button>
+        <button class="btn btn-ghost" onclick="openGitHubImport()" title="Import from GitHub">⇩ GitHub</button>
+      </div>
+      <!-- Populated per-domain by renderHeaderAction() (static/app.js) for
+           every domain other than Projects: a single contextual action
+           button, or a copyable .cmd-hint when no real endpoint exists. -->
+      <div class="header-action" id="headerAction"></div>
       <button class="btn btn-primary" id="addProjectBtn">+ Register Project</button>
     </div>
   </header>
@@ -196,7 +205,7 @@
     <aside class="detail-panel" id="detailPanel">
       <div class="detail-inner" id="detailInner">
         <div class="empty-state" style="padding:60px 20px">
-          <div class="empty-state-sub">Select a row to view details</div>
+          <div class="empty-state-sub">Select a project…</div>
         </div>
       </div>
     </aside>

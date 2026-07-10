@@ -178,6 +178,61 @@ const DOMAIN_SUBNAV_RENDERERS = {
   revocations: renderRevocationsSubnav,
 };
 
+// ── Domain-contextual header primary action ─────────────────────────────────
+//
+// Each domain shows exactly one contextual action (or command hint) on the
+// header's right side, replacing the old "always show everything" pattern.
+// Projects is intentionally NOT in this table: it keeps its own static
+// Ports/Discover/GitHub/+Register Project controls (toggled directly in
+// showDomain() via #headerProjectsTools/#addProjectBtn) since it already has
+// more than one control and Register Project's existing handler must stay
+// untouched. Every other domain gets one entry here, looked up by id — same
+// lookup-table shape as DOMAIN_SUBNAV_RENDERERS above rather than a growing
+// if/else chain.
+const HEADER_ACTION_RENDERERS = {
+  agreements:  () => _openInEditorHeaderAction("agreement.limn", agreementCache?.exists, "~/.seshat/agreement.limn"),
+  invariant:   () => _openInEditorHeaderAction("invariant.limn", invariantCache?.exists, "~/.seshat/invariant.limn"),
+  receipts:    () => _cmdHintHeaderAction("seshat receipts sync"),
+  revocations: () => _cmdHintHeaderAction("seshat revocations sync"),
+  vault:       () => `<button class="btn btn-primary" onclick="openVaultKeyModal('shared')">+ Add Key</button>`,
+};
+
+function renderHeaderAction(id) {
+  const el = $("headerAction");
+  if (!el) return;
+  const fn = HEADER_ACTION_RENDERERS[id];
+  el.innerHTML = fn ? fn() : "";
+}
+
+// "Open in editor" — shared by Agreements/Invariant. Both call the existing
+// apiOpen() helper (POST /api/open, mode "editor"); no second implementation.
+// `exists` is read from the domain's own last-fetch cache (agreementCache /
+// invariantCache), never re-fetched just for this button. Disabled (not
+// hidden) with an explanatory title when there's no file to open, so the
+// header doesn't go silently blank.
+function _openInEditorHeaderAction(filename, exists, path) {
+  if (!exists) {
+    return `<button class="btn btn-ghost" disabled title="No ${esc(filename)} on this machine">Open in editor</button>`;
+  }
+  return `<button class="btn btn-primary" onclick="apiOpen('${path}', 'editor')" title="Open ${esc(filename)} in your editor">Open in editor</button>`;
+}
+
+// Copyable CLI command hint for domains with no real sync endpoint (Receipts/
+// Revocations sync is CLI-only) — per the build plan, never fabricate a
+// button wired to a route that doesn't exist. Reuses the .cmd-hint/.p/.copy
+// classes Task 2's CSS already styled.
+function _cmdHintHeaderAction(cmd) {
+  return `<div class="cmd-hint"><span class="p">$</span> ${esc(cmd)}<span class="copy" onclick="copyCmdHint('${esc(cmd)}')" title="Copy command">⧉</span></div>`;
+}
+
+async function copyCmdHint(cmd) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return; // Clipboard API unavailable (e.g. test environment) — silent no-op
+    await navigator.clipboard.writeText(cmd);
+    toast("Command copied", "success");
+  } catch (_) { /* clipboard write can reject (permissions, insecure context) — non-fatal */ }
+}
+
 function renderSidebar() {
   // Organize is shown nested inside the Projects domain-view, so the
   // Projects row stays highlighted while Organize is active.
@@ -315,13 +370,15 @@ function _activateDomainSection(id) {
 // the sidebar in sync, and triggers that domain's render/load.
 async function showDomain(id) {
   if (id === activeView) return; // re-clicking the active nav-item is a no-op
-  if (await closeDetail() === false) return;
+  if (await closeDetail(id) === false) return;
   if (activeView === "receipts" && id !== "receipts") stopReceiptsFollow();
   _activateDomainSection(id);
   activeView = id;
   renderSidebar();
   $("addProjectBtn").style.display = (id === "projects") ? "" : "none";
   $("searchSortBar").style.display = (id === "projects") ? "" : "none";
+  $("headerProjectsTools").style.display = (id === "projects") ? "" : "none";
+  renderHeaderAction(id);
   if (id === "projects") {
     $("organizeView").style.display = "none";
     $("projectView").style.display  = "block";
@@ -798,6 +855,7 @@ async function renderAgreementsView() {
     if (!agreement.exists) {
       $("agreementsContent").innerHTML = renderAgreementsEmptyState();
       renderSidebar();
+      renderHeaderAction(activeView); // "Open in editor" needs the exists:false state just fetched
       return;
     }
 
@@ -844,6 +902,7 @@ async function renderAgreementsView() {
 
     wireAgreementRowClicks();
     renderSidebar(); // refresh sub-nav counts now that data has loaded
+    renderHeaderAction(activeView); // "Open in editor" needs the exists:true state just fetched
   } catch (e) {
     $("agreementsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Agreement</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
   }
@@ -1052,6 +1111,7 @@ async function renderInvariantView() {
     if (!invariant.exists) {
       $("invariantContent").innerHTML = renderInvariantEmptyState();
       renderSidebar();
+      renderHeaderAction(activeView); // "Open in editor" needs the exists:false state just fetched
       return;
     }
 
@@ -1084,6 +1144,7 @@ async function renderInvariantView() {
 
     if (hasLastRun) wireInvariantClaimRowClicks();
     renderSidebar();
+    renderHeaderAction(activeView); // "Open in editor" needs the exists:true state just fetched
   } catch (e) {
     $("invariantContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Invariant</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
   }
@@ -2253,7 +2314,29 @@ async function linkProjectSource(name) {
   await refresh();
 }
 
-async function closeDetail() {
+// Domain-appropriate empty-panel copy. Falls back to the original generic
+// message for any id not listed here (e.g. the "organize" sub-view, which
+// has no row-selection detail panel of its own).
+const DETAIL_EMPTY_LABELS = {
+  projects:    "Select a project…",
+  agreements:  "Select a rule…",
+  receipts:    "Select a receipt…",
+  invariant:   "Select a claim…",
+  revocations: "Select a revocation…",
+  vault:       "Select a key…",
+};
+
+function _detailEmptyHTML(forDomain) {
+  const label = DETAIL_EMPTY_LABELS[forDomain] || "Select a row to view details";
+  return `<div class="empty-state" style="padding:60px 20px"><div class="empty-state-sub">${esc(label)}</div></div>`;
+}
+
+// `forDomain` defaults to the current activeView (correct for every caller
+// that closes the panel without switching domains — Escape, the panel's own
+// ✕ button, etc.). showDomain() passes the domain it's switching *to*, since
+// it calls closeDetail() before activeView itself has been updated — without
+// that, the placeholder would briefly show the outgoing domain's copy.
+async function closeDetail(forDomain = activeView) {
   if (uiState.editingConfig && _isConfigDirty()) {
     const yes = await confirmAction({
       title: "Discard changes?",
@@ -2274,7 +2357,7 @@ async function closeDetail() {
   document.querySelectorAll(".project-row").forEach(r => r.classList.remove("selected"));
   document.querySelectorAll(".tbl tbody tr.sel").forEach(r => r.classList.remove("sel"));
   $("detailPanel").classList.remove("open");
-  $("detailInner").innerHTML = `<div class="empty-state" style="padding:60px 20px"><div class="empty-state-sub">Select a row to view details</div></div>`;
+  $("detailInner").innerHTML = _detailEmptyHTML(forDomain);
 }
 
 // ── Log viewer ─────────────────────────────────────────────────────────────
@@ -2392,8 +2475,11 @@ async function renderVaultView() {
       <div class="vault-view">
 
         <div class="vault-view-header">
+          <!-- "+ Add Key" moved to the header's contextual action slot
+               (#headerAction, populated by renderHeaderAction("vault")) so
+               Vault has a single primary action like every other domain,
+               instead of duplicating it here. -->
           <div class="view-title" style="margin-bottom:0"><h1>Vault</h1><span class="vsub">${summary.key_count} key${summary.key_count !== 1 ? "s" : ""} · ${summary.encrypted ? "encrypted" : "unencrypted"}</span></div>
-          <button class="btn btn-ghost btn-sm" onclick="openVaultKeyModal('shared')">+ Add Key</button>
         </div>
 
         <!-- Status banner: same encrypted/unencrypted detection logic as
