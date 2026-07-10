@@ -5,7 +5,7 @@ let orphans      = [];
 let groups       = [];
 let activeFilter = "all";
 let selectedName = null;
-let activeView   = "projects";   // "projects" | "vault" | "organize" | "receipts"
+let activeView   = "projects";   // "projects" | "agreements" | "receipts" | "invariant" | "revocations" | "vault" | "organize" (organize is a Projects sub-view, not a top-level domain-view)
 let routerStatus = null;   // result of GET /api/router/status
 let hostnames = [];   // [{project_name, hostname, port}] from /api/router/hostnames
 let _refreshFailCount = 0;
@@ -66,9 +66,9 @@ document.addEventListener("DOMContentLoaded", () => {
   initVaultKeyModal();
   initKeyboard();
   initSearchHint();
-  $("vaultBtn").addEventListener("click", toggleVaultView);
-  $("organizeBtn").addEventListener("click", toggleOrganizeView);
-  $("receiptsBtn").addEventListener("click", toggleReceiptsView);
+  renderSidebar();
+  // Organize is a Projects sub-view (not its own domain-view); hidden until toggled.
+  $("organizeView").style.display = "none";
   refresh();
   loadSetupStatus();
   loadHostnames();
@@ -120,6 +120,66 @@ function hideStaleBanner() {
   if (shelf) shelf.style.opacity = "";
 }
 
+// ── Domain nav (six-domain redesign) ────────────────────────────────────────
+//
+// The six top-level domains, each with its own <section class="domain-view"
+// id="view-{id}"> in templates/index.html. showDomain() is the single source
+// of truth for which one is visible; renderSidebar() builds the sidebar rows
+// from the same list and keeps the active row in sync.
+//
+// "organize" is NOT one of these six ids — it's a sub-view nested inside
+// view-projects (see showOrganizeView below), so it has no #view-organize
+// section of its own and is never passed to showDomain().
+
+const DOMAINS = [
+  ["projects",    "◈", "Projects"],
+  ["agreements",  "☰", "Agreements"],
+  ["receipts",    "⧫", "Receipts"],
+  ["invariant",   "◇", "Invariant"],
+  ["revocations", "⊘", "Revocations"],
+  ["vault",       "⚿", "Vault"],
+];
+
+function renderSidebar() {
+  // Organize is shown nested inside the Projects domain-view, so the
+  // Projects row stays highlighted while Organize is active.
+  const current = activeView === "organize" ? "projects" : activeView;
+  $("sidebar").innerHTML = DOMAINS.map(([id, glyph, label]) => `
+    <div class="nav-item${id === current ? " on" : ""}" onclick="showDomain('${id}')">
+      <span class="ng">${glyph}</span> ${esc(label)}
+    </div>`).join("");
+}
+
+function _activateDomainSection(id) {
+  document.querySelectorAll(".domain-view").forEach(v => v.classList.remove("on"));
+  $("view-" + id).classList.add("on");
+}
+
+// showDomain() owns switching to one of the six real domains: it gates on
+// unsaved detail-panel edits (same protection showVaultView()/etc. always
+// had), flips the visible .domain-view section, updates activeView, keeps
+// the sidebar in sync, and — since Projects/Vault/Receipts have real data —
+// triggers that domain's render/load. Agreements/Invariant/Revocations have
+// nothing to load yet (empty stub sections, filled in by a later task).
+async function showDomain(id) {
+  if (id === activeView) return; // re-clicking the active nav-item is a no-op
+  if (await closeDetail() === false) return;
+  _activateDomainSection(id);
+  activeView = id;
+  renderSidebar();
+  $("addProjectBtn").style.display = (id === "projects") ? "" : "none";
+  $("searchSortBar").style.display = (id === "projects") ? "" : "none";
+  if (id === "projects") {
+    $("organizeView").style.display = "none";
+    $("projectView").style.display  = "block";
+    render();
+  } else if (id === "vault") {
+    await renderVaultView();
+  } else if (id === "receipts") {
+    await renderReceiptsView();
+  }
+}
+
 // ── View switching ─────────────────────────────────────────────────────────
 
 function toggleVaultView() {
@@ -138,18 +198,8 @@ function toggleOrganizeView() {
   }
 }
 
-function showProjectView() {
-  activeView = "projects";
-  $("projectView").style.display  = "block";
-  $("vaultView").style.display    = "none";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "none";
-  $("vaultBtn").classList.remove("active");
-  $("organizeBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "";
-  $("searchSortBar").style.display = "";
-  render();
+async function showProjectView() {
+  await showDomain("projects");
 }
 
 async function installVaultDeps() {
@@ -177,30 +227,21 @@ async function installVaultDeps() {
 }
 
 async function showVaultView() {
-  if (await closeDetail() === false) return;
-  activeView = "vault";
-  $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "block";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "none";
-  $("vaultBtn").classList.add("active");
-  $("organizeBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "none";
-  $("searchSortBar").style.display = "none";
-  await renderVaultView();
+  await showDomain("vault");
 }
 
+// Organize is a Projects sub-view (no #view-organize section of its own), so
+// it can't go through showDomain() — that would re-show #projectView, not
+// #organizeView. It duplicates showDomain()'s gating/section-activation
+// instead.
 async function showOrganizeView() {
+  if (activeView === "organize") return; // already showing; no-op
   if (await closeDetail() === false) return;
+  _activateDomainSection("projects");
   activeView = "organize";
+  renderSidebar();
   $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "none";
   $("organizeView").style.display = "block";
-  $("receiptsView").style.display = "none";
-  $("organizeBtn").classList.add("active");
-  $("vaultBtn").classList.remove("active");
-  $("receiptsBtn").classList.remove("active");
   $("addProjectBtn").style.display = "none";
   $("searchSortBar").style.display = "none";
   await Promise.all([loadFolderMap(), loadRecommendations(), loadMoveHistory()]);
@@ -215,18 +256,7 @@ function toggleReceiptsView() {
 }
 
 async function showReceiptsView() {
-  if (await closeDetail() === false) return;
-  activeView = "receipts";
-  $("projectView").style.display  = "none";
-  $("vaultView").style.display    = "none";
-  $("organizeView").style.display = "none";
-  $("receiptsView").style.display = "block";
-  $("receiptsBtn").classList.add("active");
-  $("vaultBtn").classList.remove("active");
-  $("organizeBtn").classList.remove("active");
-  $("addProjectBtn").style.display = "none";
-  $("searchSortBar").style.display = "none";
-  await renderReceiptsView();
+  await showDomain("receipts");
 }
 
 async function renderReceiptsView() {
@@ -604,6 +634,9 @@ function render() {
 }
 
 function renderCounts() {
+  // Status filter counts lived in the old sidebar; the six-domain sidebar's
+  // per-domain badges (a later task) will replace this. No-op until then.
+  if (!$("count-all")) return;
   const running  = projects.filter(p => p.status === "running").length;
   const stopped  = projects.filter(p => p.status === "stopped").length;
   const conflict = projects.filter(p => p.status === "conflict").length;
@@ -2085,7 +2118,9 @@ function closeProjectModal() {
 // ── Group modal ────────────────────────────────────────────────────────────
 
 function initGroupModal() {
-  $("addGroupBtn").addEventListener("click",    openGroupModal);
+  // "New group" trigger lived in the old sidebar's Groups section; the
+  // six-domain sidebar's Projects sub-nav (a later task) will re-add it.
+  $("addGroupBtn")?.addEventListener("click",    openGroupModal);
   $("groupModalClose").addEventListener("click", closeGroupModal);
   $("groupCancelBtn").addEventListener("click",  closeGroupModal);
   $("groupModalOverlay").addEventListener("click", e => { if (e.target===$("groupModalOverlay")) closeGroupModal(); });

@@ -43,169 +43,133 @@
   <div class="layout">
 
     <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="sidebar-label">Status</div>
+    <aside class="sidebar" id="sidebar"><!-- rendered by JS: static/app.js renderSidebar() --></aside>
 
-      <button class="filter-btn active" data-filter="all">
-        <span class="filter-left"><span class="filter-dot"></span>All Projects</span>
-        <span class="count" id="count-all">0</span>
-      </button>
-      <button class="filter-btn" data-filter="running">
-        <span class="filter-left"><span class="filter-dot green"></span>Running</span>
-        <span class="count" id="count-running">0</span>
-      </button>
-      <button class="filter-btn" data-filter="stopped">
-        <span class="filter-left"><span class="filter-dot"></span>Stopped</span>
-        <span class="count" id="count-stopped">0</span>
-      </button>
-      <button class="filter-btn" data-filter="conflict">
-        <span class="filter-left"><span class="filter-dot red"></span>Conflicts</span>
-        <span class="count" id="count-conflict">0</span>
-      </button>
-      <button class="filter-btn" data-filter="orphans">
-        <span class="filter-left"><span class="filter-dot orange"></span>Orphans</span>
-        <span class="count" id="count-orphans">0</span>
-      </button>
-
-      <!-- Groups -->
-      <div class="sidebar-divider"></div>
-      <div class="sidebar-section-header">
-        <span class="sidebar-label" style="padding:0">Groups</span>
-        <button class="sidebar-add-btn" id="addGroupBtn" title="New group">+</button>
-      </div>
-      <div id="groupList"><!-- rendered by JS --></div>
-
-      <!-- Navigate -->
-      <div class="sidebar-divider"></div>
-      <div class="sidebar-label">Navigate</div>
-      <button class="filter-btn" id="vaultBtn">
-        <span class="filter-left">
-          <span class="sidebar-nav-glyph" style="color:var(--blue)">⚿</span>
-          Vault
-        </span>
-      </button>
-      <button class="filter-btn" id="organizeBtn">
-        <span class="filter-left">
-          <span class="sidebar-nav-glyph" style="color:var(--text-muted)">⌂</span>
-          Organize
-        </span>
-      </button>
-      <button class="filter-btn" id="receiptsBtn">
-        <span class="filter-left">
-          <span class="sidebar-nav-glyph" style="color:#a855f7">⧫</span>
-          Receipts
-        </span>
-      </button>
-
-    </aside>
-
-    <!-- Main area (projects view OR vault view) -->
+    <!-- Main area (six-domain views) -->
     <main class="main">
       <div class="refresh-bar" id="refreshBar"></div>
 
-      <!-- ── Projects view ──────────────────────────────────────────────── -->
-      <div id="projectView">
+      <!-- ═══ PROJECTS ═══ -->
+      <section class="domain-view on" id="view-projects">
 
-        <div class="search-sort-bar" id="searchSortBar">
-          <div class="search-wrapper">
-            <span class="search-icon">⌕</span>
-            <input type="text" class="search-input" id="searchInput"
-                   placeholder="Search projects…" spellcheck="false">
-            <button class="search-clear" id="searchClear" style="display:none" aria-label="Clear search">✕</button>
-            <span class="search-shortcut" id="searchShortcut">/</span>
-          </div>
-          <div class="sort-control" id="sortControl">
-            <span class="sort-label">Sort:</span>
-            <button class="sort-field-btn" id="sortFieldBtn" onclick="cycleSortField()"
-                    title="Click to cycle: Name → Status → Port">Name</button>
-            <button class="sort-dir-btn" id="sortDirBtn" onclick="toggleSortDir()"
-                    title="Toggle sort direction">↑</button>
-          </div>
-        </div>
-        <div class="shelf-header">
-          <div></div>
-          <div class="shelf-header-cell">Project</div>
-          <div class="shelf-header-cell">Port</div>
-          <div class="shelf-header-cell">Hostname</div>
-          <div class="shelf-header-cell">Directory</div>
-          <div class="shelf-header-cell" style="text-align:right">Actions</div>
-        </div>
+        <!-- ── Projects view ──────────────────────────────────────────────── -->
+        <div id="projectView">
 
-        <div class="project-shelf" id="projectShelf">
-          <div class="empty-state">
-            <div class="empty-state-title">Loading…</div>
-          </div>
-        </div>
-
-        <div id="orphanSection" style="display:none">
-          <div class="section-header">
-            <span class="filter-dot orange"></span>
-            Unknown Processes
-            <span class="tag">not in registry</span>
-          </div>
-          <div id="orphanList"></div>
-        </div>
-
-      </div>
-
-      <!-- ── Organize view ──────────────────────────────────────────────── -->
-      <div id="organizeView" style="display:none">
-        <div id="organizeContent">
-
-          <!-- Section 1: Folder Map -->
-          <div class="organize-section">
-            <div class="organize-section-header">
-              <div class="organize-section-title">Folder Map</div>
-              <button class="btn btn-ghost btn-sm" onclick="loadFolderMap()">↺ Refresh</button>
+          <div class="search-sort-bar" id="searchSortBar">
+            <div class="search-wrapper">
+              <span class="search-icon">⌕</span>
+              <input type="text" class="search-input" id="searchInput"
+                     placeholder="Search projects…" spellcheck="false">
+              <button class="search-clear" id="searchClear" style="display:none" aria-label="Clear search">✕</button>
+              <span class="search-shortcut" id="searchShortcut">/</span>
             </div>
-            <div id="folderMapContent">
-              <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
+            <div class="sort-control" id="sortControl">
+              <span class="sort-label">Sort:</span>
+              <button class="sort-field-btn" id="sortFieldBtn" onclick="cycleSortField()"
+                      title="Click to cycle: Name → Status → Port">Name</button>
+              <button class="sort-dir-btn" id="sortDirBtn" onclick="toggleSortDir()"
+                      title="Toggle sort direction">↑</button>
+            </div>
+          </div>
+          <div class="shelf-header">
+            <div></div>
+            <div class="shelf-header-cell">Project</div>
+            <div class="shelf-header-cell">Port</div>
+            <div class="shelf-header-cell">Hostname</div>
+            <div class="shelf-header-cell">Directory</div>
+            <div class="shelf-header-cell" style="text-align:right">Actions</div>
+          </div>
+
+          <div class="project-shelf" id="projectShelf">
+            <div class="empty-state">
+              <div class="empty-state-title">Loading…</div>
             </div>
           </div>
 
-          <!-- Section 2: Recommended Structure -->
-          <div class="organize-section">
-            <div class="organize-section-header">
-              <div class="organize-section-title">Recommended Structure</div>
-              <div class="organize-root-input">
-                <label>Root:</label>
-                <input type="text" id="structureRoot" value="~/Projects" style="width:200px">
-                <button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">↺ Refresh</button>
-                <button class="btn btn-primary btn-sm" id="moveAllBtn" onclick="moveAll()">Move All</button>
+          <div id="orphanSection" style="display:none">
+            <div class="section-header">
+              <span class="filter-dot orange"></span>
+              Unknown Processes
+              <span class="tag">not in registry</span>
+            </div>
+            <div id="orphanList"></div>
+          </div>
+
+        </div>
+
+        <!-- ── Organize view (Projects sub-view) ────────────────────────────── -->
+        <div id="organizeView">
+          <div id="organizeContent">
+
+            <!-- Section 1: Folder Map -->
+            <div class="organize-section">
+              <div class="organize-section-header">
+                <div class="organize-section-title">Folder Map</div>
+                <button class="btn btn-ghost btn-sm" onclick="loadFolderMap()">↺ Refresh</button>
+              </div>
+              <div id="folderMapContent">
+                <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
               </div>
             </div>
-            <div id="recommendationsContent">
-              <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
+
+            <!-- Section 2: Recommended Structure -->
+            <div class="organize-section">
+              <div class="organize-section-header">
+                <div class="organize-section-title">Recommended Structure</div>
+                <div class="organize-root-input">
+                  <label>Root:</label>
+                  <input type="text" id="structureRoot" value="~/Projects" style="width:200px">
+                  <button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">↺ Refresh</button>
+                  <button class="btn btn-primary btn-sm" id="moveAllBtn" onclick="moveAll()">Move All</button>
+                </div>
+              </div>
+              <div id="recommendationsContent">
+                <div class="empty-state"><div class="empty-state-title">Loading…</div></div>
+              </div>
             </div>
+
+            <!-- Section 3: Move History -->
+            <div class="organize-section">
+              <div class="organize-section-header">
+                <div class="organize-section-title">Move History</div>
+                <button class="btn btn-ghost btn-sm" onclick="loadMoveHistory()">↺ Refresh</button>
+              </div>
+              <div id="moveHistoryContent">
+                <div class="empty-state"><div class="empty-state-sub">No moves recorded yet.</div></div>
+              </div>
+            </div>
+
           </div>
+        </div>
 
-          <!-- Section 3: Move History -->
-          <div class="organize-section">
-            <div class="organize-section-header">
-              <div class="organize-section-title">Move History</div>
-              <button class="btn btn-ghost btn-sm" onclick="loadMoveHistory()">↺ Refresh</button>
-            </div>
-            <div id="moveHistoryContent">
-              <div class="empty-state"><div class="empty-state-sub">No moves recorded yet.</div></div>
-            </div>
+      </section>
+
+      <!-- ═══ AGREEMENTS ═══ (later task fills this in) -->
+      <section class="domain-view" id="view-agreements"></section>
+
+      <!-- ═══ RECEIPTS ═══ -->
+      <section class="domain-view" id="view-receipts">
+        <div id="receiptsView">
+          <div id="receiptsContent">
+            <div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>
           </div>
-
         </div>
-      </div>
+      </section>
 
-      <!-- ── Vault view ─────────────────────────────────────────────────── -->
-      <div id="vaultView" style="display:none">
-        <div id="vaultContent">
-          <div class="empty-state"><div class="empty-state-title">Loading vault…</div></div>
-        </div>
-      </div>
+      <!-- ═══ INVARIANT ═══ (later task fills this in) -->
+      <section class="domain-view" id="view-invariant"></section>
 
-      <!-- ── Receipts view ────────────────────────────────────────────────── -->
-      <div id="receiptsView" style="display:none">
-        <div id="receiptsContent">
-          <div class="empty-state"><div class="empty-state-title">Loading receipts…</div></div>
+      <!-- ═══ REVOCATIONS ═══ (later task fills this in) -->
+      <section class="domain-view" id="view-revocations"></section>
+
+      <!-- ═══ VAULT ═══ -->
+      <section class="domain-view" id="view-vault">
+        <div id="vaultView">
+          <div id="vaultContent">
+            <div class="empty-state"><div class="empty-state-title">Loading vault…</div></div>
+          </div>
         </div>
-      </div>
+      </section>
 
     </main>
 
