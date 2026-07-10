@@ -128,11 +128,11 @@ html, body {
 .sub-item:hover { color: var(--text); background: var(--surface); }
 .sub-item.on { color: var(--amber); }
 .sub-item.on .lbl { border-bottom: 1px solid var(--amber-dim); }
-.sub-item .sdot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
-.sub-item .sdot.g { background: var(--green); }
-.sub-item .sdot.r { background: var(--red); }
-.sub-item .sdot.o { background: var(--orange); }
-.sub-item .sdot.b { background: var(--blue); }
+.sub-item .sdot, .section-header .sdot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+.sub-item .sdot.g, .section-header .sdot.g { background: var(--green); }
+.sub-item .sdot.r, .section-header .sdot.r { background: var(--red); }
+.sub-item .sdot.o, .section-header .sdot.o { background: var(--orange); }
+.sub-item .sdot.b, .section-header .sdot.b { background: var(--blue); }
 .sub-item .sc { margin-left: auto; font-size: 11px; color: var(--text-dim); }
 
 .sidebar-divider { height: 1px; background: var(--border); margin: 8px 4px; }
