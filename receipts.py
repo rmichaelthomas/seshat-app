@@ -66,6 +66,7 @@ def emit(
     env_after: dict | None = None,
     *,
     revocation_state: dict | None = None,
+    agreement_hash: str | None = None,
     invariant: dict | None = None,
 ) -> None:
     """Write a hash-chained receipt to disk with file locking.
@@ -99,6 +100,8 @@ def emit(
         }
         if revocation_state is not None:
             receipt["revocation_state"] = revocation_state
+        if agreement_hash is not None:
+            receipt["agreement_hash"] = agreement_hash
         if invariant is not None:
             receipt["invariant"] = invariant
         receipt["previous_hash"] = previous_hash

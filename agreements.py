@@ -62,6 +62,17 @@ def load_invariant() -> str | None:
         return None
 
 
+def agreement_hash() -> str | None:
+    """SHA-256 of ~/.seshat/agreement.limn content, or None when no Agreement
+    exists (backward-compatible omission, mirroring revocation_state()'s
+    None-when-absent contract). TI-Q4 (v1.0i §50) — the local<->platform
+    join key stamped on every Seshat receipt."""
+    text = load_agreement()
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def revocation_state() -> dict | None:
     """Return {'head_hash': ..., 'last_checked': ...} describing the current
     revocations file, or None when no revocations.limn exists (backward-

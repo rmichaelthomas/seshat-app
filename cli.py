@@ -31,7 +31,7 @@ from rich.text import Text
 
 from registry import Registry
 from runner import Runner
-from vault import Vault
+from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 from scanner import Scanner
 import deps as deps_module
 import agreements
@@ -53,13 +53,14 @@ console = Console()
 
 
 def _emit(**kwargs) -> None:
-    """Wrap receipts.emit(), injecting revocation_state and (post-action)
-    the Invariant verification block so every CLI-emitted receipt carries
-    them from one source (§7 invariant 4)."""
+    """Wrap receipts.emit(), injecting revocation_state, agreement_hash, and
+    (post-action) the Invariant verification block so every CLI-emitted
+    receipt carries them from one source (§7 invariant 4)."""
     env_after = kwargs.get("env_after") or receipts_module.snapshot()
     kwargs["env_after"] = env_after
     receipts_module.emit(
         revocation_state=agreements.revocation_state(),
+        agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
         **kwargs,
     )
@@ -841,7 +842,7 @@ def _print_receipts(limit: int, action_filter: str | None) -> None:
     # Sync hint — surface the platform when receipts accumulate
     unsent = _count_unsent()
     if unsent > 0:
-        api_key = vault.get("__receipts_api_key__")
+        api_key = vault.get(RECEIPTS_API_KEY_VAULT_KEY)
         if api_key:
             console.print(f"\n  [dim]{unsent} receipt(s) not synced. Run [cyan]seshat receipts sync[/cyan] to push to liminate.dev.[/dim]")
         else:
@@ -935,11 +936,11 @@ def receipts_sync(dry_run):
     """Push unsent receipts to the Receipts API at liminate.dev."""
     import httpx
 
-    api_key = vault.get("__receipts_api_key__")
+    api_key = vault.get(RECEIPTS_API_KEY_VAULT_KEY)
     if not api_key and not dry_run:
         console.print(
             "[red]No Receipts API key configured.[/red]\n"
-            "  Set one with: [cyan]seshat vault set __RECEIPTS_API_KEY__ <your-key>[/cyan]\n"
+            f"  Set one with: [cyan]seshat vault set {RECEIPTS_API_KEY_VAULT_KEY} <your-key>[/cyan]\n"
             "  Get a key at: [cyan]https://liminate.dev/keys[/cyan]"
         )
         sys.exit(1)
@@ -1088,11 +1089,11 @@ def revocations_sync(dry_run):
     """Pull the current revocation set from the platform registry."""
     import httpx
 
-    api_key = vault.get("__receipts_api_key__")
+    api_key = vault.get(RECEIPTS_API_KEY_VAULT_KEY)
     if not api_key:
         console.print(
             "[red]No Receipts API key configured.[/red]\n"
-            "  Set one with: [cyan]seshat vault set __RECEIPTS_API_KEY__ <your-key>[/cyan]\n"
+            f"  Set one with: [cyan]seshat vault set {RECEIPTS_API_KEY_VAULT_KEY} <your-key>[/cyan]\n"
             "  Get a key at: [cyan]https://liminate.dev/keys[/cyan]"
         )
         sys.exit(1)

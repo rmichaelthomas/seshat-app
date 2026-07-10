@@ -116,6 +116,13 @@ class ReceiptNode(GovernanceNode):
         if block:
             n = len(block.get("claims", []))
             edges.append(Edge(f"verified by Invariant ({n} claims)", InvariantNode(block, self.receipt)))
+        # TI-Q4 (v1.0i §49-50) — exact agreement_hash join to a platform
+        # Sentinel verdict. Offline-additive: no verdict for this hash (no
+        # platform key, no sentinel registered, or the fetch failed this
+        # cycle) means simply no edge here, same as at f32b601.
+        verdict = graph.sentinel_verdict_for(self.receipt.get("agreement_hash"))
+        if verdict is not None:
+            edges.append(Edge(f"watched by Sentinel ({verdict.get('verdict')})", SentinelVerdictNode(verdict)))
         return edges
 
 
@@ -290,6 +297,55 @@ class ReceiptListNode(GovernanceNode):
         return edges
 
 
+class SentinelVerdictNode(GovernanceNode):
+    """A platform Sentinel verdict about the Agreement a receipt was decided
+    under (TI-Q4, v1.0i §49-50). Advisory display only — never written to
+    ~/.seshat/*.limn, never influences enforcement. Reached from a
+    ReceiptNode via the agreement_hash join. Terminal: a verdict is a leaf
+    in the local graph."""
+
+    def __init__(self, verdict: dict) -> None:
+        self.verdict = verdict
+        v = verdict.get("verdict") or "unknown"
+        accent = {
+            "holding": COLORS["green"],
+            "drifted": COLORS["red"],
+            "expired": COLORS["orange"],
+        }.get(v, COLORS["text_3"])
+        super().__init__(
+            node_type="sentinel_verdict",
+            glyph=DOMAIN_GLYPHS["invariant"],
+            accent=accent,
+            title=f"sentinel · {v}",
+        )
+
+    def render_detail(self) -> str:
+        v = self.verdict
+        status = v.get("verdict") or "unknown"
+        style = {
+            "holding": COLORS["green"],
+            "drifted": COLORS["red"],
+            "expired": COLORS["orange"],
+        }.get(status, COLORS["text_3"])
+        lines = [
+            "[b]Sentinel verdict[/b]",
+            f"[{style}]{status}[/{style}]",
+        ]
+        if v.get("reason"):
+            lines += ["", "[#9A8B6E b]REASON[/#9A8B6E b]", v["reason"]]
+        lines += [
+            "",
+            "[#9A8B6E b]SENTINEL[/#9A8B6E b]",
+            f"id          {v.get('sentinel_id') or '—'}",
+            f"last run    {v.get('last_run_at') or '—'}",
+            f"agreement   {_short_hash(v.get('agreement_hash'))}",
+        ]
+        return "\n".join(lines)
+
+    def edges(self, graph: "GovernanceGraph") -> list[Edge]:
+        return []
+
+
 def _condition_tokens(canonical: str) -> set[str]:
     """Word-level token set of a canonical rule's condition clause (the
     part after the verb). Used only by revocation_overriding's display
@@ -308,10 +364,20 @@ class GovernanceGraph:
     cycle from the same data the domains already load — never re-reads
     ~/.seshat/ on its own."""
 
-    def __init__(self, receipts: list[dict], agreement_rules: list[dict], revocation_rules: list[dict]) -> None:
+    def __init__(
+        self,
+        receipts: list[dict],
+        agreement_rules: list[dict],
+        revocation_rules: list[dict],
+        sentinel_verdicts: dict[str, dict] | None = None,
+    ) -> None:
         self.receipts = receipts or []
         self.agreement_rules = agreement_rules or []
         self.revocation_rules = revocation_rules or []
+        # TI-Q4 (v1.0i §50) — agreement_hash -> verdict dict. Empty/None when
+        # there's no platform key, no registered sentinel, or the best-effort
+        # fetch failed this cycle; the graph works offline exactly as before.
+        self.sentinel_verdicts = sentinel_verdicts or {}
 
     def rule_by_canonical(self, canonical: str | None) -> RuleNode | None:
         if not canonical:
@@ -338,6 +404,13 @@ class GovernanceGraph:
             for r in self.receipts
             if r.get("result", {}).get("status") != "success" and r.get("result", {}).get("rule") == canonical
         ]
+
+    def sentinel_verdict_for(self, agreement_hash: str | None) -> dict | None:
+        """Exact agreement_hash match only — this is a hard join key (TI-Q4
+        D2, v1.0i §50), never a heuristic like revocation_overriding below."""
+        if not agreement_hash:
+            return None
+        return self.sentinel_verdicts.get(agreement_hash)
 
     def revocation_overriding(self, permit_canonical: str) -> RevocationNode | None:
         """Display-only heuristic — NOT enforcement. A revocation is shown
