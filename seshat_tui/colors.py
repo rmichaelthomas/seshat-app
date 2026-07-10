@@ -54,18 +54,18 @@ DOMAIN_ACCENTS = {
     "vault":       COLORS["blue"],
 }
 
-# Fallback-safe glyph: U+132C7 (Egyptian Hieroglyphs, Plane 1 / SMP) has
-# essentially no terminal font coverage and cannot be reliably detected at
-# runtime, so the ASCII-safe glyph is the default (TUI-Q1). The hieroglyph
-# is opt-in only, via a read-only ~/.seshat/tui.json config flag.
-EMBLEM_ASCII = "✷"     # ✷
-EMBLEM_GLYPH = "\U000132c7"  # 𓋇
+# Locked glyph set (seshat_tui_CORRECTION_b_real_textual_reference.md §0) —
+# every glyph here was checked against DejaVu Sans Mono and confirmed to
+# render on common terminal fonts. This closes TUI-Q1: no font-detection,
+# no fallback mechanism, no ~/.seshat/tui.json config. 𓋇/☰/⛓/⚿ and emoji
+# are excluded because they box (render as tofu) on common terminal fonts.
+EMBLEM = "❖"  # ❖
 
 DOMAIN_GLYPHS = {
-    "projects":    "◈",  # ◈
-    "agreements":  "☰",  # ☰
-    "receipts":    "⧫",  # ⧫
+    "projects":    "◆",  # ◆
+    "agreements":  "≡",  # ≡  (replaces ☰, which boxes)
+    "receipts":    "◈",  # ◈
     "invariant":   "◇",  # ◇
     "revocations": "⊘",  # ⊘
-    "vault":       "⚿",  # ⚿
+    "vault":       "⌸",  # ⌸  (replaces ⚿, which boxes)
 }

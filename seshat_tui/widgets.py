@@ -98,7 +98,7 @@ class Rail(Vertical):
 
     DEFAULT_CSS = """
     Rail {
-        width: 22;
+        width: 19;
         margin-right: 1;
         padding: 1 2;
         background: #16120D;
@@ -184,7 +184,7 @@ class EmptyState(Vertical):
     }
     """
 
-    def __init__(self, title: str, desc: str, commands: list[tuple[str, str]], glyph: str = "☰"):
+    def __init__(self, title: str, desc: str, commands: list[tuple[str, str]], glyph: str = "≡"):
         super().__init__()
         self._title = title
         self._desc = desc

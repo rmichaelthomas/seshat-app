@@ -7,18 +7,13 @@ always defer to agreements.* (never re-derived here) per the build's
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import agreements
 import liminate
 
-from .colors import EMBLEM_ASCII, EMBLEM_GLYPH
-
 SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
-
-TUI_CONFIG_PATH = Path.home() / ".seshat" / "tui.json"
 
 
 def shorten_path(path: str) -> str:
@@ -128,13 +123,3 @@ def last_invariant_block(receipts: list[dict]) -> tuple[dict | None, dict | None
         if block:
             return block, r
     return None, None
-
-
-def read_emblem_glyph() -> str:
-    """Read-only opt-in check for the Egyptian-hieroglyph emblem. Defaults
-    to the ASCII-safe glyph; never writes ~/.seshat/tui.json itself."""
-    try:
-        config = json.loads(TUI_CONFIG_PATH.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return EMBLEM_ASCII
-    return EMBLEM_GLYPH if config.get("emblem") == "hieroglyph" else EMBLEM_ASCII

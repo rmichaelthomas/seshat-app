@@ -146,7 +146,7 @@ class ReceiptsDomainMixin:
 
         self._receipts_cache = {}
         items = []
-        for r in rows:
+        for idx, r in enumerate(rows):
             key = r.get("receipt_hash", "")[:16] or str(id(r))
             self._receipts_cache[key] = r
             is_success = r.get("result", {}).get("status") == "success"
@@ -156,7 +156,12 @@ class ReceiptsDomainMixin:
             short_id = actor.get("session_id", "")[:14] or "—"
             target = r.get("target", {})
             target_str = target.get("project") or target.get("group") or target.get("key") or "—"
-            content = f"[{link_color}]⛓[/{link_color}] [#9A8B6E]{ts}[/#9A8B6E]  [b]{r.get('action', '')}[/b] [#9A8B6E]·[/#9A8B6E] {target_str}   [#B78FE0]{short_id}[/#B78FE0]"
+            # A connector line above every node but the first draws the
+            # chain as a chain (nodes joined by │) inside a ListView, since
+            # ListView expects homogeneous ListItem children — there's no
+            # separate non-selectable connector row between items.
+            connector = "[#5F5340]  │[/#5F5340]\n" if idx > 0 else ""
+            content = f"{connector}[{link_color}]◆[/{link_color}] [#9A8B6E]{ts}[/#9A8B6E]  [b]{r.get('action', '')}[/b] [#9A8B6E]·[/#9A8B6E] {target_str}   [#B78FE0]{short_id}[/#B78FE0]"
             if not is_success:
                 reason = r.get("result", {}).get("error") or (r.get("result", {}).get("rule") and f"forbid: {r['result']['rule']}") or "denied"
                 content += f"\n  [#5F5340]└[/#5F5340] [#DD6E5A]{reason}[/#DD6E5A]"

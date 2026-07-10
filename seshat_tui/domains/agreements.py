@@ -32,7 +32,7 @@ def _condition_text(canonical: str, verb: str | None) -> str:
 
 class AgreementsDomainMixin:
     def compose_agreements(self):
-        with TabPane("☰ Agreements", id="tab-agreements"):
+        with TabPane("≡ Agreements", id="tab-agreements"):
             yield Static(
                 "[#9A8B6E]actions[/#9A8B6E]  "
                 "[#F6C56E][#F6C56E b]c[/#F6C56E b] dry-run check[/#F6C56E]  "
@@ -48,8 +48,8 @@ class AgreementsDomainMixin:
 
     def get_agreements_palette_commands(self) -> list[PaletteCommand]:
         return [
-            PaletteCommand("agreements", "☰", "Dry-run check an action", "c", self.action_agreements_dryrun),
-            PaletteCommand("agreements", "☰", "Open agreement.limn in editor", "e", self.action_agreements_edit),
+            PaletteCommand("agreements", "≡", "Dry-run check an action", "c", self.action_agreements_dryrun),
+            PaletteCommand("agreements", "≡", "Open agreement.limn in editor", "e", self.action_agreements_edit),
         ]
 
     def get_agreements_help(self) -> list[tuple[str, str]]:
@@ -86,7 +86,7 @@ class AgreementsDomainMixin:
                     ("initialize a starter Agreement", "seshat agreement init"),
                     ("or install an existing file", "seshat agreement install <path>"),
                 ],
-                glyph="☰",
+                glyph="≡",
             ))
             return
 
@@ -114,7 +114,10 @@ class AgreementsDomainMixin:
         body.remove_children()
         head = Static(head_text, classes="pane-head")
         table = DataTable(id="agreements-table", cursor_type="row")
-        table.add_columns("#", "verb", "condition", "window")
+        table.add_column("#", width=3)
+        table.add_column("VERB", width=7)
+        table.add_column("CONDITION", width=24)
+        table.add_column("WINDOW", width=9)
 
         rail = Rail(on_change=self._set_agreements_view, id="agreements-rail")
         pane = Vertical(head, table, id="agreements-pane", classes="pane")

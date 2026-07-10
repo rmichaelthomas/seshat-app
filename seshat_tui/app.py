@@ -21,10 +21,10 @@ from textual.widgets import DataTable, Static, TabbedContent
 import agreements
 import receipts as receipts_module
 from registry import Registry
+from scanner import Scanner
 from vault import Vault
 
-from .colors import DOMAIN_ACCENTS, DOMAIN_GLYPHS
-from .data import read_emblem_glyph
+from .colors import DOMAIN_ACCENTS, DOMAIN_GLYPHS, EMBLEM
 from .domains.agreements import AgreementsDomainMixin
 from .domains.invariant import InvariantDomainMixin
 from .domains.projects import ProjectsDomainMixin
@@ -37,6 +37,7 @@ from .widgets import CliEcho
 
 _registry = Registry()
 _vault = Vault()
+_scanner = Scanner()
 
 DOMAIN_ORDER = ["projects", "agreements", "receipts", "invariant", "revocations", "vault"]
 DOMAIN_LABELS = {
@@ -108,7 +109,7 @@ class SeshatApp(
     def __init__(self) -> None:
         super().__init__()
         self.session_id = f"tui_{uuid.uuid4().hex[:12]}"
-        self.emblem = read_emblem_glyph()
+        self.emblem = EMBLEM
         self.palette_commands: list = []
         self._echo_timer = None
 
@@ -176,7 +177,14 @@ class SeshatApp(
 
     def _render_topbar(self) -> str:
         short = self.session_id.replace("tui_", "")[:8]
-        return f"[#E8AE52]{self.emblem}[/#E8AE52] [b]SESHAT[/b]" + " " * 4 + f"[#9A8B6E]tui · {short}[/#9A8B6E]"
+        host_up = 9000 in _scanner.scan()
+        host_color = "#74C767" if host_up else "#5F5340"
+        return (
+            f"[#E8AE52]{self.emblem}[/#E8AE52] [b #F6C56E]SESHAT[/b #F6C56E]   "
+            f"[{host_color}]●[/{host_color}] [#9A8B6E]localhost:9000[/#9A8B6E]"
+            + " " * 4 +
+            f"[#9A8B6E]tui · {short}[/#9A8B6E]"
+        )
 
     # Compact primary hints per domain — the subset of get_X_help() worth a
     # dedicated status-bar slot (mirrors the reference's per-domain STATUS()).

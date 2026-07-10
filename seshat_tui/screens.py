@@ -12,19 +12,24 @@ from __future__ import annotations
 from typing import Callable
 
 from textual import events
-from textual.containers import Center, Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Input, RichLog, Static
+from textual.widgets import Input, RichLog, Static
 
 from .colors import COLORS
 
-BOOT_WORDMARK = r"""
-        [#E8AE52]▄▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄▄[/#E8AE52]  [#E8AE52]▄▄▄▄▄[/#E8AE52]
-        [#F6C56E]█[/#F6C56E]      [#F6C56E]█[/#F6C56E]      [#F6C56E]█[/#F6C56E]      [#F6C56E]█[/#F6C56E]      [#F6C56E]█[/#F6C56E]  [#F6C56E]█[/#F6C56E]    [#F6C56E]█[/#F6C56E]    [#F6C56E]█[/#F6C56E]
-        [#E8AE52]▀▀▀▀▄[/#E8AE52]  [#E8AE52]█▀▀▀[/#E8AE52]  [#E8AE52]▀▀█▀▀[/#E8AE52]  [#E8AE52]█▀▀▀▀[/#E8AE52]  [#E8AE52]█▀▀▀█[/#E8AE52]  [#E8AE52]█[/#E8AE52]    [#E8AE52]█▀▀▀▀[/#E8AE52]
-        [#9A8B6E]▄▄▄▄▀[/#9A8B6E]  [#9A8B6E]▀▄▄▄[/#9A8B6E]    [#9A8B6E]█[/#9A8B6E]    [#9A8B6E]█[/#9A8B6E]      [#9A8B6E]█[/#9A8B6E]   [#9A8B6E]█[/#9A8B6E]  [#9A8B6E]█[/#9A8B6E]    [#9A8B6E]█[/#9A8B6E]
-        [#5F5340]▀▀▀▀▀[/#5F5340]  [#5F5340]▀▀▀▀[/#5F5340]    [#5F5340]▀[/#5F5340]    [#5F5340]▀[/#5F5340]      [#5F5340]▀[/#5F5340]   [#5F5340]▀[/#5F5340]  [#5F5340]▀▀▀▀[/#5F5340] [#5F5340]▀▀▀▀▀[/#5F5340]
-""".strip("\n")
+# Verified figlet block wordmark (seshat_tui_FINAL_source.py WORD list) —
+# my own earlier hand-drawn ▄▀ approximation didn't actually spell SESHAT
+# correctly once rendered. This one is confirmed to render as SESHAT.
+_BOOT_WORD_ROWS = [
+    ("  ███████╗ ███████╗ ███████╗ ██╗  ██╗  █████╗  ████████╗", "#F6C56E"),
+    ("  ██╔════╝ ██╔════╝ ██╔════╝ ██║  ██║ ██╔══██╗ ╚══██╔══╝", "#E8AE52"),
+    ("  ███████╗ █████╗   ███████╗ ███████║ ███████║    ██║   ", "#E8AE52"),
+    ("  ╚════██║ ██╔══╝   ╚════██║ ██╔══██║ ██╔══██║    ██║   ", "#A07E3E"),
+    ("  ███████║ ███████╗ ███████║ ██║  ██║ ██║  ██║    ██║   ", "#5F5340"),
+    ("  ╚══════╝ ╚══════╝ ╚══════╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝    ╚═╝   ", "#5F5340"),
+]
+BOOT_WORDMARK = "\n".join(f"[{color}]{row}[/{color}]" for row, color in _BOOT_WORD_ROWS)
 
 
 class BootSplashScreen(Screen):
@@ -38,6 +43,7 @@ class BootSplashScreen(Screen):
     BootSplashScreen #boot-body {
         width: auto;
         height: auto;
+        padding: 2 4;
     }
     """
 
@@ -55,8 +61,12 @@ class BootSplashScreen(Screen):
             lines.append(f"[#74C767]✓[/#74C767] [#9A8B6E]{label:<12}[/#9A8B6E] [#5F5340]{detail}[/#5F5340]")
         lines.append("")
         lines.append("[#9A8B6E]ready[/#9A8B6E] [#E8AE52]█[/#E8AE52]")
-        with Center(id="boot-body"):
-            yield Static("\n".join(lines))
+        # No Center wrapper — the Screen's own `align: center middle` already
+        # centers this direct child. Center + width:auto/height:auto on the
+        # child produced a 0x0-sized widget (a real Textual sizing trap,
+        # same family as the height:1+border bug — two containers each
+        # deferring size computation to the other, both landing on zero).
+        yield Static("\n".join(lines), id="boot-body")
 
     def on_mount(self) -> None:
         self.set_timer(1.2, self._dismiss_once)

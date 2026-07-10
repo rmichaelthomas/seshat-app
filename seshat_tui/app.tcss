@@ -17,11 +17,6 @@
 Screen {
     background: #0C0A07;
     color: $text;
-    scrollbar-background: #16120D;
-    scrollbar-color: #33291B;
-    scrollbar-color-hover: #A07E3E;
-    scrollbar-color-active: #E8AE52;
-    scrollbar-size: 1 1;
 }
 
 /* ── Elevation tiers ──────────────────────────────────────────────────── */
@@ -36,16 +31,17 @@ Screen {
 }
 .cta-block {
     background: #292219;
-    padding: 1 2;
+    padding: 1 1;
     margin-top: 1;
 }
 
-/* ── Top bar (brand / session) ─────────────────────────────────────────── */
+/* ── Top bar (brand / session) — persistent identity row, always visible ── */
 
 #topbar {
+    dock: top;
     height: 1;
     padding: 0 2;
-    background: #0C0A07;
+    background: #1A130A;
 }
 
 /* ── Domain strip: native Tabs, restyled to strip default chrome ──────── */
@@ -123,7 +119,7 @@ TabPane {
 }
 
 .detail {
-    width: 38;
+    width: 32;
     margin-left: 1;
     height: 1fr;
     padding: 1 2;
@@ -132,7 +128,7 @@ TabPane {
 }
 
 .integ {
-    width: 30;
+    width: 26;
     margin-left: 1;
     height: 1fr;
     padding: 1 2;
@@ -140,24 +136,35 @@ TabPane {
     border: round #33291B;
 }
 
-/* ── DataTable: header + underline-selected-row convention ─────────────
-   Selected row = raised background (#292219) + amber underline text-style,
-   never a left accent bar. */
+/* ── DataTable: header + raised-selected-row convention ──────────────────
+   Selected row = raised background (#292219), never a left accent bar.
+   Scrollbar lives on the scrolling widget itself (DataTable), not Screen —
+   scrollbar-size-horizontal:0 removes the (otherwise blue) horizontal bar;
+   wheel/arrow-key scrolling still works. Column widths are bounded per
+   add_column() call in each domain so the horizontal scrollbar is never
+   needed in the first place. */
 
 DataTable {
     background: #16120D;
     border: none;
     height: 1fr;
+    scrollbar-size-horizontal: 0;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #16120D;
+    scrollbar-color: #33291B;
+    scrollbar-color-hover: #A07E3E;
+    scrollbar-color-active: #E8AE52;
+    scrollbar-corner-color: #16120D;
 }
 DataTable > .datatable--header {
-    background: #1E1912;
+    background: #16120D;
     color: $text-3;
     text-style: bold;
 }
 DataTable > .datatable--cursor {
     background: #292219;
     color: $text;
-    text-style: underline;
+    text-style: bold;
 }
 /* DataTable's own DEFAULT_CSS declares DataTable:focus > .datatable--cursor
    (higher specificity than the plain rule above), so the raised-background
@@ -166,8 +173,6 @@ DataTable > .datatable--cursor {
    is the normal state once a user actually clicks/arrows into it. */
 DataTable:focus > .datatable--cursor {
     background: #292219;
-    color: $text;
-    text-style: underline;
 }
 DataTable > .datatable--even-row {
     background: #16120D;
@@ -201,7 +206,7 @@ DataTable > .datatable--hover {
 #statusbar {
     height: 1;
     padding: 0 2;
-    background: #16120D;
+    background: #1A130A;
     color: $text-3;
     dock: bottom;
 }

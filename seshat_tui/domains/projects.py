@@ -63,7 +63,13 @@ class ProjectsDomainMixin:
 
     def on_mount_projects(self) -> None:
         table = self.query_one("#projects-table", DataTable)
-        table.add_columns("", "Name", "Port", "Status", "Started by")
+        # Status dot lives inside the NAME cell (not a separate column) —
+        # matches the verified reference layout and keeps total column
+        # width bounded so the pane never needs a horizontal scrollbar.
+        table.add_column("NAME", width=16)
+        table.add_column("PORT", width=6)
+        table.add_column("STATUS", width=9)
+        table.add_column("STARTED BY", width=12)
         self.projects_filter = "all"
         self.projects_query = ""
         self.projects_selected = None
@@ -188,8 +194,7 @@ class ProjectsDomainMixin:
                 COLORS["text_3"]
             )
             table.add_row(
-                f"[{color}]{glyph}[/{color}]",
-                view["name"],
+                f"[{color}]{glyph}[/{color}] {view['name']}",
                 str(view["port"]),
                 f"[{color}]{vstatus}[/{color}]",
                 f"[{attr_color}]{started_by or '—'}[/{attr_color}]",

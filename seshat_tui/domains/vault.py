@@ -38,7 +38,7 @@ def _audit_status(entry: dict) -> str:
 
 class VaultDomainMixin:
     def compose_vault(self):
-        with TabPane("⚿ Vault", id="tab-vault"):
+        with TabPane("⌸ Vault", id="tab-vault"):
             yield Static(
                 "[#9A8B6E]actions[/#9A8B6E]  "
                 "[#F6C56E][#F6C56E b]r[/#F6C56E b] reveal[/#F6C56E]",
@@ -55,7 +55,7 @@ class VaultDomainMixin:
 
     def get_vault_palette_commands(self) -> list[PaletteCommand]:
         return [
-            PaletteCommand("vault", "⚿", "Reveal selected key's value", "r", self.action_vault_reveal),
+            PaletteCommand("vault", "⌸", "Reveal selected key's value", "r", self.action_vault_reveal),
         ]
 
     def get_vault_help(self) -> list[tuple[str, str]]:
@@ -87,7 +87,7 @@ class VaultDomainMixin:
                 "The vault holds shared secrets (API keys, database URLs) that projects "
                 "resolve at start time, encrypted at rest.",
                 [("set the first key", "seshat vault set <KEY> <value>")],
-                glyph="⚿",
+                glyph="⌸",
             ))
             return
 
@@ -112,7 +112,9 @@ class VaultDomainMixin:
         body.remove_children()
         head = Static(head_text, classes="pane-head")
         table = DataTable(id="vault-table", cursor_type="row")
-        table.add_columns("key", "audit", "used by")
+        table.add_column("KEY", width=22)
+        table.add_column("AUDIT", width=12)
+        table.add_column("USED BY", width=18)
 
         rail = Rail(on_change=self._set_vault_view, id="vault-rail")
         pane = Vertical(head, FilterInput(on_change=self._set_vault_query, id="vault-filter-input"), table,
