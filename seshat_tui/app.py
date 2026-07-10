@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -25,14 +26,16 @@ from scanner import Scanner
 from vault import Vault
 
 from .colors import DOMAIN_ACCENTS, DOMAIN_GLYPHS, EMBLEM
+from .data import summarize_agreement_rules
 from .domains.agreements import AgreementsDomainMixin
 from .domains.invariant import InvariantDomainMixin
 from .domains.projects import ProjectsDomainMixin
 from .domains.receipts import ReceiptsDomainMixin
 from .domains.revocations import RevocationsDomainMixin
 from .domains.vault import VaultDomainMixin
+from .graph import GovernanceGraph, GovernanceNode
 from .palette import DomainCommandProvider
-from .screens import BootSplashScreen, HelpOverlayScreen
+from .screens import BootSplashScreen, DrillScreen, HelpOverlayScreen
 from .widgets import CliEcho
 
 _registry = Registry()
@@ -112,6 +115,7 @@ class SeshatApp(
         self.emblem = EMBLEM
         self.palette_commands: list = []
         self._echo_timer = None
+        self.governance_graph: GovernanceGraph | None = None
 
     def get_default_screen(self) -> Screen:
         return MainScreen(id="_default")
@@ -162,6 +166,7 @@ class SeshatApp(
         self.refresh_revocations()
         self.refresh_vault()
         self.set_interval(3, self.refresh_projects)
+        self._rebuild_governance_graph()
 
     def compose_body(self) -> ComposeResult:
         yield Static(self._render_topbar(), id="topbar")
@@ -238,6 +243,8 @@ class SeshatApp(
         }.get(name)
         if refresh:
             refresh()
+        if name in ("receipts", "agreements", "revocations", "invariant"):
+            self._rebuild_governance_graph()
         self._refresh_statusbar()
 
     # ── Row-selection dispatch (one handler; multiple domains use DataTable) ──
@@ -338,3 +345,37 @@ class SeshatApp(
         if self._echo_timer:
             self._echo_timer.stop()
         self._echo_timer = self.set_timer(8, echo.hide)
+
+    # ── Governance graph (drill-down authority trace) ──────────────────────
+
+    def _build_governance_graph(self) -> GovernanceGraph:
+        """Pure assembly from the same data the domains already load.
+        Never itself writes to ~/.seshat/ (read-only, same trust boundary
+        as the rest of the TUI)."""
+        receipts_data = receipts_module.load(limit=200)
+        agreement_text = agreements.load_agreement()
+        revocations_text = agreements.load_revocations()
+        agreement_rules = summarize_agreement_rules(agreement_text) if agreement_text else []
+        revocation_rules = summarize_agreement_rules(revocations_text) if revocations_text else []
+        return GovernanceGraph(receipts_data, agreement_rules, revocation_rules)
+
+    @work(thread=True, group="governance-graph", exclusive=True)
+    def _rebuild_governance_graph(self) -> None:
+        # Off the hot 3s projects-refresh path deliberately (§8 failure
+        # mode 1): this reads up to 200 receipt files plus both rule
+        # files, so it only runs at boot and on authority-domain tab
+        # activation, in a background thread.
+        graph = self._build_governance_graph()
+        self.call_from_thread(self._set_governance_graph, graph)
+
+    def _set_governance_graph(self, graph: GovernanceGraph) -> None:
+        self.governance_graph = graph
+
+    def push_drill(self, node: GovernanceNode) -> None:
+        if self.governance_graph is None:
+            # Cold-start fallback: a bounded, on-demand read (~200 small
+            # JSON files) triggered directly by the user's own second-enter
+            # action, not a periodic tax — guarantees DrillScreen never
+            # receives a None graph.
+            self._set_governance_graph(self._build_governance_graph())
+        self.push_screen(DrillScreen(self.governance_graph, node))

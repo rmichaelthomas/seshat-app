@@ -136,3 +136,27 @@ def test_drill_screen_pushes_renders_and_walks_back():
             assert len(app.screen_stack) == 1
 
     asyncio.run(run())
+
+
+def test_push_drill_builds_graph_lazily_and_pushes_screen():
+    from seshat_tui.graph import GovernanceNode
+    from seshat_tui.screens import DrillScreen
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.governance_graph is not None  # populated by on_main_mount
+
+            leaf = GovernanceNode("receipt", "◈", None, "receipt deadbeef…")
+            leaf.render_detail = lambda: "detail"
+            leaf.edges = lambda graph: []
+            app.push_drill(leaf)
+            await pilot.pause()
+            assert isinstance(app.screen_stack[-1], DrillScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+
+    asyncio.run(run())
