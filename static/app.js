@@ -12,9 +12,22 @@ let _refreshFailCount = 0;
 
 // ── Receipts / Vault detail-panel selection state ────────────────────────────
 // selectedName (above) tracks the selected Projects row; these track the
-// equivalent selection for the other two domains that now share #detailPanel.
+// equivalent selection for the other domains that now share #detailPanel.
 let selectedReceiptHash = null;
 let selectedVaultKey    = null;
+let selectedAgreementRule  = null; // { source: "agreement"|"revocation", index } | null
+let selectedInvariantClaim = null; // index into invariantLastRunCache.invariant.claims | null
+let selectedRevocationRule = null; // index into revocationsCache.rules | null
+
+// ── Agreements / Invariant / Revocations domain data caches ──────────────────
+// Populated on domain entry (renderAgreementsView/renderInvariantView/
+// renderRevocationsView) — unlike `projects`, these three aren't polled, so
+// the cache is simply "whatever the last fetch on this domain returned."
+let agreementCache      = null; // last GET /api/agreement response
+let revocationsCache    = null; // last GET /api/revocations response
+let invariantCache      = null; // last GET /api/invariant response
+let invariantLastRunCache = null; // last GET /api/invariant/last-run response
+let revocationDenialCountsCache = {}; // { ruleIndex: count } from the best-effort receipts join
 
 // ── Receipts follow/tail-mode state ──────────────────────────────────────────
 let receiptsCache     = [];   // currently-rendered receipts, newest first
@@ -154,14 +167,28 @@ const DOMAINS = [
   ["vault",       "⚿", "Vault"],
 ];
 
+// One subnav renderer per domain that has one. Agreements/Invariant/
+// Revocations extend the same mechanism Task 3 established for Projects
+// (renderProjectsSubnav) — a plain function returning subnav HTML, looked up
+// by domain id rather than chained in an ever-longer ternary.
+const DOMAIN_SUBNAV_RENDERERS = {
+  projects:    renderProjectsSubnav,
+  agreements:  renderAgreementsSubnav,
+  invariant:   renderInvariantSubnav,
+  revocations: renderRevocationsSubnav,
+};
+
 function renderSidebar() {
   // Organize is shown nested inside the Projects domain-view, so the
   // Projects row stays highlighted while Organize is active.
   const current = activeView === "organize" ? "projects" : activeView;
-  $("sidebar").innerHTML = DOMAINS.map(([id, glyph, label]) => `
+  $("sidebar").innerHTML = DOMAINS.map(([id, glyph, label]) => {
+    const subnavFn = id === current ? DOMAIN_SUBNAV_RENDERERS[id] : null;
+    return `
     <div class="nav-item${id === current ? " on" : ""}" onclick="showDomain('${id}')">
       <span class="ng">${glyph}</span> ${esc(label)}
-    </div>${id === current && id === "projects" ? renderProjectsSubnav() : ""}`).join("");
+    </div>${subnavFn ? subnavFn() : ""}`;
+  }).join("");
   // Groups are data-driven (fetched separately from `groups`); populate/wire
   // the #groupList placeholder the subnav string just created. renderGroups()
   // itself no-ops when #groupList isn't in the DOM, so this is safe to call
@@ -200,6 +227,70 @@ function renderProjectsSubnav() {
     </div>`;
 }
 
+// Shared "click a sub-nav row, scroll the main view to the matching anchor"
+// mechanism for Agreements/Invariant/Revocations — the brief is explicit that
+// this should be a simple scrollIntoView(), not a second view-mode toggle
+// like Projects' activeFilter. `?.` guards the case where the anchor hasn't
+// rendered yet (e.g. the domain's data fetch hasn't resolved).
+function _scrollDomainAnchor(anchorId) {
+  $(anchorId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// "Sync log" has no backing endpoint (no sync-history API exists) — per the
+// build brief, this surfaces that honestly via a toast rather than pretending
+// to have data or silently doing nothing.
+function showSyncLogUnavailable() {
+  toast("Sync history isn't available yet.", "info");
+}
+
+// Agreements sub-nav: "Agreement rules" / "Platform revocations" (only when
+// there are any) / "Dry run". Counts come from agreementCache/revocationsCache
+// (populated by renderAgreementsView()); omitted (not "0") until that fetch
+// resolves so the sub-nav never shows a fabricated count mid-load.
+function renderAgreementsSubnav() {
+  const ruleCount = agreementCache?.exists ? (agreementCache.rules || []).length : null;
+  const revCount  = revocationsCache?.exists ? (revocationsCache.rules || []).length : 0;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-rules')">
+        <span class="lbl">Agreement rules</span>${ruleCount !== null ? ` <span class="sc">${ruleCount}</span>` : ""}
+      </div>
+      ${revCount > 0 ? `
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-revocations')">
+        <span class="lbl">Platform revocations</span> <span class="sc">${revCount}</span>
+      </div>` : ""}
+      <div class="sub-item" onclick="_scrollDomainAnchor('agr-anchor-dryrun')"><span class="lbl">Dry run</span></div>
+    </div>`;
+}
+
+// Invariant sub-nav: "Last run" / "Contract". Both are anchors within the
+// single populated view (the reference's SUBNAV implies two switchable
+// views, but per the brief's guidance for Agreements — "don't build a second
+// view-mode toggle" — these just scroll to the matching section instead).
+function renderInvariantSubnav() {
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('inv-anchor-lastrun')"><span class="lbl">Last run</span></div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('inv-anchor-contract')"><span class="lbl">Contract</span></div>
+    </div>`;
+}
+
+// Revocations sub-nav: "Active" / "Sync log". "Sync log" has no backing data
+// (see showSyncLogUnavailable()) so it's not a scroll target.
+function renderRevocationsSubnav() {
+  const count = revocationsCache?.exists ? (revocationsCache.rules || []).length : null;
+  return `
+    <div class="subnav">
+      <div class="subnav-h">View</div>
+      <div class="sub-item" onclick="_scrollDomainAnchor('rev-anchor-active')">
+        <span class="lbl">Active</span>${count !== null ? ` <span class="sc">${count}</span>` : ""}
+      </div>
+      <div class="sub-item" onclick="showSyncLogUnavailable()"><span class="lbl">Sync log</span></div>
+    </div>`;
+}
+
 // Sets the Projects status filter from a sidebar sub-nav click. Same
 // activeFilter variable and render()-vs-switch-domain branching the old
 // initFilters()-bound .filter-btn click handler used — just invoked directly
@@ -221,9 +312,7 @@ function _activateDomainSection(id) {
 // showDomain() owns switching to one of the six real domains: it gates on
 // unsaved detail-panel edits (same protection showVaultView()/etc. always
 // had), flips the visible .domain-view section, updates activeView, keeps
-// the sidebar in sync, and — since Projects/Vault/Receipts have real data —
-// triggers that domain's render/load. Agreements/Invariant/Revocations have
-// nothing to load yet (empty stub sections, filled in by a later task).
+// the sidebar in sync, and triggers that domain's render/load.
 async function showDomain(id) {
   if (id === activeView) return; // re-clicking the active nav-item is a no-op
   if (await closeDetail() === false) return;
@@ -241,6 +330,12 @@ async function showDomain(id) {
     await renderVaultView();
   } else if (id === "receipts") {
     await renderReceiptsView();
+  } else if (id === "agreements") {
+    await renderAgreementsView();
+  } else if (id === "invariant") {
+    await renderInvariantView();
+  } else if (id === "revocations") {
+    await renderRevocationsView();
   }
 }
 
@@ -638,6 +733,664 @@ function prependReceiptRow(r) {
   row.addEventListener("click", () => selectReceipt(row.dataset.hash));
   tbody.insertBefore(row, tbody.firstChild);
   setTimeout(() => row.classList.remove("receipt-row-new"), 1200);
+}
+
+// ── Shared formatting helpers (Agreements/Invariant/Revocations) ────────────
+
+// No existing relative-time helper in app.js — receipts render absolute
+// times only (renderReceiptRows/renderReceiptDetail use toLocaleTimeString).
+// Written fresh here for the Agreements "synced Xm ago" banner and the
+// Revocations sync-freshness banner. Returns null for missing/unparseable
+// input so callers can fall back to their own copy ("never synced" etc.)
+// instead of printing something meaningless.
+function _relativeTime(isoString) {
+  if (!isoString) return null;
+  const then = new Date(isoString).getTime();
+  if (Number.isNaN(then)) return null;
+  const deltaSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (deltaSec < 60) return "just now";
+  const deltaMin = Math.floor(deltaSec / 60);
+  if (deltaMin < 60) return `${deltaMin}m ago`;
+  const deltaHr = Math.floor(deltaMin / 60);
+  if (deltaHr < 24) return `${deltaHr}h ago`;
+  const deltaDay = Math.floor(deltaHr / 24);
+  return `${deltaDay}d ago`;
+}
+
+// Maps an Agreement/revocation rule's verb to the existing .verb-permit /
+// .verb-forbid classes. The endpoint's documented shape allows a verb other
+// than permit/forbid ("other") — that case renders as plain text with no
+// color class rather than guessing.
+function _agrVerbCls(verb) {
+  if (verb === "permit") return "verb-permit";
+  if (verb === "forbid") return "verb-forbid";
+  return "";
+}
+
+// Pulls a bare `action is X` / `actor is X` value out of a canonical rule
+// string. Real canonical output on this machine renders these unquoted
+// (`action is start_project`), but the pattern also accepts a quoted form
+// (`action is "start_project"`) since the interpreter's canonical renderer
+// quotes some literals (e.g. `because "..."` reason clauses) and not others.
+// This is intentionally simple substring extraction, not a parser — good
+// enough for the best-effort override-status / recent-matches features the
+// brief explicitly scopes down to "simple substring/field comparison."
+function _extractAgrField(canonical, field) {
+  if (!canonical) return null;
+  const m = canonical.match(new RegExp(`\\b${field} is "?([^"\\s]+)"?`));
+  return m ? m[1] : null;
+}
+
+// ── Agreements domain ─────────────────────────────────────────────────────
+
+async function renderAgreementsView() {
+  $("agreementsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading agreement…</div></div>`;
+  try {
+    const [agrRes, revRes] = await Promise.all([
+      fetch("/api/agreement"),
+      fetch("/api/revocations"),
+    ]);
+    const agreement   = await agrRes.json();
+    const revocations = await revRes.json();
+    agreementCache   = agreement;
+    revocationsCache = revocations;
+
+    if (!agreement.exists) {
+      $("agreementsContent").innerHTML = renderAgreementsEmptyState();
+      renderSidebar();
+      return;
+    }
+
+    const rules    = agreement.rules || [];
+    const revRules = revocations.exists ? (revocations.rules || []) : [];
+
+    let bannerWarn = "";
+    if (revocations.exists && revRules.length > 0) {
+      const syncedStr = revocations.sync && revocations.sync.last_checked
+        ? `synced ${_relativeTime(revocations.sync.last_checked) || "recently"}`
+        : "never synced";
+      bannerWarn = `
+      <div class="banner warn">
+        <span class="bi" style="color:var(--red)">⊘</span> ${revRules.length} platform revocation${revRules.length !== 1 ? "s" : ""} overlay this Agreement
+        <span class="bspacer"></span>
+        <span class="num">${esc(syncedStr)}</span>
+      </div>`;
+    }
+
+    $("agreementsContent").innerHTML = `
+      <div class="view-title"><h1>Agreements</h1><span class="vsub">${rules.length} rule${rules.length !== 1 ? "s" : ""} · deny-by-default</span></div>
+      <div class="banner ok"><span class="bi" style="color:var(--green)">☰</span> Agreement active at <code>~/.seshat/agreement.limn</code> <span class="bspacer"></span> <span class="num">${rules.length} rule${rules.length !== 1 ? "s" : ""}</span></div>
+      ${bannerWarn}
+      <table class="tbl" id="agr-anchor-rules">
+        <thead><tr><th style="width:36px">#</th><th style="width:70px">Verb</th><th>Condition</th><th style="width:110px">Window</th><th style="width:90px">Source</th></tr></thead>
+        <tbody>
+          <tr><td colspan="5" class="tbl-section-label">Agreement rules</td></tr>
+          ${renderAgreementRuleRows(rules, "agreement")}
+          ${revRules.length ? `
+          <tr id="agr-anchor-revocations"><td colspan="5" class="tbl-section-label">Platform revocations</td></tr>
+          ${renderAgreementRuleRows(revRules, "revocation")}` : ""}
+        </tbody>
+      </table>
+      <div class="dryrun" id="agr-anchor-dryrun">
+        <div class="dryrun-h">Dry run — evaluate against the live Agreement (no side effects)</div>
+        <div class="dryrun-form">
+          <input class="actor-i" id="dryrunActor" placeholder="actor">
+          <input class="action-i" id="dryrunAction" placeholder="action">
+          <input class="scope-i" id="dryrunScope" placeholder="scope (optional)">
+          <button class="btn btn-primary" onclick="runAgreementDryRun()">Check</button>
+        </div>
+        <div id="dryrunResultWrap"></div>
+      </div>`;
+
+    wireAgreementRowClicks();
+    renderSidebar(); // refresh sub-nav counts now that data has loaded
+  } catch (e) {
+    $("agreementsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Agreement</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderAgreementsEmptyState() {
+  return `
+    <div class="view-title"><h1>Agreements</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">☰</div>
+      <div class="empty-title">No Agreement governs this machine</div>
+      <div class="empty-desc">Agents are acting without deny-by-default enforcement. An Agreement defines what each actor may and may not do.</div>
+      <div class="init-cmd"><div class="cl">initialize a starter Agreement</div><div class="cc"><span class="p">$</span> seshat agreement init</div></div>
+      <div class="init-cmd"><div class="cl">or install an existing file</div><div class="cc"><span class="p">$</span> seshat agreement install &lt;path&gt;</div></div>
+      <div class="platform-hint">translate a policy from English → <span class="lnk">liminate.dev/translate</span></div>
+    </div></div>`;
+}
+
+// `source` is "agreement" | "revocation" — used for row numbering (1,2,3…
+// vs R1,R2,R3…), the .src-tag variant, and which cache selectAgreementRule()
+// re-reads the rule from on click.
+function renderAgreementRuleRows(rules, source) {
+  return rules.map((r, i) => {
+    const rowNum = source === "revocation" ? `R${i + 1}` : `${i + 1}`;
+    if (r.error) {
+      return `<tr><td colspan="5" style="color:var(--red)">${esc(rowNum)}: ${esc(r.error)}</td></tr>`;
+    }
+    const srcTag = source === "revocation"
+      ? `<span class="src-tag rev">revocation</span>`
+      : `<span class="src-tag">agreement</span>`;
+    const win = r.window || "unbounded";
+    return `
+      <tr data-source="${source}" data-index="${i}">
+        <td class="num">${esc(rowNum)}</td>
+        <td>${r.verb ? `<span class="${_agrVerbCls(r.verb)}">${esc(r.verb)}</span>` : "—"}</td>
+        <td><span class="canon">${esc(r.canonical)}</span></td>
+        <td><span class="win ${esc(win)}">${esc(win)}</span></td>
+        <td>${srcTag}</td>
+      </tr>`;
+  }).join("");
+}
+
+function wireAgreementRowClicks() {
+  document.querySelectorAll("#agr-anchor-rules tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectAgreementRule(row.dataset.source, parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectAgreementRule(source, index) {
+  const rules = source === "revocation" ? (revocationsCache?.rules || []) : (agreementCache?.rules || []);
+  const rule = rules[index];
+  if (!rule || rule.error) return;
+  selectedAgreementRule  = { source, index };
+  selectedRevocationRule = null;
+  selectedInvariantClaim = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#agr-anchor-rules tbody tr[data-source="${source}"][data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = `<div class="empty-state" style="padding:40px 20px"><div class="empty-state-sub">Loading…</div></div>`;
+  $("detailPanel").classList.add("open");
+  renderAgreementRuleDetail(source, index, rule);
+}
+
+// Async because "recent matches" needs a follow-up /api/receipts fetch.
+// Renders a loading skeleton synchronously first (see selectAgreementRule),
+// then patches #detailInner once the fetch resolves — guarded by a
+// still-selected check so a fast second click can't land a stale response.
+async function renderAgreementRuleDetail(source, index, rule) {
+  const verbCls        = _agrVerbCls(rule.verb);
+  const win             = rule.window || "unbounded";
+  const overrideStatus  = _computeOverrideStatus(source, rule);
+  const actionName      = _extractAgrField(rule.canonical, "action");
+
+  let recentMatchesHTML = "";
+  if (actionName) {
+    try {
+      const res = await fetch(`/api/receipts?action=${encodeURIComponent(actionName)}&limit=5`);
+      if (res.ok) {
+        const matches = await res.json();
+        if (matches.length) {
+          recentMatchesHTML = `
+            <div class="d-h">Recent matches</div>
+            ${matches.map(r => {
+              const ts     = new Date(r.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+              const status = r.result && r.result.status;
+              const label  = status === "success" ? "✓ permitted" : status === "denied" ? "✗ denied" : `— ${esc(status || "unknown")}`;
+              const color  = status === "success" ? "var(--green)" : status === "denied" ? "var(--red)" : "var(--text-dim)";
+              return `<div class="d-row"><span class="k">${esc(ts)}</span><span class="v" style="color:${color}">${label}</span></div>`;
+            }).join("")}`;
+        }
+      }
+    } catch (_) { /* best-effort only — omit the section on failure */ }
+  }
+
+  if (!selectedAgreementRule || selectedAgreementRule.source !== source || selectedAgreementRule.index !== index) return;
+
+  $("detailInner").innerHTML = `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${source === "revocation" ? `Revocation R${index + 1}` : `Rule ${index + 1}`}</div>
+    <div class="d-meta">${esc(rule.verb || "—")} · ${esc(win)} · ${source === "revocation" ? "revocation" : "agreement"}</div>
+    <div class="d-h">Canonical form</div>
+    <div class="d-canon">${esc(rule.canonical)}</div>
+    <div class="d-h">Properties</div>
+    <div class="d-row"><span class="k">verb</span><span class="v ${verbCls}">${esc(rule.verb || "—")}</span></div>
+    <div class="d-row"><span class="k">window</span><span class="v">${esc(win)}</span></div>
+    <div class="d-row"><span class="k">source</span><span class="v">${source === "revocation" ? "revocation" : "agreement"}</span></div>
+    ${overrideStatus}
+    ${recentMatchesHTML}`;
+}
+
+// Best-effort: does any revocation rule reference the same action or actor
+// as this Agreement rule? Simple field-string comparison, not real semantic
+// overlap detection (per the brief). Only meaningful for Agreement rules —
+// revocations always win by construction, so they have no "override status"
+// of their own. Returns "" (omit the section) when there's nothing to
+// compare against; states "no overlapping revocation found" only when a real
+// comparison against real revocation rules was actually performed.
+function _computeOverrideStatus(source, rule) {
+  if (source === "revocation") return "";
+  const revRules = revocationsCache?.exists ? (revocationsCache.rules || []) : [];
+  if (!revRules.length) return "";
+  const myAction = _extractAgrField(rule.canonical, "action");
+  const myActor  = _extractAgrField(rule.canonical, "actor");
+  const overlapping = [];
+  if (myAction || myActor) {
+    revRules.forEach((rr, i) => {
+      if (rr.error) return;
+      const rAction = _extractAgrField(rr.canonical, "action");
+      const rActor  = _extractAgrField(rr.canonical, "actor");
+      if ((myAction && rAction && myAction === rAction) || (myActor && rActor && myActor === rActor)) {
+        overlapping.push(i);
+      }
+    });
+  }
+  const rows = overlapping.length
+    ? overlapping.map(i => `<div class="d-row"><span class="k">revocation R${i + 1}</span><span class="v" style="color:var(--red)">narrows this</span></div>`).join("")
+    : `<div class="d-row"><span class="k">—</span><span class="v">no overlapping revocation found</span></div>`;
+  return `<div class="d-h">Override status</div>${rows}`;
+}
+
+async function runAgreementDryRun() {
+  const actor  = ($("dryrunActor")?.value || "").trim();
+  const action = ($("dryrunAction")?.value || "").trim();
+  const scope  = ($("dryrunScope")?.value || "").trim();
+  const wrap = $("dryrunResultWrap");
+  if (!wrap) return;
+  if (!actor || !action) {
+    wrap.innerHTML = `<div class="dryrun-result forbidden"><span class="drr-verdict">Enter both actor and action</span></div>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="dryrun-result" style="opacity:.6">Checking…</div>`;
+  try {
+    const body = { actor, action };
+    if (scope) body.scope = scope; // omit scope from the body when blank, matching the endpoint's own handling
+    const res  = await fetch("/api/agreement/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    wrap.innerHTML = renderDryRunResult(data);
+  } catch (e) {
+    wrap.innerHTML = `<div class="dryrun-result forbidden"><span class="drr-verdict">✗ ERROR</span><div class="drr-reason">${esc(e.message)}</div></div>`;
+  }
+}
+
+// Only a true `mode === "permitted"` gets the green/permitted treatment —
+// every denial mode (forbidden/default-deny/no-agreement/error) gets the
+// red/forbidden treatment. The reference only defines two dryrun-result
+// variants (.permitted/.forbidden); per the brief this is an explicit,
+// documented judgment call rather than inventing a third CSS variant for
+// edge cases (error/no-agreement) the reference doesn't cover.
+function renderDryRunResult(data) {
+  if (data.error && !data.mode) {
+    return `<div class="dryrun-result forbidden"><span class="drr-verdict">✗ ERROR</span><div class="drr-reason">${esc(data.error)}</div></div>`;
+  }
+  const isPermitted = data.mode === "permitted";
+  const cls          = isPermitted ? "permitted" : "forbidden";
+  const verdictLabel = isPermitted ? "✓ PERMITTED" : `✗ ${(data.mode || "DENIED").toUpperCase()}`;
+  const ruleBlock = data.rule
+    ? `<div class="drr-rule">decided by <span class="canon">${esc(data.rule)}</span></div>` : "";
+  return `
+    <div class="dryrun-result ${cls}">
+      <span class="drr-verdict">${verdictLabel}</span> <span class="num">· mode: ${esc(data.mode || "—")}</span>
+      ${ruleBlock}
+      <div class="drr-reason">${esc(data.reason || "")}</div>
+    </div>`;
+}
+
+// ── Invariant domain ───────────────────────────────────────────────────────
+
+async function renderInvariantView() {
+  $("invariantContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading invariant…</div></div>`;
+  try {
+    const [invRes, lastRunRes] = await Promise.all([
+      fetch("/api/invariant"),
+      fetch("/api/invariant/last-run"),
+    ]);
+    const invariant = await invRes.json();
+    const lastRun    = await lastRunRes.json();
+    invariantCache        = invariant;
+    invariantLastRunCache = lastRun;
+
+    if (!invariant.exists) {
+      $("invariantContent").innerHTML = renderInvariantEmptyState();
+      renderSidebar();
+      return;
+    }
+
+    const hasLastRun = !!lastRun.exists;
+    const inv = hasLastRun ? lastRun.invariant : null;
+
+    const harnessChip = (hasLastRun && inv && inv.harness_version)
+      ? `<span class="num">harness v${esc(inv.harness_version)}</span>` : "";
+
+    const lastRunTimeShort = (hasLastRun && lastRun.receipt_timestamp)
+      ? new Date(lastRun.receipt_timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })
+      : null;
+    const subtitle = lastRunTimeShort
+      ? `semantic verification · last run ${lastRunTimeShort}`
+      : "semantic verification";
+
+    let bodyHTML;
+    if (!hasLastRun) {
+      // A contract can exist with zero runs so far — this is a legitimate
+      // intermediate state, not an error or a domain-empty-state.
+      bodyHTML = `<div style="padding:24px 4px;color:var(--text-muted);font-size:12px">No verification runs yet. Runs appear here after Invariant checks a permitted action.</div>`;
+    } else {
+      bodyHTML = await renderInvariantLastRunBody(inv, lastRun);
+    }
+
+    $("invariantContent").innerHTML = `
+      <div class="view-title"><h1>Invariant</h1><span class="vsub">${esc(subtitle)}</span></div>
+      <div class="banner ok" id="inv-anchor-contract"><span class="bi" style="color:var(--cyan)">◇</span> Verification contract at <code>~/.seshat/invariant.limn</code> <span class="bspacer"></span> ${harnessChip}</div>
+      <div id="inv-anchor-lastrun">${bodyHTML}</div>`;
+
+    if (hasLastRun) wireInvariantClaimRowClicks();
+    renderSidebar();
+  } catch (e) {
+    $("invariantContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load Invariant</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderInvariantEmptyState() {
+  return `
+    <div class="view-title"><h1>Invariant</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">◇</div>
+      <div class="empty-title">No verification contract</div>
+      <div class="empty-desc">Invariant runs semantic checks after each permitted action — confirming the environment actually matches what the action claimed. Without a contract, actions run unverified.</div>
+      <div class="init-cmd"><div class="cl">initialize a verification contract</div><div class="cc"><span class="p">$</span> seshat invariant init</div></div>
+    </div></div>`;
+}
+
+// Claim status vocabulary, confirmed against liminate_invariant.types
+// (ClaimOutcome.status): "verified" | "corrected" | "escalated" | "pending"
+// ("pending" is reserved for a deferred prediction capability this harness
+// version never assigns — handled here as a graceful "unknown" fallback,
+// not a crash, in case a future harness version does emit it).
+function _claimStatusCls(status) {
+  if (status === "verified")  return "claim-verified";
+  if (status === "corrected") return "claim-corrected";
+  if (status === "escalated") return "claim-escalated";
+  return "";
+}
+function _claimStatusGlyph(status) {
+  if (status === "verified")  return "●";
+  if (status === "corrected") return "◐";
+  if (status === "escalated") return "▲";
+  return "○";
+}
+
+// Builds the stat-row + claim table for a last-run that exists. Async: the
+// "From receipt" card's action name is a best-effort join against
+// /api/receipts by receipt_hash (not fabricated — omitted if the join fails
+// or the receipt can't be found, per the brief: "if that join is awkward,
+// showing just the hash is fine").
+async function renderInvariantLastRunBody(inv, lastRun) {
+  const claims = inv.claims || [];
+  const verifiedCount  = claims.filter(c => c.status === "verified").length;
+  const correctedCount = claims.filter(c => c.status === "corrected").length;
+  const escalatedCount = claims.filter(c => c.status === "escalated").length;
+  const otherCount     = claims.length - verifiedCount - correctedCount - escalatedCount;
+  const breakdownParts = [];
+  if (verifiedCount)  breakdownParts.push(`${verifiedCount} verified`);
+  if (correctedCount) breakdownParts.push(`${correctedCount} corrected`);
+  if (escalatedCount) breakdownParts.push(`${escalatedCount} escalated`);
+  if (otherCount)      breakdownParts.push(`${otherCount} other`);
+  const breakdownStr = breakdownParts.join(" · ") || "—";
+
+  const lastRunTs = lastRun.receipt_timestamp
+    ? new Date(lastRun.receipt_timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : "—";
+  const receiptShort = lastRun.receipt_hash ? `${lastRun.receipt_hash.slice(0, 12)}…` : "—";
+
+  let actionHint = "";
+  if (lastRun.receipt_hash) {
+    try {
+      const res = await fetch("/api/receipts?limit=200");
+      if (res.ok) {
+        const receipts = await res.json();
+        const match = receipts.find(r => r.receipt_hash === lastRun.receipt_hash);
+        if (match) actionHint = match.action;
+      }
+    } catch (_) { /* best-effort — hash-only fallback below is fine */ }
+  }
+
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(3,1fr)">
+      <div class="stat-card"><div class="sl">Last run</div><div class="sv${inv.converged ? " g" : ""}">${inv.converged ? "converged" : "not converged"}</div><div class="sm">${inv.total_cycles ?? "—"} cycle${inv.total_cycles === 1 ? "" : "s"} · ${esc(lastRunTs)}</div></div>
+      <div class="stat-card"><div class="sl">Claims</div><div class="sv">${claims.length}</div><div class="sm">${esc(breakdownStr)}</div></div>
+      <div class="stat-card"><div class="sl">From receipt</div><div class="sv" style="font-size:14px;color:var(--cyan)">${esc(receiptShort)}</div><div class="sm">${esc(actionHint)}</div></div>
+    </div>
+    ${inv.error ? `<div class="banner err"><span class="bi">⚠</span> ${esc(inv.error)}</div>` : ""}
+    <table class="tbl" id="inv-claims-table">
+      <thead><tr><th>Claim</th><th style="width:120px">Status</th></tr></thead>
+      <tbody>${renderInvariantClaimRows(claims)}</tbody>
+    </table>`;
+}
+
+function renderInvariantClaimRows(claims) {
+  if (!claims.length) return `<tr><td colspan="2" class="receipts-empty">No claims recorded for this run.</td></tr>`;
+  return claims.map((c, i) => `
+    <tr data-index="${i}">
+      <td class="canon">${esc(c.name || "—")}</td>
+      <td class="${_claimStatusCls(c.status)}">${_claimStatusGlyph(c.status)} ${esc(c.status || "unknown")}</td>
+    </tr>`).join("");
+}
+
+function wireInvariantClaimRowClicks() {
+  document.querySelectorAll("#inv-claims-table tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectInvariantClaim(parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectInvariantClaim(index) {
+  const claims = invariantLastRunCache?.invariant?.claims || [];
+  const c = claims[index];
+  if (!c) return;
+  selectedInvariantClaim = index;
+  selectedAgreementRule   = null;
+  selectedRevocationRule  = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#inv-claims-table tbody tr[data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderInvariantClaimDetail(c);
+  $("detailPanel").classList.add("open");
+}
+
+// "Environment snapshot" (per the reference's DETAILS.invariant) is NOT
+// rendered here — confirmed against invariant_check.py/liminate_invariant's
+// ClaimOutcome dataclass that no raw snapshot is retained per-claim in the
+// receipt's invariant block (the snapshot is only ever an internal input to
+// the verification agent, never part of its output). Likewise per-claim
+// history via receipts is omitted rather than attempted: there's no stable
+// way to join a claim identity across receipts beyond matching claim-name
+// text, and this machine has zero receipts carrying an invariant block to
+// validate that join against — the brief explicitly allows omission here
+// ("otherwise omit") over shipping an unverified best-effort feature.
+function renderInvariantClaimDetail(c) {
+  const lastRun      = invariantLastRunCache;
+  const receiptShort = lastRun?.receipt_hash ? `${lastRun.receipt_hash.slice(0, 12)}…` : "—";
+  const totalCycles  = lastRun?.invariant?.total_cycles;
+  const cycleStr     = (c.cycles != null && totalCycles != null) ? `${c.cycles} of ${totalCycles}` : (c.cycles ?? "—");
+
+  const escalationBlock = c.escalation_reason
+    ? `<div class="d-row"><span class="k">escalation reason</span><span class="v" style="color:var(--red)">${esc(c.escalation_reason)}</span></div>` : "";
+  const handlerBlock = c.handler
+    ? `<div class="d-row"><span class="k">handler</span><span class="v">${esc(c.handler)}</span></div>` : "";
+  const correctionsBlock = (c.corrections && c.corrections.length)
+    ? `<div class="d-h">Corrections</div>${c.corrections.map(x => `<div class="d-row"><span class="k">—</span><span class="v">${esc(x)}</span></div>`).join("")}`
+    : "";
+
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">${esc(c.name || "Claim")}</div>
+    <div class="d-meta"><span class="${_claimStatusCls(c.status)}">${_claimStatusGlyph(c.status)} ${esc(c.status || "unknown")}</span></div>
+    <div class="d-h">Checked against</div>
+    <div class="d-row"><span class="k">receipt</span><span class="v" style="color:var(--cyan)">${esc(receiptShort)}</span></div>
+    <div class="d-row"><span class="k">cycle</span><span class="v">${esc(String(cycleStr))}</span></div>
+    ${escalationBlock}
+    ${handlerBlock}
+    ${correctionsBlock}`;
+}
+
+// ── Revocations domain ─────────────────────────────────────────────────────
+
+async function renderRevocationsView() {
+  $("revocationsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Loading revocations…</div></div>`;
+  try {
+    const res  = await fetch("/api/revocations");
+    const data = await res.json();
+    revocationsCache = data;
+
+    if (!data.exists) {
+      $("revocationsContent").innerHTML = renderRevocationsEmptyState();
+      renderSidebar();
+      return;
+    }
+
+    const rules = data.rules || [];
+    const sync  = data.sync || {};
+    const freshness = _revocationsSyncFreshness(sync.last_checked);
+    const headShort = sync.head_hash ? `${sync.head_hash.slice(0, 4)}…${sync.head_hash.slice(-4)}` : "—";
+
+    // Best-effort denial-count join against /api/receipts (see
+    // _computeDenialCounts). Never fabricated — "—" when the join can't be
+    // performed (fetch failure) rather than 0 (0 is a real, meaningful count
+    // when the join succeeds and finds nothing).
+    let denialCounts = null;
+    try {
+      denialCounts = await _computeDenialCounts(rules);
+    } catch (_) { denialCounts = null; }
+    revocationDenialCountsCache = denialCounts || {};
+
+    $("revocationsContent").innerHTML = `
+      <div class="view-title"><h1>Revocations</h1><span class="vsub">platform overlay · forbid-only</span></div>
+      <div class="banner ${freshness.cls}"><span class="bi" style="color:var(--${freshness.dotColor})">${freshness.glyph}</span> ${esc(freshness.label)} <span class="bspacer"></span> <span class="num">head ${esc(headShort)}</span></div>
+      <table class="tbl" id="rev-anchor-active">
+        <thead><tr><th style="width:40px">#</th><th style="width:70px">Verb</th><th>Condition</th><th style="width:110px">Window</th><th style="width:90px">Denials</th></tr></thead>
+        <tbody>${renderRevocationRows(rules, revocationDenialCountsCache)}</tbody>
+      </table>`;
+
+    wireRevocationRowClicks();
+    renderSidebar();
+  } catch (e) {
+    $("revocationsContent").innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load revocations</div><div class="empty-state-sub">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderRevocationsEmptyState() {
+  return `
+    <div class="view-title"><h1>Revocations</h1></div>
+    <div class="empty-wrap"><div class="empty-card">
+      <div class="empty-glyph">⊘</div>
+      <div class="empty-title">No platform revocations</div>
+      <div class="empty-desc">Revocations are forbid-only kill orders authored on the platform and synced down. They subtract authority the Agreement grants, and always win.</div>
+      <div class="init-cmd"><div class="cl">sync revocations from the platform</div><div class="cc"><span class="p">$</span> seshat revocations sync</div></div>
+      <div class="platform-hint">revocations are authored on <span class="lnk">liminate.dev</span></div>
+    </div></div>`;
+}
+
+// Sync-freshness thresholds (client-computed per the build plan — the
+// backend deliberately only exposes raw last_checked): fresh = synced within
+// the last hour (green/.banner.ok), stale = synced longer ago than that
+// (amber/.banner.warn), never = last_checked is null (red/.banner.err).
+// There's no single "correct" threshold specified anywhere in the brief;
+// documented here and in the task report as a judgment call.
+function _revocationsSyncFreshness(lastChecked) {
+  if (!lastChecked) {
+    return { cls: "err", glyph: "○", dotColor: "red", label: "Never synced" };
+  }
+  const then = new Date(lastChecked).getTime();
+  if (Number.isNaN(then)) {
+    return { cls: "err", glyph: "○", dotColor: "red", label: "Never synced" };
+  }
+  const ageMs = Date.now() - then;
+  const rel = _relativeTime(lastChecked) || "recently";
+  if (ageMs <= 60 * 60 * 1000) {
+    return { cls: "ok", glyph: "●", dotColor: "green", label: `Synced ${rel}` };
+  }
+  return { cls: "warn", glyph: "●", dotColor: "orange", label: `Synced ${rel} (stale)` };
+}
+
+// Best-effort denial count per rule: joins on exact string equality between
+// a rule's canonical form and a denied receipt's result.rule. This is a real
+// field, not a guess — mcp_server.py's _enforce() writes result.rule =
+// decision.rule (the exact canonical string of the deciding Agreement rule)
+// on every denial receipt, confirmed by reading mcp_server.py directly. When
+// the fetch itself fails, the caller shows "—"; when it succeeds, a rule
+// with zero matches legitimately shows 0, not "—".
+async function _computeDenialCounts(rules) {
+  const counts = {};
+  if (!rules.length) return counts;
+  const res = await fetch("/api/receipts?limit=200");
+  if (!res.ok) throw new Error("receipts fetch failed");
+  const receipts = await res.json();
+  const denied = receipts.filter(r => r.result && r.result.status === "denied" && r.result.rule);
+  rules.forEach((rule, i) => {
+    if (rule.error) return;
+    counts[i] = denied.filter(r => r.result.rule === rule.canonical).length;
+  });
+  return counts;
+}
+
+function renderRevocationRows(rules, denialCounts) {
+  if (!rules.length) return `<tr><td colspan="5" class="receipts-empty">No revocation rules parsed.</td></tr>`;
+  return rules.map((r, i) => {
+    const rowNum = `R${i + 1}`;
+    if (r.error) {
+      return `<tr><td colspan="5" style="color:var(--red)">${esc(rowNum)}: ${esc(r.error)}</td></tr>`;
+    }
+    const win   = r.window || "unbounded";
+    const count = denialCounts && denialCounts[i] !== undefined ? denialCounts[i] : null;
+    return `
+      <tr data-index="${i}">
+        <td class="num">${esc(rowNum)}</td>
+        <td>${r.verb ? `<span class="${_agrVerbCls(r.verb)}">${esc(r.verb)}</span>` : "—"}</td>
+        <td><span class="canon">${esc(r.canonical)}</span></td>
+        <td><span class="win ${esc(win)}">${esc(win)}</span></td>
+        <td class="num">${count === null ? "—" : count}</td>
+      </tr>`;
+  }).join("");
+}
+
+function wireRevocationRowClicks() {
+  document.querySelectorAll("#rev-anchor-active tbody tr[data-index]").forEach(row => {
+    row.addEventListener("click", () => selectRevocationRule(parseInt(row.dataset.index, 10)));
+  });
+}
+
+function selectRevocationRule(index) {
+  const rule = (revocationsCache?.rules || [])[index];
+  if (!rule || rule.error) return;
+  selectedRevocationRule = index;
+  selectedAgreementRule   = null;
+  selectedInvariantClaim  = null;
+  selectedReceiptHash     = null;
+  selectedVaultKey        = null;
+  selectedName            = null;
+  document.querySelectorAll(".tbl tbody tr.sel").forEach(row => row.classList.remove("sel"));
+  document.querySelector(`#rev-anchor-active tbody tr[data-index="${index}"]`)?.classList.add("sel");
+  $("detailInner").innerHTML = renderRevocationDetail(rule, index);
+  $("detailPanel").classList.add("open");
+}
+
+function renderRevocationDetail(rule, index) {
+  const sync         = revocationsCache?.sync || {};
+  const headShort    = sync.head_hash ? `${sync.head_hash.slice(0, 12)}…` : "—";
+  const lastChecked  = sync.last_checked ? (_relativeTime(sync.last_checked) || "recently") : "never synced";
+  const count        = revocationDenialCountsCache[index];
+  const win          = rule.window || "unbounded";
+  return `
+    <div class="detail-close-row"><button class="icon-btn" onclick="closeDetail()">✕</button></div>
+    <div class="d-title">Revocation R${index + 1}</div>
+    <div class="d-meta">${esc(rule.verb || "forbid")} · ${esc(win)} · from platform</div>
+    <div class="d-h">Canonical form</div>
+    <div class="d-canon">${esc(rule.canonical)}</div>
+    <div class="d-h">Sync metadata</div>
+    <div class="d-row"><span class="k">head hash</span><span class="v" style="color:var(--cyan)">${esc(headShort)}</span></div>
+    <div class="d-row"><span class="k">last checked</span><span class="v">${esc(lastChecked)}</span></div>
+    <div class="d-h">Enforcement</div>
+    <div class="d-row"><span class="k">denials (recent)</span><span class="v" style="color:var(--red)">${count === undefined || count === null ? "—" : count}</span></div>`;
 }
 
 // ── Router setup ──────────────────────────────────────────────────────────
@@ -1515,6 +2268,9 @@ async function closeDetail() {
   selectedName        = null;
   selectedReceiptHash = null;
   selectedVaultKey    = null;
+  selectedAgreementRule  = null;
+  selectedInvariantClaim = null;
+  selectedRevocationRule = null;
   document.querySelectorAll(".project-row").forEach(r => r.classList.remove("selected"));
   document.querySelectorAll(".tbl tbody tr.sel").forEach(r => r.classList.remove("sel"));
   $("detailPanel").classList.remove("open");
