@@ -36,11 +36,11 @@ def test_verify_rejects_an_appended_caveat_without_re_signing():
     """The append-only macaroon property: adding a caveat after signing
     must invalidate the token, since the signature only covers the
     caveats that existed when it was computed."""
-    token = identity.mint("agent-x", caveats=['permit action is "translate"'])
+    token = identity.mint("agent-x", caveats=['forbid action is "translate"'])
     header_b64, payload_b64, sig_b64 = token.split(".")
     padding = "=" * (-len(payload_b64) % 4)
     payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
-    payload["caveats"].append('permit action is "wipe_disk"')
+    payload["caveats"].append('forbid action is "wipe_disk"')
     new_payload_b64 = base64.urlsafe_b64encode(
         json.dumps(payload, sort_keys=True).encode()
     ).rstrip(b"=").decode("ascii")
@@ -77,8 +77,8 @@ def test_mint_is_deterministic_for_same_identifier_and_caveats():
     """No nonce in the chain formula (§4 is explicit: sig_0 = HMAC(root_key,
     identifier)) — same inputs, same key, same token. This is intentional
     for Stage 1 (no expiry/lifecycle yet); Stage 3 owns freshness."""
-    t1 = identity.mint("agent-x", caveats=['permit action is "translate"'])
-    t2 = identity.mint("agent-x", caveats=['permit action is "translate"'])
+    t1 = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
+    t2 = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
     assert t1 == t2
 
 
@@ -89,34 +89,49 @@ class TestCaveatLegality:
     token (confirmed: it raises ERROR_PARSE for that syntax), so membership
     is legal via repeated 'X is "a" or X is "b"' equality clauses, which
     the interpreter does support and which check_action already evaluates
-    via auto_confirm_amber=True."""
+    via auto_confirm_amber=True.
+
+    Caveats are forbid-only — NOT 'forbid / permit' as the design's own
+    §5 wording literally reads. A caveat is spliced into the exact same
+    evaluation pool as the Agreement (§6), and Liminate's permit semantics
+    are purely additive/non-blocking: a 'permit' caveat can therefore
+    GRANT authority the Agreement never gave (confirmed empirically before
+    writing this fix — see the PR body), inverting the one property a
+    macaroon caveat must have. 'forbid' has no such path (forbid always
+    wins, never grants), so it is the only safe caveat verb."""
 
     def test_identity_equality_is_legal(self):
-        assert identity.is_legal_caveat('permit actor is "agent-x"') is True
+        assert identity.is_legal_caveat('forbid actor is "agent-x"') is True
 
     def test_action_equality_is_legal(self):
-        assert identity.is_legal_caveat('permit action is "translate"') is True
+        assert identity.is_legal_caveat('forbid action is "wipe_disk"') is True
 
     def test_action_set_membership_via_or_is_legal(self):
         assert identity.is_legal_caveat(
-            'permit action is "translate" or action is "summarize"'
+            'forbid action is "wipe_disk" or action is "delete_all"'
         ) is True
 
     def test_scope_equality_is_legal(self):
-        assert identity.is_legal_caveat('permit scope is "none"') is True
+        assert identity.is_legal_caveat('forbid scope is "production"') is True
 
     def test_temporal_window_is_legal(self):
         assert identity.is_legal_caveat(
             'until "2099-01-01" forbid action is "wipe_disk"'
         ) is True
         assert identity.is_legal_caveat(
-            'starting "2020-01-01" permit action is "translate"'
+            'starting "2020-01-01" forbid action is "wipe_disk"'
         ) is True
 
-    def test_forbid_permit_over_actor_action_scope_is_legal(self):
+    def test_forbid_over_actor_action_scope_is_legal(self):
         assert identity.is_legal_caveat(
-            'permit actor is "agent-x" and action is "translate" and scope is "none"'
+            'forbid actor is "agent-x" and action is "wipe_disk" and scope is "production"'
         ) is True
+
+    def test_permit_verb_is_illegal(self):
+        """The critical, security-relevant case: a permit caveat must be
+        rejected outright, since it can grant instead of restrict."""
+        assert identity.is_legal_caveat('permit action is "wipe_disk"') is False
+        assert identity.is_legal_caveat('permit actor is "agent-x"') is False
 
     def test_malformed_date_is_illegal(self):
         assert identity.is_legal_caveat(
@@ -129,12 +144,12 @@ class TestCaveatLegality:
 
     def test_unresolvable_external_predicate_is_illegal(self):
         assert identity.is_legal_caveat(
-            'permit action is "translate" and reviewed_by is "someone"'
+            'forbid action is "wipe_disk" and reviewed_by is "someone"'
         ) is False
 
     def test_multi_statement_line_is_illegal(self):
         assert identity.is_legal_caveat(
-            'permit action is "translate"\nforbid action is "wipe_disk"'
+            'forbid action is "translate"\nforbid action is "wipe_disk"'
         ) is False
 
     def test_blank_and_comment_lines_are_illegal(self):
@@ -149,15 +164,15 @@ class TestCaveatLegality:
         import amendment_diff
 
         shapes = [
-            'permit actor is "agent-x"',
-            'permit action is "translate" or action is "summarize"',
-            'permit scope is "none"',
+            'forbid actor is "agent-x"',
+            'forbid action is "wipe_disk" or action is "delete_all"',
+            'forbid scope is "production"',
             'forbid action is "wipe_disk"',
         ]
         for line in shapes:
             statements = amendment_diff.parse_statements(line)
             assert len(statements) == 1
-            assert statements[0]["verb"] in ("forbid", "permit")
+            assert statements[0]["verb"] == "forbid"
 
 
 class TestMintRejectsIllegalCaveats:
@@ -167,13 +182,13 @@ class TestMintRejectsIllegalCaveats:
 
     def test_mint_succeeds_with_all_legal_caveats(self):
         token = identity.mint("agent-x", caveats=[
-            'permit action is "translate"',
+            'forbid action is "delete_all"',
             'until "2099-01-01" forbid action is "wipe_disk"',
         ])
         verified = identity.verify(token)
         assert verified is not None
         assert verified.caveats == [
-            'permit action is "translate"',
+            'forbid action is "delete_all"',
             'until "2099-01-01" forbid action is "wipe_disk"',
         ]
 

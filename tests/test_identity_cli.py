@@ -24,18 +24,32 @@ def test_mint_prints_a_serialized_token_and_writes_metadata(tmp_path, monkeypatc
     assert verified.identifier == "agent-x"
 
 
-def test_mint_with_caveat_and_until(tmp_path, monkeypatch):
+def test_mint_with_multiple_forbid_caveats(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "mint", "agent-x",
-        "--caveat", 'permit action is "translate"',
-        "--until", "2099-01-01",
+        "--caveat", 'forbid action is "wipe_disk"',
+        "--caveat", 'until "2099-01-01" forbid action is "delete_all"',
     ])
     assert result.exit_code == 0
     meta = json.loads(next(tmp_path.glob("*.json")).read_text())
-    assert 'permit action is "translate"' in meta["caveats"]
+    assert 'forbid action is "wipe_disk"' in meta["caveats"]
     assert any(c.startswith('until "2099-01-01"') for c in meta["caveats"])
+
+
+def test_mint_rejects_a_permit_caveat(tmp_path, monkeypatch):
+    """The critical security case at the CLI surface: a permit caveat can
+    grant authority the Agreement never gave, so it must be refused here
+    exactly like any other illegal caveat (§5)."""
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, [
+        "identity", "mint", "agent-x",
+        "--caveat", 'permit action is "wipe_disk"',
+    ])
+    assert result.exit_code != 0
+    assert list(tmp_path.glob("*.json")) == []
 
 
 def test_mint_rejects_an_illegal_caveat(tmp_path, monkeypatch):

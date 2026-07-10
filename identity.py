@@ -126,19 +126,32 @@ def _strip_temporal_prefix(line: str) -> str:
 
 def is_legal_caveat(line: str) -> bool:
     """True only for the locked §5 subset: an optional temporal prefix,
-    followed by exactly one forbid/permit statement whose predicate
-    resolves fully against just the (actor, action, scope) facts — proven
-    by actually running it through the real liminate interpreter with
-    those three facts remembered as dummy probe values, the same shape
+    followed by exactly one **forbid** statement whose predicate resolves
+    fully against just the (actor, action, scope) facts — proven by
+    actually running it through the real liminate interpreter with those
+    three facts remembered as dummy probe values, the same shape
     agreements.check_action() composes at real enforcement time. This is
     deliberately NOT a hand-rolled predicate grammar: reusing the real
     evaluator is what proves offline decidability, rather than asserting
     it.
 
+    `permit` is deliberately NOT a legal caveat verb, despite the design
+    naming "forbid / permit" as the allow-deny shape: Liminate composes a
+    caveat into the SAME flat evaluation pool as the Agreement (§6), and
+    its `permit` semantics are purely additive/non-blocking (confirmed:
+    `check_action`'s permit-scan grants on ANY matching permit result,
+    regardless of source) — so a `permit` caveat can GRANT authority the
+    Agreement never gave, inverting the one property a macaroon caveat
+    must have: it can only narrow authority, never widen it. A `forbid`
+    caveat has no such escalation path (forbid always wins, never grants),
+    so it is the only verb that can safely appear in a caveat. See the PR
+    body for the concrete escalation this closes.
+
     Fails closed (False) for: a malformed date, more or fewer than one
-    parsed statement, a verb other than forbid/permit (including 'other'),
-    or a predicate referencing anything the interpreter can't resolve from
-    just actor/action/scope (an unbounded/external predicate).
+    parsed statement, a verb other than forbid (including 'permit' and
+    'other'), or a predicate referencing anything the interpreter can't
+    resolve from just actor/action/scope (an unbounded/external
+    predicate).
     """
     # Deferred import: agreements.py imports this module at load time to
     # call identity.verify(); importing agreements at identity.py's module
@@ -165,7 +178,7 @@ def is_legal_caveat(line: str) -> bool:
     statements = amendment_diff.parse_statements(remainder)
     if len(statements) != 1:
         return False
-    if statements[0]["verb"] not in ("forbid", "permit"):
+    if statements[0]["verb"] != "forbid":
         return False
 
     probe = (

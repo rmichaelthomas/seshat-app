@@ -1505,20 +1505,23 @@ def identity_cmd():
 @identity_cmd.command(name="mint")
 @click.argument("agent")
 @click.option("--caveat", "caveats", multiple=True, help="A Liminate caveat line (repeatable).")
-@click.option("--until", "until_date", default=None, help="Add a global 'until \"<date>\"' expiry caveat.")
-def identity_mint(agent, caveats, until_date):
+def identity_mint(agent, caveats):
     """Mint a new identity token for AGENT and print it.
 
     The printed token is what SESHAT_IDENTITY_TOKEN should carry for that
     agent's MCP session. This command never writes to agreement.limn,
     revocations.limn, invariant.limn, or entrenched.limn.
+
+    There is deliberately no blanket "--until" expiry flag here: caveats
+    may only forbid (see identity.is_legal_caveat's docstring for why a
+    permissive caveat is unsafe), and forbidding a specific (actor,
+    action, scope) triple after a date is not the same as expiring the
+    whole token — there is no way to say "forbid every action" without a
+    wildcard/negation the locked caveat grammar doesn't have. Token
+    lifecycle (short-lived tokens, revocation) is Stage 3's job, not
+    approximated here.
     """
     caveat_list = list(caveats)
-    if until_date:
-        # A blanket expiry using only the locked §5 shapes: a temporally-
-        # windowed self-referential permit (no bare "expires" caveat verb
-        # exists in the locked subset).
-        caveat_list.append(f'until "{until_date}" permit actor is "{agent}"')
 
     try:
         token = identity.mint(agent, caveats=caveat_list)
