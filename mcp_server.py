@@ -65,6 +65,13 @@ def _agreement_actor() -> str:
 
     Single source of truth: the string checked against the Agreement and the
     agent_hint recorded in every receipt must never diverge (§8 invariant 3).
+
+    F-02 (acute): this is self-declared, not authenticated — any process
+    can set MCP_AGENT_HINT to any string. receipts.emit() stamps every
+    receipt's actor.identity_verified: false unconditionally for exactly
+    this reason. Actor-scoped Agreement permit/forbid rules built on this
+    string are advisory, not a security boundary, until real per-agent
+    credentials exist (identity-plane arc).
     """
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
 

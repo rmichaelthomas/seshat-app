@@ -11,10 +11,14 @@ dashboard) produce one linear chain instead of forking.
 
 import fcntl
 import hashlib
+import hmac
 import json
+import secrets
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+import keyring
 
 from registry import Registry
 from scanner import Scanner
@@ -28,6 +32,48 @@ RECEIPTS_DIR = Path.home() / ".seshat" / "receipts"
 RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCK_PATH = RECEIPTS_DIR / ".chain.lock"
+CHAIN_HEAD_PATH = RECEIPTS_DIR / ".chain_head"
+
+# receipt_version 2 = keyed (HMAC-SHA256) + anchored (.chain_head). A
+# receipt with no receipt_version (or < 2) predates this and was hashed
+# with a plain, unkeyed sha256 — verify still reads it, but only as a
+# legacy, link-verified-only prefix (F-01 §7 failure mode #2).
+RECEIPT_VERSION = 2
+
+# Same Keychain service vault.py uses for its Fernet key — one
+# key-storage mechanism in this codebase, not two.
+MAC_SERVICE_NAME = "seshat"
+MAC_KEY_ITEM = "receipt_mac_key"
+
+
+class ReceiptKeyUnavailableError(RuntimeError):
+    """The receipt MAC key could not be obtained. emit() refuses to write
+    an unkeyed receipt rather than silently falling back to a plain hash
+    anyone could recompute (F-01) — fail closed, not fail open."""
+
+
+def _mac_key() -> bytes:
+    """Per-install HMAC key for receipt hashing, Keychain-backed via
+    `keyring` — generated once and stored the same way vault.py stores its
+    Fernet key. Any failure here (missing keyring, locked Keychain, etc.)
+    propagates to the caller; _keyed_hash is the single seam that converts
+    that into the fail-closed ReceiptKeyUnavailableError."""
+    raw = keyring.get_password(MAC_SERVICE_NAME, MAC_KEY_ITEM)
+    if not raw:
+        raw = secrets.token_hex(32)
+        keyring.set_password(MAC_SERVICE_NAME, MAC_KEY_ITEM, raw)
+    return bytes.fromhex(raw)
+
+
+def _keyed_hash(canonical: str) -> str:
+    try:
+        key = _mac_key()
+    except Exception as exc:
+        raise ReceiptKeyUnavailableError(
+            "Cannot key the receipt chain: the Keychain-backed MAC key is "
+            "unavailable. Refusing to emit an unkeyed receipt."
+        ) from exc
+    return hmac.new(key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def snapshot() -> dict:
@@ -43,8 +89,11 @@ def snapshot() -> dict:
     }
 
 
-def recover_chain_head() -> str | None:
-    """Read the most recent receipt file and return its receipt_hash, or None."""
+def _legacy_recover_chain_head() -> str | None:
+    """Pre-anchor method: trust the highest-sorted filename. Filenames are
+    attacker-controllable (F-01), so this is used only to bootstrap
+    .chain_head the first time this code runs against a chain that
+    predates it — never trusted once an anchor exists."""
     try:
         files = sorted(RECEIPTS_DIR.glob("*.json"))
         if not files:
@@ -53,6 +102,37 @@ def recover_chain_head() -> str | None:
         return last.get("receipt_hash")
     except (json.JSONDecodeError, OSError, KeyError):
         return None
+
+
+def _read_chain_head() -> dict | None:
+    try:
+        return json.loads(CHAIN_HEAD_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_chain_head(head_hash: str, count: int) -> None:
+    CHAIN_HEAD_PATH.write_text(json.dumps({"head_hash": head_hash, "count": count}))
+
+
+def _recover_chain_state() -> tuple[str | None, int]:
+    """Return (head_hash, count) from the persisted anchor — NOT from
+    sorting receipt filenames (F-01: filenames are attacker-controllable,
+    and file presence alone can't reveal a deleted tail). Bootstraps the
+    anchor once from the legacy glob method the first time this runs
+    against a chain that predates .chain_head."""
+    anchor = _read_chain_head()
+    if anchor is not None:
+        return anchor.get("head_hash"), anchor.get("count", 0)
+    legacy_head = _legacy_recover_chain_head()
+    legacy_count = len(list(RECEIPTS_DIR.glob("*.json")))
+    return legacy_head, legacy_count
+
+
+def recover_chain_head() -> str | None:
+    """Return the current chain head hash from the persisted anchor."""
+    head_hash, _count = _recover_chain_state()
+    return head_hash
 
 
 def emit(
@@ -85,7 +165,7 @@ def emit(
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-        previous_hash = recover_chain_head()
+        previous_hash, previous_count = _recover_chain_state()
 
         receipt = {
             "type": "machine_action",
@@ -94,6 +174,14 @@ def emit(
                 "type": actor_type,
                 "session_id": session_id,
                 "agent_hint": agent_hint,
+                # F-02 (acute): agent_hint is a self-declared string (from
+                # MCP_AGENT_HINT), never an authenticated identity. This is
+                # unconditional — not derived from agent_hint's value — so
+                # no receipt or downstream reader (including actor-scoped
+                # Agreement permit/forbid rules) can mistake it for a
+                # verified one until real per-agent credentials exist
+                # (identity-plane arc).
+                "identity_verified": False,
             },
             "action": action,
             "target": target,
@@ -108,9 +196,13 @@ def emit(
         if invariant is not None:
             receipt["invariant"] = invariant
         receipt["previous_hash"] = previous_hash
+        receipt["receipt_version"] = RECEIPT_VERSION
 
         canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-        receipt_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        # Fail closed: _keyed_hash raises ReceiptKeyUnavailableError rather
+        # than falling back to an unkeyed hash. Nothing is written below if
+        # this raises (F-01).
+        receipt_hash = _keyed_hash(canonical)
         receipt["receipt_hash"] = receipt_hash
 
         # Microsecond resolution (not just seconds): under the lock, concurrent
@@ -122,6 +214,11 @@ def emit(
             f"_{action}_{uuid.uuid4().hex[:8]}.json"
         )
         (RECEIPTS_DIR / filename).write_text(json.dumps(receipt, indent=2))
+
+        # Anchor write, same lock as the receipt write (§7 failure mode #3
+        # — writing it outside the lock would let a race leave the anchor
+        # and the receipt files disagreeing about the true head).
+        _write_chain_head(receipt_hash, previous_count + 1)
     finally:
         lock_fd.close()
 

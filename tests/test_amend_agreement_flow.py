@@ -29,6 +29,7 @@ def seshat_home(tmp_path, monkeypatch):
 
     monkeypatch.setattr(receipts_module, "RECEIPTS_DIR", receipts_dir)
     monkeypatch.setattr(receipts_module, "LOCK_PATH", receipts_dir / ".chain.lock")
+    monkeypatch.setattr(receipts_module, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
     monkeypatch.setattr(
         receipts_module, "snapshot",
         lambda: {"listening_ports": [], "managed_projects": {}},

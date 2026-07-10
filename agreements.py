@@ -225,6 +225,13 @@ def check_action(
     `scope` is always remembered as a fact — sentinel "none" when the call
     has no project/group target — so an Agreement conditioning on scope
     never hits an unknown-name error on scope-less actions.
+
+    F-02 (acute): `actor` is a self-declared string (MCP_AGENT_HINT), not
+    an authenticated identity — nothing here verifies who is actually
+    calling. Actor-scoped permit/forbid rules are therefore advisory, not
+    a security boundary, until real per-agent credentials exist
+    (identity-plane arc). Every receipt records this explicitly via
+    actor.identity_verified: false.
     """
     if agreement_text is None:
         agreement_text = load_agreement()

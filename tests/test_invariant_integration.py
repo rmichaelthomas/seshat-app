@@ -27,6 +27,7 @@ class TestNoContractMeansNoBlock:
     def test_receipt_has_no_invariant_key_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", tmp_path)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
 
         receipts_mod.emit(
             action="start_project",
@@ -64,6 +65,7 @@ class TestPassingClaimConverges:
         monkeypatch.setattr(agreements, "load_invariant", lambda: contract)
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", tmp_path)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
 
         block = invariant_check.run_verification(ENV_SNAPSHOT)
         receipts_mod.emit(
@@ -106,6 +108,7 @@ class TestFailingClaimEscalatesWithoutBlocking:
         monkeypatch.setattr(agreements, "load_invariant", lambda: contract)
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", tmp_path)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
 
         action_result = {"status": "success"}
         block = invariant_check.run_verification(ENV_SNAPSHOT)
