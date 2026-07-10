@@ -18,6 +18,7 @@ import agreements
 
 from ..colors import COLORS
 from ..data import denial_count_for_rule, summarize_agreement_rules
+from ..graph import RuleNode
 from ..palette import PaletteCommand
 from ..screens import DryRunModal
 from ..widgets import EmptyState, FilterInput, Rail
@@ -45,6 +46,7 @@ class AgreementsDomainMixin:
         self.agreements_view = "all"
         self._agreements_rules_cache: dict[str, dict] = {}
         self._agreements_built = False
+        self._agreements_detailed_key: str | None = None
 
     def get_agreements_palette_commands(self) -> list[PaletteCommand]:
         return [
@@ -177,11 +179,22 @@ class AgreementsDomainMixin:
         row_id = str(event.row_key.value)
         rule = self._agreements_rules_cache.get(row_id)
         detail = self.query_one("#agreements-detail", Vertical)
-        detail.remove_children()
         if not rule or "error" in (rule or {}):
+            detail.remove_children()
             detail.mount(Static("[#9A8B6E]select a rule[/#9A8B6E]"))
+            self._agreements_detailed_key = None
             return
 
+        if row_id == self._agreements_detailed_key:
+            node = RuleNode(
+                rule["canonical"], rule.get("verb"), rule.get("window", "unbounded"),
+                is_revocation=rule.get("_revocation", False),
+            )
+            self.push_drill(node)
+            return
+        self._agreements_detailed_key = row_id
+
+        detail.remove_children()
         verb = rule["verb"] or "?"
         verb_style = f"{COLORS['green']} b" if verb == "permit" else f"{COLORS['red']} b"
         lines = [
@@ -197,7 +210,8 @@ class AgreementsDomainMixin:
             lines += ["", "[#9A8B6E b]ENFORCEMENT[/#9A8B6E b]", f"denials   [#DD6E5A]{denials}[/#DD6E5A]"]
         detail.mount(Static("\n".join(lines)))
         detail.mount(Static(
-            "[#E8AE52 b]c[/#E8AE52 b] dry-run this rule\n[#E8AE52 b]e[/#E8AE52 b] edit agreement",
+            "[#E8AE52 b]c[/#E8AE52 b] dry-run this rule\n[#E8AE52 b]e[/#E8AE52 b] edit agreement\n"
+            "[#E8AE52 b]↵[/#E8AE52 b] trace authority",
             classes="cta-block",
         ))
 

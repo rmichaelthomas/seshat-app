@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import Callable
 
 from textual import events
-from textual.containers import Vertical
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, ListItem, ListView, RichLog, Static
 
-from .colors import COLORS
+from .colors import COLORS, EMBLEM
+from .graph import Edge, GovernanceGraph, GovernanceNode
 
 # Verified figlet block wordmark (seshat_tui_FINAL_source.py WORD list) —
 # my own earlier hand-drawn ▄▀ approximation didn't actually spell SESHAT
@@ -303,3 +305,107 @@ class LogViewerModal(ModalScreen):
 
     def action_dismiss_modal(self) -> None:
         self.dismiss()
+
+
+class DrillScreen(Screen):
+    """Drill-down authority trace: press enter on a governance object to
+    walk to a related object, esc to walk back — k9s's drill-and-escape
+    model applied to Seshat's authority graph (receipt -> rule ->
+    revocation). See seshat_tui/graph.py for GovernanceNode/Edge.
+
+    A plain Screen, not a ModalScreen: this is a full context switch (the
+    domain strip is hidden while drilling), not a dimmed overlay. Owns its
+    own path stack internally so esc semantics are uniform — pop one hop,
+    not dismiss-the-whole-drill — regardless of trace depth.
+    """
+
+    BINDINGS = [Binding("escape", "back", "Back", show=False)]
+
+    def __init__(self, graph: GovernanceGraph, node: GovernanceNode) -> None:
+        super().__init__()
+        self._graph = graph
+        self._stack: list[GovernanceNode] = [node]
+        self._edges: list[Edge] = []
+
+    def compose(self):
+        yield Static("", id="drill-breadcrumb")
+        with Horizontal(id="drill-work", classes="work"):
+            with Vertical(id="drill-detail", classes="pane"):
+                yield Static("", classes="pane-head", id="drill-detail-head")
+                yield Static("", id="drill-detail-body")
+            yield ListView(id="drill-edges")
+        yield Static("[#E8AE52 b]↵[/#E8AE52 b] drill · [#E8AE52 b]esc[/#E8AE52 b] back", id="drill-footer")
+
+    def on_mount(self) -> None:
+        self._render_current()
+        self.query_one("#drill-edges", ListView).focus()
+
+    def _render_current(self) -> None:
+        node = self._stack[-1]
+        accent = node.accent or COLORS["amber_hi"]
+        self.query_one("#drill-breadcrumb", Static).update(self._render_breadcrumb())
+        self.query_one("#drill-detail-head", Static).update(
+            f"[{accent} b]{node.glyph} {node.title}[/{accent} b]  [#9A8B6E]· {node.node_type}[/#9A8B6E]"
+        )
+        self.query_one("#drill-detail-body", Static).update(node.render_detail())
+
+        self._edges = node.edges(self._graph)
+        edge_list = self.query_one("#drill-edges", ListView)
+        edge_list.clear()
+        if not self._edges:
+            # clear() defers the actual child removal to the next refresh
+            # (same reason receipts.py's chain ListView uses
+            # call_after_refresh below) — appending here too would race it
+            # and risk a DuplicateIds error on the next render.
+            edge_list.call_after_refresh(
+                edge_list.append, ListItem(Static("[#9A8B6E](no further trace — esc to go back)[/#9A8B6E]"))
+            )
+        else:
+            items = [
+                ListItem(Static(f"{edge.target.glyph} {edge.label}"), id=f"edge-{idx}")
+                for idx, edge in enumerate(self._edges)
+            ]
+            edge_list.call_after_refresh(self._populate_edges, edge_list, items)
+
+    def _populate_edges(self, edge_list: ListView, items: list[ListItem]) -> None:
+        edge_list.extend(items)
+        edge_list.index = 0
+
+    def _render_breadcrumb(self) -> str:
+        nodes = self._stack
+        shown: list[GovernanceNode | None]
+        shown = list(nodes) if len(nodes) <= 4 else [nodes[0], None, nodes[-2], nodes[-1]]
+        parts = []
+        for node in shown:
+            if node is None:
+                parts.append("[#5F5340]…[/#5F5340]")
+                continue
+            is_current = node is nodes[-1]
+            color = node.accent or COLORS["amber_hi"]
+            style = "b" if is_current else "dim"
+            title = node.title if is_current else _elide(node.title, 20)
+            parts.append(f"[{color} {style}]{node.glyph} {title}[/{color} {style}]")
+        arrow = " [#5F5340]→[/#5F5340] "
+        return f"[#E8AE52]{EMBLEM}[/#E8AE52] [#9A8B6E]trace[/#9A8B6E]  " + arrow.join(parts)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id != "drill-edges" or event.item is None or not event.item.id:
+            return
+        if not event.item.id.startswith("edge-"):
+            return
+        event.stop()
+        idx = int(event.item.id[len("edge-") :])
+        edge = self._edges[idx]
+        self._stack.append(edge.target)
+        self._render_current()
+
+    def action_back(self) -> None:
+        self._stack.pop()
+        if not self._stack:
+            self.dismiss()
+        else:
+            self._render_current()
+
+
+def _elide(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"

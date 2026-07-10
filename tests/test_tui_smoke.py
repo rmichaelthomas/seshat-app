@@ -85,3 +85,118 @@ def test_never_writes_enforcement_files(monkeypatch):
                 await pilot.pause()
 
     asyncio.run(run())
+
+
+def test_drill_screen_pushes_renders_and_walks_back():
+    from seshat_tui.graph import GovernanceGraph, ReceiptNode, RuleNode
+    from seshat_tui.screens import DrillScreen
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+
+            rule_canonical = "forbid action is stop_orphan"
+            receipt = {
+                "receipt_hash": "a" * 40,
+                "previous_hash": None,
+                "timestamp": "2026-07-10T12:00:00+00:00",
+                "actor": {"session_id": "tui_abc", "agent_hint": "tui"},
+                "action": "stop_orphan",
+                "target": {"port": 4321},
+                "result": {"status": "denied", "mode": "forbidden", "rule": rule_canonical, "reason": "no."},
+                "environment_after": {"listening_ports": [4321]},
+            }
+            graph = GovernanceGraph(
+                receipts=[receipt],
+                agreement_rules=[],
+                revocation_rules=[{"canonical": rule_canonical, "verb": "forbid", "window": "active"}],
+            )
+            app.governance_graph = graph
+            app.push_screen(DrillScreen(graph, ReceiptNode(receipt)))
+            await pilot.pause()
+            assert len(app.screen_stack) == 2
+            drill = app.screen_stack[-1]
+            assert isinstance(drill, DrillScreen)
+            assert "receipt" in str(drill.query_one("#drill-breadcrumb").content)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(drill._stack) == 2
+            assert isinstance(drill._stack[-1], RuleNode)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(drill._stack) == 1
+            assert len(app.screen_stack) == 2
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+
+    asyncio.run(run())
+
+
+def test_push_drill_builds_graph_lazily_and_pushes_screen():
+    from seshat_tui.graph import GovernanceNode
+    from seshat_tui.screens import DrillScreen
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.governance_graph is not None  # populated by on_main_mount
+
+            leaf = GovernanceNode("receipt", "◈", None, "receipt deadbeef…")
+            leaf.render_detail = lambda: "detail"
+            leaf.edges = lambda graph: []
+            app.push_drill(leaf)
+            await pilot.pause()
+            assert isinstance(app.screen_stack[-1], DrillScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app.screen_stack) == 1
+
+    asyncio.run(run())
+
+
+def test_receipts_second_enter_on_same_row_opens_drill(monkeypatch):
+    from seshat_tui.screens import DrillScreen
+    import receipts as receipts_module
+
+    fake_receipt = {
+        "receipt_hash": "d" * 40, "previous_hash": None,
+        "timestamp": "2026-07-10T12:00:00+00:00",
+        "actor": {"session_id": "tui_x", "agent_hint": "tui"},
+        "action": "stop_orphan", "target": {"port": 1111},
+        "result": {"status": "denied", "mode": "forbidden", "rule": "forbid action is stop_orphan", "reason": "no"},
+        "environment_after": {"listening_ports": [1111]},
+    }
+    monkeypatch.setattr(receipts_module, "load", lambda **kwargs: [fake_receipt])
+
+    async def run():
+        app = SeshatApp()
+        async with app.run_test() as pilot:
+            await pilot.press("space")
+            await pilot.pause()
+            app.action_jump_domain("receipts")
+            await pilot.pause()
+            app.refresh_receipts()
+            await pilot.pause(0.2)
+
+            key = fake_receipt["receipt_hash"][:16]
+            from textual.widgets import ListView
+            list_view = app.query_one("#receipts-chain", ListView)
+            list_view.focus()
+            list_view.index = 0
+            await pilot.pause()
+            await pilot.press("enter")  # first: notify
+            await pilot.pause()
+            assert app._receipts_detailed_key == key
+            await pilot.press("enter")  # second: drill
+            await pilot.pause()
+            assert isinstance(app.screen_stack[-1], DrillScreen)
+
+    asyncio.run(run())
