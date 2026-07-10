@@ -19,7 +19,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import ListItem, ListView, Static, TabPane
 
 import receipts as receipts_module
-from vault import Vault
+from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 
 from ..colors import COLORS
 from ..graph import ReceiptNode
@@ -254,11 +254,11 @@ class ReceiptsDomainMixin:
         import httpx
         from cli import LAST_SYNCED_PATH, RECEIPTS_API_DEFAULT, SESSION_ID as CLI_SESSION_ID
 
-        api_key = _vault.get("__receipts_api_key__")
+        api_key = _vault.get(RECEIPTS_API_KEY_VAULT_KEY)
         if not api_key:
             self.call_from_thread(
                 self.notify,
-                "No Receipts API key configured. Set one with: seshat vault set __RECEIPTS_API_KEY__ <key>",
+                f"No Receipts API key configured. Set one with: seshat vault set {RECEIPTS_API_KEY_VAULT_KEY} <key>",
                 severity="error",
             )
             return
