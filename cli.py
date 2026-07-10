@@ -1085,11 +1085,18 @@ def receipts_sync(dry_run):
     api_base = os.environ.get("SESHAT_RECEIPTS_API", RECEIPTS_API_DEFAULT)
     url = f"{api_base}/api/v1/ingest"
 
-    # Batch all unsent receipts into a single POST.
+    # Batch all unsent receipts into a single POST. chain_anchor is
+    # additive (F-01 B2) — the local head hash + count, so the platform
+    # can, in future, pin it per install and let `receipts verify` compare
+    # against a remote anchor too. Not yet verified server-side; today it
+    # only closes the local-truncation gap (receipts_verify's own
+    # .chain_head check), but sending it now means no client change is
+    # needed once the platform adds pinning.
     payload = {
         "receipts": [r for _, r in unsent],
         "source": "seshat",
         "session_id": SESSION_ID,
+        "chain_anchor": receipts_module._read_chain_head(),
     }
 
     try:
@@ -1126,7 +1133,18 @@ def receipts_sync(dry_run):
 
 @receipts.command(name="verify")
 def receipts_verify():
-    """Verify the local receipt hash chain integrity."""
+    """Verify the local receipt hash chain integrity.
+
+    Each receipt is verified via its keyed HMAC hash (F-01) unless it
+    predates chain-keying (no receipt_version), in which case it is
+    verified via the legacy plain-sha256 method — but ONLY as long as no
+    keyed receipt has appeared earlier in the chain. The chain only ever
+    moves forward from unkeyed to keyed, never back, so an unversioned
+    receipt appearing after a keyed one is treated as forgery, not
+    nostalgia. After the link-walk, the disk state is compared against
+    the persisted .chain_head anchor to catch tail-truncation, which a
+    self-consistent-but-shorter chain can't reveal on its own.
+    """
     files = sorted(receipts_module.RECEIPTS_DIR.glob("*.json"))
     if not files:
         console.print("[dim]No receipts to verify.[/dim]")
@@ -1135,6 +1153,8 @@ def receipts_verify():
     expected_previous: str | None = None
     total = 0
     broken_at: str | None = None
+    graduated_to_keyed = False
+    legacy_count = 0
 
     for f in files:
         total += 1
@@ -1156,11 +1176,33 @@ def receipts_verify():
             )
             break
 
-        # Verify receipt_hash by recomputing.
         stored_hash = receipt.get("receipt_hash")
         verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-        computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+        version = receipt.get("receipt_version")
+        if version is not None and version >= 2:
+            graduated_to_keyed = True
+            try:
+                computed_hash = receipts_module._keyed_hash(canonical)
+            except receipts_module.ReceiptKeyUnavailableError as exc:
+                broken_at = f.name
+                console.print(f"[red]✗[/red] {f.name} — cannot verify: {exc}")
+                break
+        elif graduated_to_keyed:
+            # An unversioned receipt can never legitimately appear after
+            # the chain already graduated to keyed receipts — the chain
+            # never downgrades. Treat as forgery, not legacy.
+            broken_at = f.name
+            console.print(
+                f"[red]✗[/red] {f.name} — possible forgery: unkeyed receipt "
+                "appears after the chain had already graduated to keyed "
+                "receipts"
+            )
+            break
+        else:
+            legacy_count += 1
+            computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
         if computed_hash != stored_hash:
             broken_at = f.name
@@ -1173,10 +1215,39 @@ def receipts_verify():
 
         expected_previous = stored_hash
 
-    if broken_at is None:
-        console.print(f"[green]✓[/green] Chain intact — {total} receipt(s) verified.")
-    else:
+    if broken_at is not None:
         console.print(f"\n[yellow]Chain broken at receipt {total} of {len(files)}.[/yellow]")
+        return
+
+    if legacy_count:
+        console.print(
+            f"[yellow]⚠[/yellow] {legacy_count} receipt(s) verified via the legacy "
+            "unkeyed method (written before chain keying) — link-verified "
+            "only, not forgery-resistant."
+        )
+
+    # Anchor check — catches tail-truncation, which the link-walk alone
+    # cannot: a truncated chain is still perfectly self-consistent, just
+    # shorter. No anchor yet (fresh install, or a legacy chain that has
+    # never had a keyed receipt emitted against it) means there is nothing
+    # to compare against — that gap closes as soon as the anchor bootstraps
+    # from the next emit().
+    anchor = receipts_module._read_chain_head()
+    if anchor is not None:
+        anchor_head = anchor.get("head_hash")
+        anchor_count = anchor.get("count", 0)
+        if anchor_count != total or anchor_head != expected_previous:
+            console.print(
+                f"[red]✗[/red] Truncation detected — the chain anchor "
+                f"recorded {anchor_count} receipt(s) ending at "
+                f"[dim]{anchor_head}[/dim], but only {total} receipt(s) "
+                f"ending at [dim]{expected_previous}[/dim] are present on "
+                "disk. Receipts were deleted, or never returned after "
+                "being written."
+            )
+            return
+
+    console.print(f"[green]✓[/green] Chain intact — {total} receipt(s) verified.")
 
 
 # ── Revocations command ─────────────────────────────────────────────────────

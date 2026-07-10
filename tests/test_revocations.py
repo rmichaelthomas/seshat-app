@@ -1,6 +1,7 @@
 # tests/test_revocations.py
 """Tests for REVOKE local enforcement: temporal windows + revocations.limn."""
 import hashlib
+import hmac
 import json
 
 import pytest
@@ -268,6 +269,7 @@ class TestRevocationStateReceiptAdditivity:
         d.mkdir()
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", d)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", d / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", d / ".chain_head")
         monkeypatch.setattr(
             receipts_mod,
             "snapshot",
@@ -278,7 +280,9 @@ class TestRevocationStateReceiptAdditivity:
     def _recompute_hash(self, receipt: dict) -> str:
         verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hmac.new(
+            b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
 
     def test_field_omitted_when_none_and_chain_verifies(self, receipts_dir):
         receipts_mod.emit(

@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -197,6 +198,7 @@ class TestConcurrentEmission:
         # Point the module at our temp directory
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
 
         # Stub out snapshot to avoid needing real registry/scanner
         monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
@@ -242,13 +244,18 @@ class TestConcurrentEmission:
                 f"expected previous_hash={expected_previous}, "
                 f"got {receipt['previous_hash']}"
             )
-            # Verify the receipt_hash is correct
+            # Verify the receipt_hash is correct (keyed HMAC — F-01)
             stored_hash = receipt["receipt_hash"]
             verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
             canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-            computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            computed = hmac.new(
+                b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
             assert computed == stored_hash, f"Hash mismatch in {f.name}"
             expected_previous = stored_hash
+
+        anchor = json.loads((receipts_dir / ".chain_head").read_text())
+        assert anchor == {"head_hash": expected_previous, "count": 10}
 
     def test_lock_file_created(self, receipts_dir, monkeypatch):
         """Verify the lock file is created in the receipts directory."""
@@ -257,6 +264,7 @@ class TestConcurrentEmission:
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         lock_path = receipts_dir / ".chain.lock"
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", lock_path)
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
         monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
             "listening_ports": [],
             "managed_projects": {},
@@ -283,6 +291,7 @@ class TestAgreementHashField:
         import receipts as receipts_mod
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
         monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
             "listening_ports": [], "managed_projects": {},
         })
@@ -300,6 +309,7 @@ class TestAgreementHashField:
         import receipts as receipts_mod
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
         monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
             "listening_ports": [], "managed_projects": {},
         })
@@ -322,6 +332,7 @@ class TestAgreementHashField:
         import receipts as receipts_mod
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
         monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
             "listening_ports": [], "managed_projects": {},
         })
@@ -345,13 +356,159 @@ class TestAgreementHashField:
         files = sorted(receipts_dir.glob("*.json"))
         second = json.loads(files[0].read_text())
 
-        # Recompute what the hash would have been with the first hash.
+        # Recompute what the keyed hash would have been with the first
+        # agreement_hash value — must differ from what was actually stored.
         tampered = dict(second)
         tampered["agreement_hash"] = "a" * 64
         verify_copy = {k: v for k, v in tampered.items() if k != "receipt_hash"}
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-        recomputed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        recomputed = hmac.new(
+            b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
         assert recomputed != second["receipt_hash"]
+
+
+class TestKeyedChain:
+    """F-01: receipt_hash must be a keyed MAC, not a plain, unkeyed hash
+    anyone can recompute. The MAC key itself is mocked repo-wide in
+    conftest.py's autouse _test_mac_key fixture."""
+
+    def test_emit_hash_is_keyed_not_plain_sha256(self, receipts_dir, monkeypatch):
+        import hmac
+
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+
+        verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
+        canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
+        plain_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        keyed = hmac.new(b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        assert receipt["receipt_hash"] != plain_sha256
+        assert receipt["receipt_hash"] == keyed
+
+    def test_emit_stamps_receipt_version(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        assert receipt["receipt_version"] == receipts_mod.RECEIPT_VERSION
+        assert receipts_mod.RECEIPT_VERSION >= 2
+
+    def test_emit_fails_closed_when_mac_key_unavailable(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        def _boom():
+            raise RuntimeError("keychain locked")
+        monkeypatch.setattr(receipts_mod, "_mac_key", _boom)
+
+        with pytest.raises(receipts_mod.ReceiptKeyUnavailableError):
+            receipts_mod.emit(
+                action="start_project", target={"project": "p"}, result={"status": "success"},
+                env_before={"listening_ports": [], "managed_projects": {}},
+                session_id="s", actor_type="test", agent_hint="test",
+            )
+
+        # Fail closed means nothing was written — no unkeyed receipt, no
+        # partial anchor update.
+        assert list(receipts_dir.glob("*.json")) == []
+        assert not (receipts_dir / ".chain_head").exists()
+
+
+class TestChainAnchor:
+    """F-01: a persisted head pointer (.chain_head) so verify can detect
+    tail-truncation, which the link-walk alone cannot (deleting the newest
+    N receipts still leaves a perfectly self-consistent shorter chain)."""
+
+    def test_emit_writes_chain_head_anchor(self, receipts_dir, monkeypatch):
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        anchor_path = receipts_dir / ".chain_head"
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", anchor_path)
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        r1 = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        anchor = json.loads(anchor_path.read_text())
+        assert anchor == {"head_hash": r1["receipt_hash"], "count": 1}
+
+        r2 = receipts_mod.emit(
+            action="stop_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+        anchor = json.loads(anchor_path.read_text())
+        assert anchor == {"head_hash": r2["receipt_hash"], "count": 2}
+
+    def test_recover_chain_head_trusts_anchor_not_filename_sort(self, receipts_dir, monkeypatch):
+        """A rogue file that sorts after the real chain must not override
+        the anchor's recorded head — closing the filename-sort trust gap."""
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        r1 = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="test",
+        )
+
+        # A rogue/forged file, filename-sorted after the real receipt, with
+        # a fabricated receipt_hash that filename-sort trust would have
+        # preferred over the real head.
+        rogue = {"receipt_hash": "z" * 64, "previous_hash": r1["receipt_hash"]}
+        (receipts_dir / "99999999T999999999999_rogue_ffffffff.json").write_text(json.dumps(rogue))
+
+        assert receipts_mod.recover_chain_head() == r1["receipt_hash"]
+
+    def test_recover_chain_head_bootstraps_from_legacy_chain(self, receipts_dir, monkeypatch):
+        """No .chain_head yet (pre-existing chain from before this code
+        shipped) — bootstrap from the last receipt file exactly once, for
+        migration continuity."""
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+
+        h0, _ = _make_receipt(receipts_dir, "start_project", previous_hash=None, index=0)
+        h1, _ = _make_receipt(receipts_dir, "stop_project", previous_hash=h0, index=1)
+
+        assert receipts_mod.recover_chain_head() == h1
 
 
 class TestReceiptLoading:
