@@ -21,11 +21,15 @@ seshat = "cli:cli"
 
 [tool.setuptools]
 py-modules = [
-    "cli", "seshat_tui", "registry", "runner",
+    "cli", "registry", "runner",
     "vault", "scanner", "deps", "seshat", "mcp_server",
     "github", "organizer", "router", "local_scanner", "agreements",
     "receipts", "invariant_check",
 ]
+packages = ["seshat_tui", "seshat_tui.domains"]
+
+[tool.setuptools.package-data]
+seshat_tui = ["*.tcss"]
 
 [build-system]
 requires = ["setuptools>=68"]

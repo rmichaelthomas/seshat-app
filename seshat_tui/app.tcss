@@ -1,0 +1,218 @@
+/* app.tcss — warm-amber visual language.
+   Elevation model: panels are LIGHTER than the ground (#0C0A07 -> #16120D
+   -> #1E1912 -> #292219), never boxed in by divider lines. Separation
+   between sibling panels comes from a 1-cell gap (margin) plus the
+   background-color step, not border rules between them.
+   $variables ($bg, $amber, $text-3, ...) come from
+   SeshatApp.get_theme_variable_defaults(), not a local declaration here —
+   that's what makes them resolvable from every widget's own DEFAULT_CSS
+   (e.g. BootSplashScreen, pushed before this stylesheet's own screen).
+
+   NOTE: height:1 + a border on the same widget is a real Textual pitfall —
+   the border consumes the widget's only row, leaving zero rows for
+   content, so the text silently never paints. Fixed-height single-line
+   bars (cmdstrip, pane-head, statusbar) must never carry a border/divider
+   rule for this reason, which conveniently matches "no divider lines". */
+
+Screen {
+    background: #0C0A07;
+    color: $text;
+}
+
+/* ── Elevation tiers ──────────────────────────────────────────────────── */
+
+.panel {
+    background: #16120D;
+    padding: 1 2;
+    border: round #33291B;
+}
+.panel--raised {
+    background: #1E1912;
+}
+.cta-block {
+    background: #292219;
+    padding: 1 1;
+    margin-top: 1;
+}
+
+/* ── Top bar (brand / session) — persistent identity row, always visible ── */
+
+#topbar {
+    dock: top;
+    height: 1;
+    padding: 0 2;
+    background: #1A130A;
+}
+
+/* ── Domain strip: native Tabs, restyled to strip default chrome ──────── */
+
+TabbedContent {
+    background: #0C0A07;
+    border: none;
+}
+TabbedContent Tabs {
+    background: #0C0A07;
+    height: 2;
+    padding: 0 1;
+}
+TabbedContent Tab {
+    background: #0C0A07;
+    color: $text-3;
+    padding: 0 2;
+}
+TabbedContent Tab:hover {
+    background: #0C0A07;
+    color: $text;
+}
+TabbedContent Tab.-active {
+    background: #0C0A07;
+    color: $amber-hi;
+    text-style: bold;
+}
+TabbedContent Underline {
+    background: #0C0A07;
+}
+TabbedContent Underline > .underline--bar {
+    color: $amber;
+    background: #0C0A07;
+}
+ContentSwitcher {
+    background: #0C0A07;
+}
+TabPane {
+    background: #0C0A07;
+    padding: 0;
+}
+
+/* ── Command strip ────────────────────────────────────────────────────── */
+
+.cmdstrip {
+    height: 1;
+    padding: 0 2;
+    margin-bottom: 1;
+    background: #16120D;
+}
+
+/* ── Work row: rail + pane + detail (or pane + integ) ───────────────────
+   1-cell gaps via margin, never a vertical divider border between them. */
+
+.work {
+    height: 1fr;
+    background: #0C0A07;
+}
+
+/* Rail is styled directly in widgets.py (Rail.DEFAULT_CSS) — it's a
+   custom widget class, not a plain container, so it carries its own
+   panel background/border/padding rather than relying on a class here. */
+
+.pane {
+    height: 1fr;
+    padding: 1 2;
+    background: #16120D;
+    border: round #33291B;
+}
+.pane-head {
+    height: 1;
+    padding: 0 1;
+    color: $text;
+    margin-bottom: 1;
+}
+
+.detail {
+    width: 32;
+    margin-left: 1;
+    height: 1fr;
+    padding: 1 2;
+    background: #16120D;
+    border: round #33291B;
+}
+
+.integ {
+    width: 26;
+    margin-left: 1;
+    height: 1fr;
+    padding: 1 2;
+    background: #16120D;
+    border: round #33291B;
+}
+
+/* ── DataTable: header + raised-selected-row convention ──────────────────
+   Selected row = raised background (#292219), never a left accent bar.
+   Scrollbar lives on the scrolling widget itself (DataTable), not Screen —
+   scrollbar-size-horizontal:0 removes the (otherwise blue) horizontal bar;
+   wheel/arrow-key scrolling still works. Column widths are bounded per
+   add_column() call in each domain so the horizontal scrollbar is never
+   needed in the first place. */
+
+DataTable {
+    background: #16120D;
+    border: none;
+    height: 1fr;
+    scrollbar-size-horizontal: 0;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: #16120D;
+    scrollbar-color: #33291B;
+    scrollbar-color-hover: #A07E3E;
+    scrollbar-color-active: #E8AE52;
+    scrollbar-corner-color: #16120D;
+}
+DataTable > .datatable--header {
+    background: #16120D;
+    color: $text-3;
+    text-style: bold;
+}
+DataTable > .datatable--cursor {
+    background: #292219;
+    color: $text;
+    text-style: bold;
+}
+/* DataTable's own DEFAULT_CSS declares DataTable:focus > .datatable--cursor
+   (higher specificity than the plain rule above), so the raised-background
+   override needs to be repeated here or it silently loses to Textual's
+   default $block-cursor-background the moment the table gets focus — which
+   is the normal state once a user actually clicks/arrows into it. */
+DataTable:focus > .datatable--cursor {
+    background: #292219;
+}
+DataTable > .datatable--even-row {
+    background: #16120D;
+}
+DataTable > .datatable--hover {
+    background: #1E1912;
+}
+
+/* ── Receipts chain (ListView) ──────────────────────────────────────────── */
+
+#receipts-chain {
+    background: #16120D;
+    height: 1fr;
+}
+#receipts-chain ListItem {
+    background: #16120D;
+    padding: 0 1;
+}
+#receipts-chain ListItem.-highlight {
+    background: #292219;
+    border-bottom: solid $amber;
+}
+#receipts-chain ListItem.-hovered {
+    background: #1E1912;
+}
+
+/* CliEcho is styled directly in widgets.py (CliEcho.DEFAULT_CSS). */
+
+/* ── Status bar ───────────────────────────────────────────────────────── */
+
+#statusbar {
+    height: 1;
+    padding: 0 2;
+    background: #1A130A;
+    color: $text-3;
+    dock: bottom;
+}
+
+/* ── Filter input ─────────────────────────────────────────────────────── */
+
+FilterInput {
+    margin: 0 1;
+}
