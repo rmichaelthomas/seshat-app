@@ -6,11 +6,14 @@ payload — never a new required field the backend must already understand."""
 import httpx
 import pytest
 from click.testing import CliRunner
+from cryptography.fernet import Fernet
 
 import cli
 import receipts as receipts_module
 import vault as vault_mod
 from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
+
+_TEST_FERNET_KEY = Fernet.generate_key()
 
 
 @pytest.fixture
@@ -30,7 +33,7 @@ def synced_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(vault_mod, "SESHAT_DIR", seshat_dir)
     monkeypatch.setattr(vault_mod, "VAULT_ENC", seshat_dir / "vault.enc")
     monkeypatch.setattr(vault_mod, "VAULT_PLAIN", seshat_dir / "vault.json")
-    monkeypatch.setattr(vault_mod, "_CRYPTO_OK", False)
+    monkeypatch.setattr(Vault, "_fernet", lambda self: Fernet(_TEST_FERNET_KEY))
     fresh_vault = Vault()
     fresh_vault.set(RECEIPTS_API_KEY_VAULT_KEY, "receipts_testkey123")
     monkeypatch.setattr(cli, "vault", fresh_vault)

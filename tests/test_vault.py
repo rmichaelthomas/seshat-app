@@ -6,24 +6,64 @@ call sites asked for the lowercase form and never matched what `vault set`
 """
 from __future__ import annotations
 
+import pytest
+from cryptography.fernet import Fernet
+
 import vault as vault_mod
 from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 
+# Fixed in-memory key so tests exercise the real encrypted _save/_load path
+# (F-06: vault.py no longer supports an unencrypted fallback) without ever
+# touching the real macOS Keychain.
+_TEST_FERNET_KEY = Fernet.generate_key()
+
 
 def _isolate_vault(monkeypatch, tmp_path):
-    """Redirect vault storage to a temp dir and disable the Keychain-backed
-    crypto path (headless-safe plaintext fallback), mirroring the pattern
-    established for testing this module without touching macOS Keychain."""
+    """Redirect vault storage to a temp dir and use a fixed in-memory
+    Fernet key instead of the real Keychain-backed one, mirroring the
+    pattern established for testing this module without touching macOS
+    Keychain state."""
     seshat_dir = tmp_path / ".seshat"
     seshat_dir.mkdir()
     monkeypatch.setattr(vault_mod, "SESHAT_DIR", seshat_dir)
     monkeypatch.setattr(vault_mod, "VAULT_ENC", seshat_dir / "vault.enc")
     monkeypatch.setattr(vault_mod, "VAULT_PLAIN", seshat_dir / "vault.json")
-    monkeypatch.setattr(vault_mod, "_CRYPTO_OK", False)
+    monkeypatch.setattr(Vault, "_fernet", lambda self: Fernet(_TEST_FERNET_KEY))
 
 
 def test_receipts_api_key_constant_is_uppercase():
     assert RECEIPTS_API_KEY_VAULT_KEY == RECEIPTS_API_KEY_VAULT_KEY.upper()
+
+
+class TestVaultEncryptionNonOptional:
+    """F-06: storing a secret without crypto available must hard-fail,
+    never silently write plaintext."""
+
+    def test_set_raises_when_crypto_unavailable(self, monkeypatch, tmp_path):
+        seshat_dir = tmp_path / ".seshat"
+        seshat_dir.mkdir()
+        monkeypatch.setattr(vault_mod, "SESHAT_DIR", seshat_dir)
+        monkeypatch.setattr(vault_mod, "VAULT_ENC", seshat_dir / "vault.enc")
+        monkeypatch.setattr(vault_mod, "VAULT_PLAIN", seshat_dir / "vault.json")
+        monkeypatch.setattr(vault_mod, "_CRYPTO_OK", False)
+
+        v = Vault()
+        with pytest.raises(vault_mod.VaultEncryptionUnavailableError):
+            v.set("SOME_KEY", "some-secret-value")
+
+        assert not (seshat_dir / "vault.json").exists()
+        assert not (seshat_dir / "vault.enc").exists()
+
+    def test_set_encrypts_when_crypto_available(self, monkeypatch, tmp_path):
+        _isolate_vault(monkeypatch, tmp_path)
+        v = Vault()
+        v.set("SOME_KEY", "some-secret-value")
+
+        assert (tmp_path / ".seshat" / "vault.enc").exists()
+        assert not (tmp_path / ".seshat" / "vault.json").exists()
+        # The value is genuinely encrypted at rest, not just base64/obscured.
+        raw = (tmp_path / ".seshat" / "vault.enc").read_bytes()
+        assert b"some-secret-value" not in raw
 
 
 def test_documented_vault_set_command_round_trips_through_the_constant(monkeypatch, tmp_path):

@@ -596,9 +596,11 @@ def stop_orphan(port: int) -> str:
 def set_secret(key: str, value: str) -> str:
     """Store or update a shared secret in the vault.
 
-    The secret is encrypted at rest (Keychain-backed Fernet).
-    Secret values are never exposed through MCP resources —
-    they are resolved at process start time via environment variables.
+    The secret is always encrypted at rest (Keychain-backed Fernet) — if
+    the required crypto packages aren't installed, storing fails outright
+    (F-06) rather than ever writing an unencrypted vault. Secret values
+    are never exposed through MCP resources — they are resolved at
+    process start time via environment variables.
     """
     normalized_key = key.strip().upper()
     denial = _enforce("set_secret", {"key": normalized_key})
