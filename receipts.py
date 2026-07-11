@@ -149,6 +149,7 @@ def emit(
     agreement_hash: str | None = None,
     invariant: dict | None = None,
     identity_verified: bool = False,
+    delegation_path: list[str] | None = None,
 ) -> dict:
     """Write a hash-chained receipt to disk with file locking. Returns the
     written receipt dict (including its receipt_hash) so callers that need
@@ -182,9 +183,10 @@ def emit(
                 # every token-absent call, exactly as before the identity
                 # plane existed.
                 "identity_verified": identity_verified,
-                # Stage 2 (delegation) of the identity-plane arc populates
-                # this; Stage 1 never does.
-                "delegation_path": [],
+                # Stage 2 (delegation): the full [root, ..., leaf] chain
+                # when the verified token was delegated; [] otherwise
+                # (undelegated token, or no token at all).
+                "delegation_path": delegation_path if delegation_path is not None else [],
             },
             "action": action,
             "target": target,
