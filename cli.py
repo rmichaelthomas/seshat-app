@@ -1279,6 +1279,23 @@ def revocations_show():
     console.print(text)
 
 
+def _write_revocations(new_text: str) -> None:
+    """The one place revocations.limn is ever written — whether the
+    content came from a remote `revocations sync` fetch or a direct local
+    `identity revoke` edit. Also refreshes the F-07 freshness marker
+    (.last_synced_revocations): the write itself IS the freshest possible
+    confirmation the content is current, whether it came from a sync or a
+    human's own hand at the terminal just now. Skipping this for a local
+    edit would make `identity revoke` self-defeating — an
+    unsynced-before-now revocations.limn would trigger a blanket
+    stale-deny for every action (F-07), not just the revoked identity.
+    """
+    agreements.REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agreements.REVOCATIONS_PATH.write_text(new_text)
+    agreements.LAST_SYNCED_REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agreements.LAST_SYNCED_REVOCATIONS_PATH.write_text(datetime.now(timezone.utc).isoformat() + "\n")
+
+
 @revocations_cmd.command(name="sync")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would change without writing.")
 def revocations_sync(dry_run):
@@ -1337,11 +1354,7 @@ def revocations_sync(dry_run):
 
     changed = new_hash != old_hash
 
-    agreements.REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    agreements.REVOCATIONS_PATH.write_text(new_text)
-
-    agreements.LAST_SYNCED_REVOCATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    agreements.LAST_SYNCED_REVOCATIONS_PATH.write_text(datetime.now(timezone.utc).isoformat() + "\n")
+    _write_revocations(new_text)
 
     console.print(f"[green]✓[/green] revocations.limn synced from {api_base}")
 
@@ -1506,34 +1519,48 @@ def identity_cmd():
 @identity_cmd.command(name="mint")
 @click.argument("agent")
 @click.option("--caveat", "caveats", multiple=True, help="A Liminate caveat line (repeatable).")
-def identity_mint(agent, caveats):
+@click.option(
+    "--ttl", "ttl_hours", type=float, default=None,
+    help=f"Token lifetime in hours (default: {identity.DEFAULT_TTL_HOURS}). Pass 0 for an already-expired token.",
+)
+@click.option(
+    "--until", "until_date", default=None,
+    help="Explicit absolute expiry date (YYYY-MM-DD), overriding --ttl.",
+)
+def identity_mint(agent, caveats, ttl_hours, until_date):
     """Mint a new identity token for AGENT and print it.
 
     The printed token is what SESHAT_IDENTITY_TOKEN should carry for that
     agent's MCP session. This command never writes to agreement.limn,
     revocations.limn, invariant.limn, or entrenched.limn.
 
-    There is deliberately no blanket "--until" expiry flag here: caveats
-    may only forbid (see identity.is_legal_caveat's docstring for why a
-    permissive caveat is unsafe), and forbidding a specific (actor,
-    action, scope) triple after a date is not the same as expiring the
-    whole token — there is no way to say "forbid every action" without a
-    wildcard/negation the locked caveat grammar doesn't have. Token
-    lifecycle (short-lived tokens, revocation) is Stage 3's job, not
-    approximated here.
+    Short-lived by default (identity-plane Stage 3): unless --until is
+    given, the token expires --ttl hours from now (24h by default). Note:
+    --until is a human-intuitive flag name ("valid until this date"), but
+    the caveat it builds uses the Liminate keyword `starting`, not
+    `until` — `until` would make a forbid go INERT after the date, which
+    is backwards for "the token has expired". See identity.mint's
+    docstring for the mechanism.
     """
     caveat_list = list(caveats)
+    if until_date:
+        caveat_list.append(f'starting "{until_date}" forbid actor is "{agent}"')
+
+    mint_kwargs = {}
+    if ttl_hours is not None:
+        mint_kwargs["ttl_hours"] = ttl_hours
 
     try:
-        token = identity.mint(agent, caveats=caveat_list)
+        token = identity.mint(agent, caveats=caveat_list, **mint_kwargs)
     except identity.IllegalCaveatError as e:
         console.print(f"[red]Refused to mint — illegal caveat:[/red] {e}")
         sys.exit(1)
 
+    verified = identity.verify(token)
     identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
     meta = {
         "identifier": agent,
-        "caveats": caveat_list,
+        "caveats": verified.caveats if verified else caveat_list,
         "minted_at": datetime.now(timezone.utc).isoformat(),
         "token": token,
     }
@@ -1651,6 +1678,59 @@ def identity_inspect(token):
         console.print(f"    caveats:    [dim]{payload.get('caveats', [])}[/dim]")
     except Exception:
         console.print("  [dim]Could not decode token structure at all.[/dim]")
+
+
+@identity_cmd.command(name="revoke")
+@click.argument("identifier", required=False)
+@click.option(
+    "--token", "token_to_revoke", default=None,
+    help="Revoke a single token by its nonce, rather than a whole identifier.",
+)
+def identity_revoke(identifier, token_to_revoke):
+    """Revoke IDENTIFIER (or, with --token, a single token by nonce).
+
+    Appends `forbid actor is "<identifier>"` to revocations.limn — human-
+    only, mirroring the mint/attenuate/revoke authority boundary (mint
+    issues, attenuate narrows and is agent-reachable since it can only
+    narrow, revoke kills and is human-only like mint). Routes through the
+    same REVOCATIONS_PATH writer `seshat revocations sync` uses — there is
+    exactly one place this file is ever written.
+
+    Revoking the root identifier of a delegated token kills every
+    descendant delegated from it; revoking a mid-path hop kills that hop
+    and everything delegated below it — the delegation path recorded in
+    the token makes this automatic (identity-plane Stage 3).
+    """
+    if token_to_revoke is not None:
+        verified = identity.verify(token_to_revoke)
+        if verified is None or not verified.token_nonce:
+            console.print("[red]Cannot revoke: token does not verify or carries no nonce.[/red]")
+            sys.exit(1)
+        target_id = verified.token_nonce
+    elif identifier:
+        target_id = identifier
+    else:
+        console.print("[red]Provide an identifier or --token <token>.[/red]")
+        sys.exit(1)
+
+    line = f'forbid actor is "{target_id}"'
+    current = agreements.load_revocations() or ""
+    if line in [l.strip() for l in current.splitlines()]:
+        console.print(f"[yellow]'{target_id}' is already revoked.[/yellow]")
+        return
+
+    new_text = current
+    if new_text and not new_text.endswith("\n"):
+        new_text += "\n"
+    new_text += line + "\n"
+
+    validation_error = agreements._validate_forbid_only(new_text)
+    if validation_error is not None:
+        console.print(f"[red]Refusing to write revocations.limn:[/red] {validation_error}")
+        sys.exit(1)
+
+    _write_revocations(new_text)
+    console.print(f"[green]✓[/green] Revoked: [bold]{target_id}[/bold]")
 
 
 cli.add_command(identity_cmd, name="identity")
