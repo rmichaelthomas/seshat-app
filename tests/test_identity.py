@@ -20,6 +20,7 @@ def test_verify_accepts_a_freshly_minted_token():
     assert verified is not None
     assert verified.identifier == "agent-x"
     assert verified.caveats == []
+    assert verified.delegation_path == []
 
 
 def test_verify_rejects_a_forged_signature():
@@ -208,3 +209,116 @@ class TestMintRejectsIllegalCaveats:
         token = identity.mint("agent-x", caveats=['remember a string called foo with "bar"'])
         monkeypatch.setattr(identity, "is_legal_caveat", original)
         assert identity.verify(token) is None
+
+
+class TestAttenuation:
+    """Identity-plane Stage 2: a token holder narrows its own token offline
+    (no issuer round-trip) and can delegate it to a named sub-agent. The
+    core invariant — a child token can only narrow authority, never
+    broaden it — is enforced by the amendment_diff monotonicity classifier,
+    not merely assumed from append-only structure."""
+
+    def test_attenuate_appends_a_caveat_and_still_verifies(self):
+        parent = identity.mint("agent-root", caveats=['forbid action is "wipe_disk"'])
+        child = identity.attenuate(parent, ['forbid action is "delete_all"'])
+        verified = identity.verify(child)
+        assert verified is not None
+        assert verified.caveats == [
+            'forbid action is "wipe_disk"',
+            'forbid action is "delete_all"',
+        ]
+
+    def test_attenuate_without_delegate_to_keeps_identifier_and_empty_path(self):
+        parent = identity.mint("agent-root")
+        child = identity.attenuate(parent, ['forbid action is "wipe_disk"'])
+        verified = identity.verify(child)
+        assert verified.identifier == "agent-root"
+        assert verified.delegation_path == []
+
+    def test_attenuate_with_delegate_to_records_the_hop(self):
+        parent = identity.mint("agent-root")
+        child = identity.attenuate(parent, ['forbid action is "wipe_disk"'], delegate_to="agent-child")
+        verified = identity.verify(child)
+        assert verified is not None
+        # The root stays the signed, Agreement-matching identity — see
+        # the PR body for why this is a deliberate safety correction from
+        # a literal "actor becomes the leaf" reading of the design.
+        assert verified.identifier == "agent-root"
+        assert verified.delegation_path == ["agent-root", "agent-child"]
+
+    def test_two_hop_delegation_builds_the_full_path(self):
+        root_token = identity.mint("agent-root")
+        child_token = identity.attenuate(root_token, [], delegate_to="agent-child")
+        grandchild_token = identity.attenuate(
+            child_token, ['forbid action is "wipe_disk"'], delegate_to="agent-grandchild"
+        )
+        verified = identity.verify(grandchild_token)
+        assert verified is not None
+        assert verified.delegation_path == ["agent-root", "agent-child", "agent-grandchild"]
+        assert verified.identifier == "agent-root"
+
+    def test_attenuate_rejects_an_illegal_added_caveat(self):
+        parent = identity.mint("agent-root")
+        with pytest.raises(identity.IllegalCaveatError):
+            identity.attenuate(parent, ['remember a string called foo with "bar"'])
+
+    def test_attenuate_rejects_an_unverifiable_parent_token(self):
+        parent = identity.mint("agent-root")
+        header_b64, payload_b64, sig_b64 = parent.split(".")
+        tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+        forged_parent = f"{header_b64}.{payload_b64}.{tampered_sig}"
+        with pytest.raises(identity.IllegalCaveatError):
+            identity.attenuate(forged_parent, ['forbid action is "wipe_disk"'])
+
+    def test_attenuate_refuses_a_non_monotonic_classification(self, monkeypatch):
+        """Defense in depth (§9 failure mode 1): prove the monotonicity
+        assertion is actually wired up and respected, not just assumed
+        safe because attenuate() only ever appends forbid-only caveats.
+        Forces classify_monotonicity_from_changes to report broadening
+        and confirms attenuate() refuses regardless."""
+        import amendment_diff
+
+        monkeypatch.setattr(amendment_diff, "classify_monotonicity_from_changes", lambda changes: "de-escalating")
+        parent = identity.mint("agent-root")
+        with pytest.raises(identity.IllegalCaveatError):
+            identity.attenuate(parent, ['forbid action is "wipe_disk"'])
+
+    def test_tampering_a_delegated_token_denies(self):
+        parent = identity.mint("agent-root")
+        child = identity.attenuate(parent, ['forbid action is "wipe_disk"'], delegate_to="agent-child")
+        header_b64, payload_b64, sig_b64 = child.split(".")
+        tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+        forged = f"{header_b64}.{payload_b64}.{tampered_sig}"
+        assert identity.verify(forged) is None
+
+    def test_delegate_to_cannot_escalate_via_an_unrelated_agreement_actor_rule(self):
+        """The critical security regression test for this stage: a bare
+        identity rename via delegate_to must NEVER unlock a DIFFERENT
+        actor's Agreement-granted permissions. This is exactly why
+        VerifiedIdentity.identifier stays the ROOT (see module docstring
+        and the PR body) — check_action's actor-matching must never key
+        off a self-chosen delegate_to string."""
+        import agreements
+
+        root_token = identity.mint("agent-root")
+        # agent-root never had wipe_disk. "trusted-admin" does, in this
+        # Agreement. Naively renaming to "trusted-admin" via delegate_to
+        # must NOT grant wipe_disk to the holder of this token.
+        escalated_token = identity.attenuate(root_token, [], delegate_to="trusted-admin")
+
+        agreement = (
+            'permit actor is "agent-root" and action is "translate"\n'
+            'permit actor is "trusted-admin" and action is "wipe_disk"'
+        )
+        d = agreements.check_action(
+            "ignored-untrusted-string", "wipe_disk", agreement_text=agreement, token=escalated_token
+        )
+        assert d.allowed is False
+        assert d.mode == "default-deny"
+
+        # The legitimately-scoped action still works, proving the token
+        # is still usable for what agent-root actually holds.
+        d2 = agreements.check_action(
+            "ignored-untrusted-string", "translate", agreement_text=agreement, token=escalated_token
+        )
+        assert d2.allowed is True

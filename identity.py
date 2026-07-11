@@ -29,6 +29,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import socket
 from dataclasses import dataclass, field
@@ -46,6 +47,16 @@ IDENTITY_DIR = Path.home() / ".seshat" / "identity"
 
 _ALG = "HS256-macaroon"
 _TYP = "SIT"  # Seshat Identity Token
+
+# Identity-plane Stage 2 (delegation): a delegation hop is recorded as an
+# ordinary, legal forbid caveat over the actor fact — no special-casing in
+# is_legal_caveat is needed, and it rides the same HMAC chain (tamper-
+# evident) as every other caveat. The marker never matches a real actor
+# value at enforcement time (real agent names never carry this prefix),
+# so it is inert with respect to enforcement and exists purely as an
+# embedded, verifiable audit record.
+_DELEGATION_MARKER_PREFIX = "seshat-delegate:"
+_DELEGATION_MARKER_RE = re.compile(r'^forbid actor is "seshat-delegate:(.+)"$')
 
 
 class IdentityKeyUnavailableError(RuntimeError):
@@ -65,6 +76,15 @@ class IllegalCaveatError(ValueError):
 class VerifiedIdentity:
     identifier: str
     caveats: list[str] = field(default_factory=list)
+    # [] when the token has never been delegated; else [root, ..., leaf].
+    # `identifier` above is ALWAYS the root (the signed payload identifier,
+    # unchanged across every attenuation hop) — see attenuate()'s docstring
+    # for why: check_action's Agreement-matching actor must never key off
+    # a self-chosen delegate_to string, or a holder could rename itself to
+    # an unrelated, more-privileged Agreement actor and inherit permissions
+    # the root never had. The leaf (delegation_path[-1]) is for audit/
+    # receipt display only (see mcp_server.py's _agreement_actor).
+    delegation_path: list[str] = field(default_factory=list)
 
 
 def _root_key() -> bytes:
@@ -196,6 +216,16 @@ def is_legal_caveat(line: str) -> bool:
 
 # ── Mint / verify ────────────────────────────────────────────────────────────
 
+def _serialize(identifier: str, location: str, caveats: list[str], signature: bytes) -> str:
+    header = {"alg": _ALG, "typ": _TYP}
+    payload = {"identifier": identifier, "location": location, "caveats": caveats}
+    return ".".join((
+        _b64(json.dumps(header, sort_keys=True).encode("utf-8")),
+        _b64(json.dumps(payload, sort_keys=True).encode("utf-8")),
+        _b64(signature),
+    ))
+
+
 def mint(identifier: str, caveats: list[str] | None = None, *, location: str | None = None) -> str:
     """Build and sign a new capability token for IDENTIFIER. Human-initiated
     only (never called from an MCP-reachable path — see cli.py's `identity
@@ -214,26 +244,18 @@ def mint(identifier: str, caveats: list[str] | None = None, *, location: str | N
 
     loc = location or _location()
     signature = _chain_signature(identifier, caveats)
-
-    header = {"alg": _ALG, "typ": _TYP}
-    payload = {"identifier": identifier, "location": loc, "caveats": caveats}
-
-    return ".".join((
-        _b64(json.dumps(header, sort_keys=True).encode("utf-8")),
-        _b64(json.dumps(payload, sort_keys=True).encode("utf-8")),
-        _b64(signature),
-    ))
+    return _serialize(identifier, loc, caveats, signature)
 
 
-def verify(token: str) -> VerifiedIdentity | None:
-    """Recompute the HMAC chain from the root key and compare, timing-safe,
-    against the token's signature. Any structural problem (wrong part
-    count, bad base64, bad JSON, missing field, unrecognized alg, an
-    illegal caveat, or a signature mismatch) returns None — deny, don't
-    raise — EXCEPT IdentityKeyUnavailableError, which propagates uncaught
-    exactly like receipts.ReceiptKeyUnavailableError does through emit():
-    a missing key is an infrastructure fail-closed condition, not a
-    per-token verdict.
+def _verify_raw(token: str) -> tuple[str, str, list[str]] | None:
+    """Internal: verify TOKEN's structure and signature, returning the raw
+    (identifier, location, caveats) straight from the payload — before any
+    delegation-path derivation. attenuate() uses this to recover the true
+    signing identifier (the root, which never changes across delegation
+    hops), separately from VerifiedIdentity.identifier (also the root, but
+    exposed via the public verify()). Same fail-closed rules as verify():
+    structural problems return None; IdentityKeyUnavailableError
+    propagates uncaught.
     """
     parts = token.split(".")
     if len(parts) != 3:
@@ -251,8 +273,9 @@ def verify(token: str) -> VerifiedIdentity | None:
         return None
 
     identifier = payload.get("identifier")
+    location = payload.get("location")
     caveats = payload.get("caveats")
-    if not isinstance(identifier, str) or not isinstance(caveats, list):
+    if not isinstance(identifier, str) or not isinstance(location, str) or not isinstance(caveats, list):
         return None
     if not all(isinstance(c, str) for c in caveats):
         return None
@@ -265,4 +288,104 @@ def verify(token: str) -> VerifiedIdentity | None:
     if not hmac.compare_digest(expected, signature):
         return None
 
-    return VerifiedIdentity(identifier=identifier, caveats=caveats)
+    return identifier, location, caveats
+
+
+def _delegation_path(root_identifier: str, caveats: list[str]) -> list[str]:
+    """[] if CAVEATS carries no delegation markers (never delegated);
+    else [root_identifier, hop_1, ..., hop_n] in the order the markers
+    were appended (attenuate() only ever appends, so this is also
+    chronological delegation order)."""
+    hops = [m.group(1) for c in caveats if (m := _DELEGATION_MARKER_RE.match(c.strip()))]
+    if not hops:
+        return []
+    return [root_identifier, *hops]
+
+
+def verify(token: str) -> VerifiedIdentity | None:
+    """Recompute the HMAC chain from the root key and compare, timing-safe,
+    against the token's signature. Any structural problem (wrong part
+    count, bad base64, bad JSON, missing field, unrecognized alg, an
+    illegal caveat, or a signature mismatch) returns None — deny, don't
+    raise — EXCEPT IdentityKeyUnavailableError, which propagates uncaught
+    exactly like receipts.ReceiptKeyUnavailableError does through emit():
+    a missing key is an infrastructure fail-closed condition, not a
+    per-token verdict.
+    """
+    raw = _verify_raw(token)
+    if raw is None:
+        return None
+    identifier, _location, caveats = raw
+    return VerifiedIdentity(
+        identifier=identifier,
+        caveats=caveats,
+        delegation_path=_delegation_path(identifier, caveats),
+    )
+
+
+def attenuate(token: str, added_caveats: list[str] | None = None, *, delegate_to: str | None = None) -> str:
+    """Narrow TOKEN by appending ADDED_CAVEATS (and, if DELEGATE_TO is
+    given, a delegation-marker caveat naming the sub-agent this narrower
+    token is being handed to), then recompute the signature chain over the
+    full, extended caveat list.
+
+    Agent-reachable (unlike mint): a delegating agent narrows its own
+    token at runtime to hand to a sub-agent. This is safe because
+    attenuation can ONLY narrow, never broaden — enforced three ways:
+    added caveats must pass is_legal_caveat (forbid-only, same gate as
+    mint), they are APPENDED, never inserted/removed (the parent's caveat
+    list is an immutable prefix of the child's), and the whole change is
+    asserted `monotonic` via amendment_diff.classify_monotonicity_from_changes
+    before a token is produced — enforced-and-tested, not merely assumed
+    from the append-only structure.
+
+    Design note on the key: in this single-trust-domain model the harness
+    holds the root key and both mints and verifies, so this recomputes the
+    ENTIRE HMAC chain against the root key rather than doing a holder-
+    side-only append the way a distributed macaroon/Biscuit would need to
+    (where the holder lacks the root key). The append-only property here
+    is an enforced invariant of THIS function (the monotonicity assertion
+    below), not a cryptographic guarantee that a holder without the root
+    key couldn't forge — a holder-side-only, root-key-less attenuation is
+    the asymmetric upgrade explicitly deferred to Stage 3.C / future work.
+
+    Design note on delegate_to: it renames only the audit-visible LEAF
+    (VerifiedIdentity.delegation_path[-1]) — the token's signed, Agreement-
+    matching identifier (VerifiedIdentity.identifier) always stays the
+    ROOT. A free-form actor rename that Agreement-matching itself trusted
+    would let any holder of a valid token rename itself to an unrelated,
+    more-privileged Agreement actor and inherit permissions the root never
+    had — the caveat-monotonicity check only examines caveats, not a bare
+    identity swap. See is_legal_caveat's and VerifiedIdentity's docstrings,
+    and the PR body, for the full reasoning.
+    """
+    raw = _verify_raw(token)
+    if raw is None:
+        raise IllegalCaveatError(
+            "Cannot attenuate: the input token does not verify (invalid, "
+            "forged, or already carrying an illegal caveat)."
+        )
+    root_identifier, location, parent_caveats = raw
+
+    new_caveats = list(added_caveats or [])
+    if delegate_to is not None:
+        new_caveats.append(f'forbid actor is "{_DELEGATION_MARKER_PREFIX}{delegate_to}"')
+
+    for line in new_caveats:
+        if not is_legal_caveat(line):
+            raise IllegalCaveatError(
+                f"Caveat is outside the locked decidable subset (§5): {line!r}"
+            )
+
+    child_caveats = parent_caveats + new_caveats
+
+    changes = amendment_diff.diff_statements("\n".join(parent_caveats), "\n".join(child_caveats))
+    classification = amendment_diff.classify_monotonicity_from_changes(changes)
+    if classification != "monotonic":
+        raise IllegalCaveatError(
+            "Refusing to attenuate: the requested change is not "
+            f"authority-narrowing (classified {classification!r})."
+        )
+
+    signature = _chain_signature(root_identifier, child_caveats)
+    return _serialize(root_identifier, location, child_caveats, signature)
