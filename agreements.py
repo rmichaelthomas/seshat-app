@@ -246,6 +246,38 @@ def _has_injection_chars(value: str) -> bool:
     return '"' in value or "\n" in value or "\r" in value
 
 
+def _revoked_actor_identifiers(revocations_text: str) -> set[str]:
+    """Every literal identifier a currently-active 'forbid actor is ...'
+    line in REVOCATIONS_TEXT names (identity-plane Stage 3). Reuses
+    amendment_diff.parse_statements to read the statement shape and
+    amendment_diff._QUOTED_RE to pull out the quoted literal(s) — never a
+    second parser. identity._strip_temporal_prefix (the same skip-loop
+    is_legal_caveat already uses) strips a leading starting/until before
+    parsing; _temporal_window (on the ORIGINAL, unstripped line) decides
+    whether the line is currently in force. A malformed date is excluded
+    here (not treated as active) — the existing interpreter-based
+    malformed-date check later in check_action still independently denies
+    with mode="error" for any call that doesn't also match an identity
+    revocation, so this is not a gap.
+    """
+    revoked: set[str] = set()
+    for line in revocations_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        if _temporal_window(stripped) not in ("active", "unbounded"):
+            continue
+        remainder = identity._strip_temporal_prefix(stripped)
+        statements = amendment_diff.parse_statements(remainder)
+        if len(statements) != 1:
+            continue
+        stmt = statements[0]
+        if stmt["verb"] != "forbid" or stmt["subject"] != "actor":
+            continue
+        revoked.update(amendment_diff._QUOTED_RE.findall(stmt["predicate"]))
+    return revoked
+
+
 def check_action(
     actor: str,
     action: str,
@@ -277,6 +309,7 @@ def check_action(
     actor.identity_verified.
     """
     caveat_text: str | None = None
+    verified: "identity.VerifiedIdentity | None" = None
     if token is not None:
         verified = identity.verify(token)
         if verified is None:
@@ -337,6 +370,26 @@ def check_action(
                 rule=None,
                 reason=f"Invalid revocations.limn: {validation_error}",
             )
+
+        # Identity-plane Stage 3: path-aware revocation. Root revocation
+        # already worked via the composed-evaluation path below (a
+        # revocations.limn forbid on the root identifier fires through the
+        # normal forbid-scan, since `actor` is already bound to the root) —
+        # this additional check is what makes revoking a delegated HOP or a
+        # specific token's NONCE work too, since neither ever becomes the
+        # bound `actor` fact. Runs inside the same staleness-gated,
+        # validated block above — a stale revocations.limn already denied
+        # by this point (F-07, unchanged).
+        if verified is not None:
+            revoked = _revoked_actor_identifiers(revocations_text)
+            for candidate in identity.revocation_identifiers(verified):
+                if candidate in revoked:
+                    return Decision(
+                        allowed=False,
+                        mode="revoked-identity",
+                        rule=None,
+                        reason=f"Identity '{candidate}' is revoked (revocations.limn).",
+                    )
 
     composed = (
         f'remember a string called actor with "{actor}"\n'

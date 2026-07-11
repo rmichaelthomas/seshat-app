@@ -4,6 +4,7 @@ import json
 
 from click.testing import CliRunner
 
+import agreements
 import cli
 import identity
 
@@ -107,7 +108,7 @@ def test_mint_is_not_an_mcp_tool():
 
 def test_attenuate_narrows_and_prints_a_token(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
-    parent = identity.mint("agent-root")
+    parent = identity.mint("agent-root", ttl_hours=None)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "attenuate", parent,
@@ -177,8 +178,148 @@ def test_inspect_a_valid_token_shows_details(monkeypatch):
 def test_inspect_a_forged_token_reports_unverified_without_crashing(monkeypatch):
     token = identity.mint("agent-root")
     header_b64, payload_b64, sig_b64 = token.split(".")
-    forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:])
+    forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[0] != "A" else "B") + sig_b64[1:])
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["identity", "inspect", forged])
     assert result.exit_code == 0
     assert "not verify" in result.output.lower() or "unverified" in result.output.lower()
+
+
+# ── identity mint --ttl/--until, identity revoke (identity-plane Stage 3) ──
+
+def test_mint_default_ttl_denies_immediately_when_forced_expired(tmp_path, monkeypatch):
+    """--ttl 0 mints an already-expired token."""
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "mint", "agent-x", "--ttl", "0"])
+    assert result.exit_code == 0
+    meta = json.loads(next(tmp_path.glob("*.json")).read_text())
+    verified = identity.verify(meta["token"])
+    d = agreements.check_action(
+        "agent-x", "translate",
+        agreement_text='permit actor is "agent-x" and action is "translate"',
+        token=meta["token"],
+    )
+    assert d.allowed is False
+
+
+def test_mint_until_builds_a_starting_forbid_not_a_literal_until(tmp_path, monkeypatch):
+    """The CLI flag is named --until (human-intuitive: 'valid until this
+    date'), but the underlying caveat keyword must be `starting` — `until`
+    would make the forbid go INERT after the date, backwards for expiry."""
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "mint", "agent-x", "--until", "2020-01-01"])
+    assert result.exit_code == 0
+    meta = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert any(c.startswith('starting "2020-01-01"') for c in meta["caveats"])
+    assert not any(c.startswith('until "2020-01-01"') for c in meta["caveats"])
+
+    d = agreements.check_action(
+        "agent-x", "translate",
+        agreement_text='permit actor is "agent-x" and action is "translate"',
+        token=meta["token"],
+    )
+    assert d.allowed is False  # 2020-01-01 is in the past -> already active -> denied
+
+
+def test_mint_without_ttl_flags_uses_the_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "mint", "agent-x"])
+    assert result.exit_code == 0
+    meta = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert any(c.startswith("starting ") and "forbid actor is" in c for c in meta["caveats"])
+
+
+def test_revoke_identifier_appends_forbid_and_subsequent_token_is_denied(tmp_path, monkeypatch):
+    monkeypatch.setattr(agreements, "REVOCATIONS_PATH", tmp_path / "revocations.limn")
+    monkeypatch.setattr(agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / ".last_synced_revocations")
+
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "revoke", "agent-x"])
+    assert result.exit_code == 0
+    assert 'forbid actor is "agent-x"' in agreements.REVOCATIONS_PATH.read_text()
+    # Revoking must also refresh the F-07 freshness marker — otherwise an
+    # unsynced-before-now revocations.limn would trigger a blanket
+    # stale-deny for every action, making the revoke self-defeating.
+    assert agreements.LAST_SYNCED_REVOCATIONS_PATH.exists()
+
+    # The autouse _no_revocations_by_default fixture (tests/conftest.py)
+    # mocks load_revocations() to always return None — restore real
+    # file-reading so check_action actually sees what identity revoke
+    # just wrote.
+    monkeypatch.setattr(
+        agreements, "load_revocations",
+        lambda: agreements.REVOCATIONS_PATH.read_text() if agreements.REVOCATIONS_PATH.exists() else None,
+    )
+
+    token = identity.mint("agent-x", ttl_hours=None)
+    d = agreements.check_action(
+        "ignored", "translate",
+        agreement_text='permit actor is "agent-x" and action is "translate"',
+        token=token,
+    )
+    assert d.allowed is False
+    assert d.mode == "revoked-identity"
+
+
+def test_revoke_by_token_extracts_the_nonce(tmp_path, monkeypatch):
+    monkeypatch.setattr(agreements, "REVOCATIONS_PATH", tmp_path / "revocations.limn")
+    monkeypatch.setattr(agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / ".last_synced_revocations")
+    monkeypatch.setattr(
+        agreements, "load_revocations",
+        lambda: agreements.REVOCATIONS_PATH.read_text() if agreements.REVOCATIONS_PATH.exists() else None,
+    )
+
+    token_a = identity.mint("agent-x", ttl_hours=None, nonce="nonce-a")
+    token_b = identity.mint("agent-x", ttl_hours=None, nonce="nonce-b")
+
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "revoke", "--token", token_a])
+    assert result.exit_code == 0
+    assert 'forbid actor is "nonce-a"' in agreements.REVOCATIONS_PATH.read_text()
+
+    agreement = 'permit actor is "agent-x" and action is "translate"'
+    d_a = agreements.check_action("ignored", "translate", agreement_text=agreement, token=token_a)
+    d_b = agreements.check_action("ignored", "translate", agreement_text=agreement, token=token_b)
+    assert d_a.allowed is False
+    assert d_b.allowed is True
+
+
+def test_revoke_an_already_revoked_identifier_is_a_no_op(tmp_path, monkeypatch):
+    monkeypatch.setattr(agreements, "REVOCATIONS_PATH", tmp_path / "revocations.limn")
+    monkeypatch.setattr(agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / ".last_synced_revocations")
+    # Restore real file-reading (the autouse fixture mocks load_revocations
+    # to always return None) so the second call genuinely sees what the
+    # first one wrote, rather than both independently starting from
+    # "empty" and coincidentally landing on the same content.
+    monkeypatch.setattr(
+        agreements, "load_revocations",
+        lambda: agreements.REVOCATIONS_PATH.read_text() if agreements.REVOCATIONS_PATH.exists() else None,
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli.cli, ["identity", "revoke", "agent-x"])
+    first_content = agreements.REVOCATIONS_PATH.read_text()
+    result = runner.invoke(cli.cli, ["identity", "revoke", "agent-x"])
+    assert result.exit_code == 0
+    assert agreements.REVOCATIONS_PATH.read_text() == first_content
+
+
+def test_revoke_requires_an_identifier_or_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(agreements, "REVOCATIONS_PATH", tmp_path / "revocations.limn")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "revoke"])
+    assert result.exit_code != 0
+
+
+def test_mint_attenuate_revoke_authority_asymmetry_in_mcp_tool_set():
+    """§7.3: mint and revoke are human-only; attenuate is the only
+    agent-reachable identity-issuing verb."""
+    import mcp_server
+    names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
+    assert "attenuate_identity" in names
+    assert "mint" not in names
+    assert "revoke" not in names
+    assert not any("revoke" in n for n in names)

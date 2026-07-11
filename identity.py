@@ -33,6 +33,7 @@ import re
 import secrets
 import socket
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import keyring
@@ -47,6 +48,12 @@ IDENTITY_DIR = Path.home() / ".seshat" / "identity"
 
 _ALG = "HS256-macaroon"
 _TYP = "SIT"  # Seshat Identity Token
+
+# Identity-plane Stage 3: short-lived-by-default issuance. 24h is a sane
+# bounded default for an agent token; a human overrides it explicitly at
+# mint time (CLI --ttl/--until) when they mean to issue something longer-
+# or un-lived.
+DEFAULT_TTL_HOURS = 24
 
 # Identity-plane Stage 2 (delegation): a delegation hop is recorded as an
 # ordinary, legal forbid caveat over the actor fact — no special-casing in
@@ -85,6 +92,11 @@ class VerifiedIdentity:
     # the root never had. The leaf (delegation_path[-1]) is for audit/
     # receipt display only (see mcp_server.py's _agreement_actor).
     delegation_path: list[str] = field(default_factory=list)
+    # None for a token minted before Stage 3, or one hand-built without a
+    # nonce; otherwise the tamper-evident per-token identifier that lets
+    # `identity revoke --token` kill this one token without revoking the
+    # whole agent name (see revocation_identifiers()).
+    token_nonce: str | None = None
 
 
 def _root_key() -> bytes:
@@ -99,7 +111,13 @@ def _root_key() -> bytes:
     return bytes.fromhex(raw)
 
 
-def _chain_signature(identifier: str, caveats: list[str]) -> bytes:
+def _chain_signature(identifier: str, caveats: list[str], nonce: str | None = None) -> bytes:
+    """The macaroon HMAC chain: sig_0 = HMAC(root_key, identifier), then
+    one extra fold for the nonce (if present, right after the identifier
+    and before any caveats), then one fold per caveat in order. When
+    nonce is None this is byte-identical to the pre-Stage-3 formula, so
+    every token minted before the nonce existed still verifies unchanged.
+    """
     try:
         key = _root_key()
     except Exception as exc:
@@ -108,6 +126,8 @@ def _chain_signature(identifier: str, caveats: list[str]) -> bytes:
             "root key is unavailable. Refusing to operate unkeyed."
         ) from exc
     sig = hmac.new(key, identifier.encode("utf-8"), hashlib.sha256).digest()
+    if nonce is not None:
+        sig = hmac.new(sig, f"nonce:{nonce}".encode("utf-8"), hashlib.sha256).digest()
     for caveat in caveats:
         sig = hmac.new(sig, caveat.encode("utf-8"), hashlib.sha256).digest()
     return sig
@@ -216,9 +236,13 @@ def is_legal_caveat(line: str) -> bool:
 
 # ── Mint / verify ────────────────────────────────────────────────────────────
 
-def _serialize(identifier: str, location: str, caveats: list[str], signature: bytes) -> str:
+def _serialize(
+    identifier: str, location: str, caveats: list[str], signature: bytes, *, nonce: str | None = None,
+) -> str:
     header = {"alg": _ALG, "typ": _TYP}
     payload = {"identifier": identifier, "location": location, "caveats": caveats}
+    if nonce is not None:
+        payload["nonce"] = nonce
     return ".".join((
         _b64(json.dumps(header, sort_keys=True).encode("utf-8")),
         _b64(json.dumps(payload, sort_keys=True).encode("utf-8")),
@@ -226,7 +250,25 @@ def _serialize(identifier: str, location: str, caveats: list[str], signature: by
     ))
 
 
-def mint(identifier: str, caveats: list[str] | None = None, *, location: str | None = None) -> str:
+def _has_explicit_temporal_caveat(caveats: list[str]) -> bool:
+    """True if any of CAVEATS already opens with 'starting'/'until' — the
+    caller has taken control of temporal scoping themselves, so mint()'s
+    own default-ttl caveat should not also be appended."""
+    for line in caveats:
+        words = line.strip().split()
+        if words and words[0] in ("starting", "until"):
+            return True
+    return False
+
+
+def mint(
+    identifier: str,
+    caveats: list[str] | None = None,
+    *,
+    ttl_hours: float | None = DEFAULT_TTL_HOURS,
+    nonce: str | None = None,
+    location: str | None = None,
+) -> str:
     """Build and sign a new capability token for IDENTIFIER. Human-initiated
     only (never called from an MCP-reachable path — see cli.py's `identity
     mint`, which is the only caller outside tests).
@@ -234,8 +276,33 @@ def mint(identifier: str, caveats: list[str] | None = None, *, location: str | N
     Every caveat must pass is_legal_caveat() — the whole mint call raises
     IllegalCaveatError if any one doesn't, rather than silently dropping
     the offending line.
+
+    Short-lived by default (identity-plane Stage 3): unless the caller's
+    own CAVEATS already carry an explicit starting/until line, or
+    TTL_HOURS is None (an explicitly unbounded token — a human opt-in via
+    the CLI, not the default), a
+    `starting "<today + ttl_hours>" forbid actor is "<identifier>"` caveat
+    is appended. This is a blanket denial of every action for this actor
+    once its window opens — deliberately `starting`, not `until` (`until`
+    would make the forbid go INERT after the date, the wrong direction for
+    "the token has expired"). Confirmed against the live interpreter: a
+    forbid whose predicate names only the actor fact (no action/scope)
+    fires for any action once `agreements._temporal_window` reports its
+    window `active` — no changes needed to check_action's existing
+    temporal-window handling for this to work.
+
+    NONCE (identity-plane Stage 3): a tamper-evident, per-token identifier
+    folded into the signed HMAC chain, always present unless the caller
+    passes one explicitly (mostly useful for deterministic tests) — auto-
+    generated via `secrets.token_hex(8)` otherwise. Lets a specific token
+    be revoked (`identity revoke --token`) without revoking the whole
+    agent name.
     """
     caveats = list(caveats or [])
+    if ttl_hours is not None and not _has_explicit_temporal_caveat(caveats):
+        expiry = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).date().isoformat()
+        caveats.append(f'starting "{expiry}" forbid actor is "{identifier}"')
+
     for line in caveats:
         if not is_legal_caveat(line):
             raise IllegalCaveatError(
@@ -243,19 +310,21 @@ def mint(identifier: str, caveats: list[str] | None = None, *, location: str | N
             )
 
     loc = location or _location()
-    signature = _chain_signature(identifier, caveats)
-    return _serialize(identifier, loc, caveats, signature)
+    if nonce is None:
+        nonce = secrets.token_hex(8)
+    signature = _chain_signature(identifier, caveats, nonce=nonce)
+    return _serialize(identifier, loc, caveats, signature, nonce=nonce)
 
 
-def _verify_raw(token: str) -> tuple[str, str, list[str]] | None:
+def _verify_raw(token: str) -> tuple[str, str, list[str], str | None] | None:
     """Internal: verify TOKEN's structure and signature, returning the raw
-    (identifier, location, caveats) straight from the payload — before any
-    delegation-path derivation. attenuate() uses this to recover the true
-    signing identifier (the root, which never changes across delegation
-    hops), separately from VerifiedIdentity.identifier (also the root, but
-    exposed via the public verify()). Same fail-closed rules as verify():
-    structural problems return None; IdentityKeyUnavailableError
-    propagates uncaught.
+    (identifier, location, caveats, nonce) straight from the payload —
+    before any delegation-path derivation. attenuate() uses this to
+    recover the true signing identifier (the root, which never changes
+    across delegation hops), separately from VerifiedIdentity.identifier
+    (also the root, but exposed via the public verify()). Same fail-closed
+    rules as verify(): structural problems return None;
+    IdentityKeyUnavailableError propagates uncaught.
     """
     parts = token.split(".")
     if len(parts) != 3:
@@ -275,7 +344,10 @@ def _verify_raw(token: str) -> tuple[str, str, list[str]] | None:
     identifier = payload.get("identifier")
     location = payload.get("location")
     caveats = payload.get("caveats")
+    nonce = payload.get("nonce")
     if not isinstance(identifier, str) or not isinstance(location, str) or not isinstance(caveats, list):
+        return None
+    if nonce is not None and not isinstance(nonce, str):
         return None
     if not all(isinstance(c, str) for c in caveats):
         return None
@@ -284,11 +356,11 @@ def _verify_raw(token: str) -> tuple[str, str, list[str]] | None:
         if not is_legal_caveat(line):
             return None
 
-    expected = _chain_signature(identifier, caveats)
+    expected = _chain_signature(identifier, caveats, nonce=nonce)
     if not hmac.compare_digest(expected, signature):
         return None
 
-    return identifier, location, caveats
+    return identifier, location, caveats, nonce
 
 
 def _delegation_path(root_identifier: str, caveats: list[str]) -> list[str]:
@@ -315,12 +387,26 @@ def verify(token: str) -> VerifiedIdentity | None:
     raw = _verify_raw(token)
     if raw is None:
         return None
-    identifier, _location, caveats = raw
+    identifier, _location, caveats, nonce = raw
     return VerifiedIdentity(
         identifier=identifier,
         caveats=caveats,
         delegation_path=_delegation_path(identifier, caveats),
+        token_nonce=nonce,
     )
+
+
+def revocation_identifiers(verified: VerifiedIdentity) -> list[str]:
+    """Every name a revocation could match to kill this verified token:
+    the root identifier (or the full [root, ..., leaf] delegation path,
+    when delegated), plus the token's own nonce if it has one. Any one of
+    these being the subject of a matching `forbid actor is "..."` in
+    revocations.limn should deny — see agreements.check_action's
+    identity-plane Stage 3 revocation block."""
+    ids = list(verified.delegation_path) if verified.delegation_path else [verified.identifier]
+    if verified.token_nonce:
+        ids.append(verified.token_nonce)
+    return ids
 
 
 def attenuate(token: str, added_caveats: list[str] | None = None, *, delegate_to: str | None = None) -> str:
@@ -365,7 +451,7 @@ def attenuate(token: str, added_caveats: list[str] | None = None, *, delegate_to
             "Cannot attenuate: the input token does not verify (invalid, "
             "forged, or already carrying an illegal caveat)."
         )
-    root_identifier, location, parent_caveats = raw
+    root_identifier, location, parent_caveats, _parent_nonce = raw
 
     new_caveats = list(added_caveats or [])
     if delegate_to is not None:
@@ -387,5 +473,9 @@ def attenuate(token: str, added_caveats: list[str] | None = None, *, delegate_to
             f"authority-narrowing (classified {classification!r})."
         )
 
-    signature = _chain_signature(root_identifier, child_caveats)
-    return _serialize(root_identifier, location, child_caveats, signature)
+    # A fresh nonce, not the parent's: the child is a functionally
+    # distinct bearer credential (identity-plane Stage 3) — revoking it
+    # by nonce must not touch the parent or a sibling delegation.
+    child_nonce = secrets.token_hex(8)
+    signature = _chain_signature(root_identifier, child_caveats, nonce=child_nonce)
+    return _serialize(root_identifier, location, child_caveats, signature, nonce=child_nonce)

@@ -130,7 +130,7 @@ class TestTokenVerification:
 
         token = identity.mint("agent-x")
         header_b64, payload_b64, sig_b64 = token.split(".")
-        tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+        tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
         forged = f"{header_b64}.{payload_b64}.{tampered_sig}"
 
         agreement = 'permit actor is "agent-x" and action is "start_project"'
