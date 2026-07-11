@@ -24,7 +24,7 @@ py-modules = [
     "cli", "registry", "runner",
     "vault", "scanner", "deps", "seshat", "mcp_server",
     "github", "organizer", "router", "local_scanner", "agreements",
-    "receipts", "invariant_check",
+    "receipts", "invariant_check", "amendment_diff", "identity",
 ]
 packages = ["seshat_tui", "seshat_tui.domains"]
 
