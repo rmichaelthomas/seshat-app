@@ -107,7 +107,7 @@ def test_mint_is_not_an_mcp_tool():
 
 def test_attenuate_narrows_and_prints_a_token(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
-    parent = identity.mint("agent-root")
+    parent = identity.mint("agent-root", ttl_hours=None)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "attenuate", parent,
