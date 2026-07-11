@@ -159,12 +159,12 @@ function hideStaleBanner() {
 // section of its own and is never passed to showDomain().
 
 const DOMAINS = [
-  ["projects",    "◈", "Projects"],
-  ["agreements",  "☰", "Agreements"],
-  ["receipts",    "⧫", "Receipts"],
+  ["projects",    "◆", "Projects"],
+  ["agreements",  "≡", "Agreements"],
+  ["receipts",    "◈", "Receipts"],
   ["invariant",   "◇", "Invariant"],
   ["revocations", "⊘", "Revocations"],
-  ["vault",       "⚿", "Vault"],
+  ["vault",       "⌸", "Vault"],
 ];
 
 // One subnav renderer per domain that has one. Agreements/Invariant/
@@ -498,7 +498,7 @@ async function renderReceiptsView() {
       $("receiptsContent").innerHTML = `
         <div class="view-title"><h1>Receipts</h1></div>
         <div class="empty-wrap"><div class="empty-card">
-          <div class="empty-glyph">⧫</div>
+          <div class="empty-glyph">◈</div>
           <div class="empty-title">No receipts yet</div>
           <div class="empty-desc">Receipts are emitted as governed actions run. Start or stop a project, and its hash-chained receipt appears here.</div>
         </div></div>`;
@@ -877,7 +877,7 @@ async function renderAgreementsView() {
 
     $("agreementsContent").innerHTML = `
       <div class="view-title"><h1>Agreements</h1><span class="vsub">${rules.length} rule${rules.length !== 1 ? "s" : ""} · deny-by-default</span></div>
-      <div class="banner ok"><span class="bi" style="color:var(--green)">☰</span> Agreement active at <code>~/.seshat/agreement.limn</code> <span class="bspacer"></span> <span class="num">${rules.length} rule${rules.length !== 1 ? "s" : ""}</span></div>
+      <div class="banner ok"><span class="bi" style="color:var(--green)">≡</span> Agreement active at <code>~/.seshat/agreement.limn</code> <span class="bspacer"></span> <span class="num">${rules.length} rule${rules.length !== 1 ? "s" : ""}</span></div>
       ${bannerWarn}
       <table class="tbl" id="agr-anchor-rules">
         <thead><tr><th style="width:36px">#</th><th style="width:70px">Verb</th><th>Condition</th><th style="width:110px">Window</th><th style="width:90px">Source</th></tr></thead>
@@ -912,7 +912,7 @@ function renderAgreementsEmptyState() {
   return `
     <div class="view-title"><h1>Agreements</h1></div>
     <div class="empty-wrap"><div class="empty-card">
-      <div class="empty-glyph">☰</div>
+      <div class="empty-glyph">≡</div>
       <div class="empty-title">No Agreement governs this machine</div>
       <div class="empty-desc">Agents are acting without deny-by-default enforcement. An Agreement defines what each actor may and may not do.</div>
       <div class="init-cmd"><div class="cl">initialize a starter Agreement</div><div class="cc"><span class="p">$</span> seshat agreement init</div></div>
@@ -2486,7 +2486,7 @@ async function renderVaultView() {
              before (summary.encrypted), restyled to .banner.ok/.banner.warn.
              installVaultDeps() targets #vaultEncBanner/#vaultInstallDepsBtn. -->
         <div class="banner ${summary.encrypted ? "ok" : "warn"}" id="vaultEncBanner">
-          <span class="bi" style="color:var(--blue)">⚿</span>
+          <span class="bi" style="color:var(--blue)">⌸</span>
           ${summary.encrypted ? "Vault encrypted (keyring + cryptography)" : "Vault unencrypted"}
           <span class="bspacer"></span>
           ${!summary.encrypted ? `<button class="btn btn-sm" id="vaultInstallDepsBtn" onclick="installVaultDeps()">Fix: Install deps</button>` : ""}
