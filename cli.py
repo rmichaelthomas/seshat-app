@@ -15,6 +15,7 @@ Usage:
   ...
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -1577,6 +1578,79 @@ def identity_show(agent):
     else:
         console.print("    [dim](none)[/dim]")
     console.print(f"  Token:  [dim]{meta['token']}[/dim]")
+
+
+@identity_cmd.command(name="attenuate")
+@click.argument("token")
+@click.option("--caveat", "caveats", multiple=True, help="A forbid-only Liminate caveat line (repeatable).")
+@click.option("--as", "delegate_to", default=None, help="Delegate the narrowed token to a named sub-agent.")
+def identity_attenuate(token, caveats, delegate_to):
+    """Narrow TOKEN by appending forbid-only caveats and print the result.
+
+    TOKEN can only ever be narrowed, never broadened — see
+    identity.attenuate's docstring. This command never writes to
+    agreement.limn, revocations.limn, invariant.limn, or entrenched.limn.
+    If --as is given, the resulting child token's metadata is persisted
+    under ~/.seshat/identity/<child>.json (listable via `identity list`),
+    matching `identity mint`'s behavior.
+    """
+    try:
+        new_token = identity.attenuate(token, list(caveats), delegate_to=delegate_to)
+    except identity.IllegalCaveatError as e:
+        console.print(f"[red]Refused to attenuate:[/red] {e}")
+        sys.exit(1)
+
+    console.print(f"[green]✓[/green] Narrowed identity token:\n")
+    console.print(new_token)
+
+    if delegate_to:
+        identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+        verified = identity.verify(new_token)
+        meta = {
+            "identifier": delegate_to,
+            "caveats": verified.caveats if verified else list(caveats),
+            "minted_at": datetime.now(timezone.utc).isoformat(),
+            "token": new_token,
+        }
+        _identity_meta_path(delegate_to).write_text(json.dumps(meta, indent=2))
+        console.print(f"\n  [dim]Set SESHAT_IDENTITY_TOKEN to this value for {delegate_to}'s MCP session.[/dim]")
+
+
+@identity_cmd.command(name="inspect")
+@click.argument("token")
+def identity_inspect(token):
+    """Decode and verify TOKEN, showing its identifier, caveats, and
+    delegation path.
+
+    Attempts full verification first; if that fails, still shows whatever
+    can be decoded structurally, clearly labeled as unverified — mirrors
+    common JWT-debugger behavior, useful for diagnosing a bad token.
+    """
+    verified = identity.verify(token)
+    if verified is not None:
+        console.print(f"[bold]{verified.identifier}[/bold]  [green](verified)[/green]")
+        if verified.delegation_path:
+            console.print(f"  Delegation path: [dim]{' -> '.join(verified.delegation_path)}[/dim]")
+            console.print(f"  Delegation depth: [dim]{len(verified.delegation_path) - 1}[/dim]")
+        else:
+            console.print("  Delegation path: [dim](none — not delegated)[/dim]")
+        console.print("  Caveats:")
+        if verified.caveats:
+            for c in verified.caveats:
+                console.print(f"    [dim]{c}[/dim]")
+        else:
+            console.print("    [dim](none)[/dim]")
+        return
+
+    console.print("[red]Token does not verify[/red] — forged, tampered, or carrying an illegal caveat.")
+    try:
+        header_b64, payload_b64, _sig_b64 = token.split(".")
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+        console.print("  [yellow]Decoded (UNVERIFIED — do not trust this data):[/yellow]")
+        console.print(f"    identifier: [dim]{payload.get('identifier', '?')}[/dim]")
+        console.print(f"    caveats:    [dim]{payload.get('caveats', [])}[/dim]")
+    except Exception:
+        console.print("  [dim]Could not decode token structure at all.[/dim]")
 
 
 cli.add_command(identity_cmd, name="identity")

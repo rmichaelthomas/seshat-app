@@ -101,3 +101,84 @@ def test_mint_is_not_an_mcp_tool():
     names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
     assert "mint" not in names
     assert not any(n == "mint" or n.startswith("mint_") for n in names)
+
+
+# ── identity attenuate / inspect (identity-plane Stage 2) ──────────────────
+
+def test_attenuate_narrows_and_prints_a_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    parent = identity.mint("agent-root")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, [
+        "identity", "attenuate", parent,
+        "--caveat", 'forbid action is "wipe_disk"',
+    ])
+    assert result.exit_code == 0
+    # Rich's Console wraps long lines at terminal width (same as `identity
+    # mint`'s printed token) — de-wrap before extracting the token.
+    dewrapped = result.output.replace("\n", "")
+    new_token = dewrapped.split("token:")[1].strip()
+    verified = identity.verify(new_token)
+    assert verified is not None
+    assert verified.caveats == ['forbid action is "wipe_disk"']
+
+
+def test_attenuate_with_as_persists_metadata_for_the_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    parent = identity.mint("agent-root")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, [
+        "identity", "attenuate", parent,
+        "--caveat", 'forbid action is "wipe_disk"',
+        "--as", "agent-child",
+    ])
+    assert result.exit_code == 0
+
+    meta_path = tmp_path / "agent-child.json"
+    assert meta_path.exists()
+    meta = json.loads(meta_path.read_text())
+    verified = identity.verify(meta["token"])
+    assert verified.delegation_path == ["agent-root", "agent-child"]
+
+
+def test_attenuate_rejects_an_illegal_caveat(tmp_path, monkeypatch):
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    parent = identity.mint("agent-root")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, [
+        "identity", "attenuate", parent,
+        "--caveat", 'permit action is "wipe_disk"',
+    ])
+    assert result.exit_code != 0
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_attenuate_rejects_an_unverifiable_parent(tmp_path, monkeypatch):
+    monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, [
+        "identity", "attenuate", "not-a-real-token",
+        "--caveat", 'forbid action is "wipe_disk"',
+    ])
+    assert result.exit_code != 0
+
+
+def test_inspect_a_valid_token_shows_details(monkeypatch):
+    token = identity.mint("agent-root", caveats=['forbid action is "wipe_disk"'])
+    child = identity.attenuate(token, [], delegate_to="agent-child")
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "inspect", child])
+    assert result.exit_code == 0
+    assert "agent-root" in result.output
+    assert "agent-child" in result.output
+    assert "wipe_disk" in result.output
+
+
+def test_inspect_a_forged_token_reports_unverified_without_crashing(monkeypatch):
+    token = identity.mint("agent-root")
+    header_b64, payload_b64, sig_b64 = token.split(".")
+    forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:])
+    runner = CliRunner()
+    result = runner.invoke(cli.cli, ["identity", "inspect", forged])
+    assert result.exit_code == 0
+    assert "not verify" in result.output.lower() or "unverified" in result.output.lower()
