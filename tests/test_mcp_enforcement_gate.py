@@ -20,12 +20,12 @@ def test_module_import_passes_its_own_structural_audit():
     mcp_server._assert_all_tools_enforced()
 
 
-def test_all_nine_tools_are_registered():
+def test_all_ten_tools_are_registered():
     names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
     assert names == {
         "start_project", "stop_project", "start_group", "stop_group",
         "register_project", "stop_orphan", "set_secret",
-        "set_project_override", "amend_agreement",
+        "set_project_override", "amend_agreement", "attenuate_identity",
     }
 
 
@@ -183,3 +183,116 @@ class TestIdentityTokenWiring:
         files = sorted(tmp_path.glob("*.json"))
         receipt = json.loads(files[0].read_text())
         assert receipt["actor"]["identity_verified"] is False
+
+
+class TestDelegation:
+    """Identity-plane Stage 2: attenuate_identity is the one agent-reachable
+    identity-issuing verb — narrowing only, never broadening. mint stays
+    CLI-only (asserted in test_identity_cli.py's
+    test_mint_is_not_an_mcp_tool, extended here to also assert attenuate's
+    presence)."""
+
+    def test_attenuate_present_mint_absent_in_mcp_tool_set(self):
+        names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
+        assert "attenuate_identity" in names
+        assert "mint" not in names
+        assert not any(n == "mint" or "mint_identity" in n for n in names)
+
+    def test_agreement_actor_returns_leaf_for_a_delegated_token(self, monkeypatch):
+        import identity
+        root = identity.mint("agent-root")
+        child = identity.attenuate(root, [], delegate_to="agent-child")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", child)
+        assert mcp_server._agreement_actor() == "agent-child"
+
+    def test_agreement_actor_returns_root_identifier_when_undelegated(self, monkeypatch):
+        import identity
+        token = identity.mint("agent-root")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
+        assert mcp_server._agreement_actor() == "agent-root"
+
+    def test_attenuate_identity_tool_denied_by_default_without_agreement_permit(self, monkeypatch):
+        import identity
+        root = identity.mint("agent-root")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setattr(mcp_server.agreements, "load_agreement", lambda: None)
+
+        result = mcp_server.attenuate_identity(token=root, caveats=['forbid action is "wipe_disk"'])
+        assert "DENIED" in result
+
+    def test_attenuate_identity_tool_succeeds_when_permitted_and_returns_new_token(self, monkeypatch, tmp_path):
+        import identity
+        import json as json_module
+
+        root = identity.mint("agent-root")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
+        )
+        monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
+        monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(mcp_server.receipts, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        result = json_module.loads(mcp_server.attenuate_identity(
+            token=root, caveats=['forbid action is "wipe_disk"'], delegate_to="agent-child",
+        ))
+        assert result["status"] == "success"
+        new_token = result["token"]
+        verified = identity.verify(new_token)
+        assert verified is not None
+        assert verified.delegation_path == ["agent-root", "agent-child"]
+
+        # The raw new token must never land in the receipt chain — receipts
+        # sync externally (seshat receipts sync), so a live bearer
+        # capability token must not be persisted there.
+        files = sorted(tmp_path.glob("*.json"))
+        assert len(files) == 1
+        receipt = json_module.loads(files[0].read_text())
+        assert new_token not in json_module.dumps(receipt)
+        assert receipt["actor"]["identity_verified"] is True
+
+    def test_attenuate_identity_tool_rejects_an_illegal_caveat(self, monkeypatch):
+        import identity
+        root = identity.mint("agent-root")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
+        )
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        import json as json_module
+        result = json_module.loads(mcp_server.attenuate_identity(
+            token=root, caveats=['remember a string called foo with "bar"'],
+        ))
+        assert result["status"] == "failure"
+
+    def test_emit_threads_delegation_path_for_a_delegated_caller(self, monkeypatch, tmp_path):
+        import identity
+        root = identity.mint("agent-root")
+        child = identity.attenuate(root, [], delegate_to="agent-child")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", child)
+        monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
+        monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(mcp_server.receipts, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-root" and action is "stop_orphan"',
+        )
+        monkeypatch.setattr(mcp_server.scanner, "scan", lambda: {})
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        mcp_server.stop_orphan(port=4242)
+        import json as json_module
+        files = sorted(tmp_path.glob("*.json"))
+        receipt = json_module.loads(files[0].read_text())
+        assert receipt["actor"]["delegation_path"] == ["agent-root", "agent-child"]
+        assert receipt["actor"]["agent_hint"] == "agent-child"

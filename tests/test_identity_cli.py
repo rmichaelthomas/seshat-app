@@ -91,8 +91,13 @@ def test_show_unknown_agent_fails(tmp_path, monkeypatch):
 
 
 def test_mint_is_not_an_mcp_tool():
-    """§9.4: mint is never agent-reachable."""
+    """§9.4 (Stage 1) / §5 (Stage 2): mint is never agent-reachable — it
+    issues root authority and requires the root key, unlike
+    attenuate_identity (Stage 2), which IS agent-reachable because it can
+    only narrow, never broaden. See TestDelegation in
+    test_mcp_enforcement_gate.py for the Stage 2 assertion covering both
+    tools together."""
     import mcp_server
     names = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}
     assert "mint" not in names
-    assert not any("identity" in n for n in names)
+    assert not any(n == "mint" or n.startswith("mint_") for n in names)

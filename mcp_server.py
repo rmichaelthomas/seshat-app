@@ -75,10 +75,10 @@ def _verified_identity() -> "identity.VerifiedIdentity | None":
 
 
 def _agreement_actor() -> str:
-    """Agent-identity string used both for Agreement checks and receipt agent_hint.
-
-    Single source of truth: the string checked against the Agreement and the
-    agent_hint recorded in every receipt must never diverge (§8 invariant 3).
+    """Agent-identity string used for the receipt's agent_hint (display/
+    audit only — see the identity-plane Stage 2 note below for why this is
+    no longer also what check_action's Agreement-matching actor resolves
+    to).
 
     Identity-plane Stage 1: when SESHAT_IDENTITY_TOKEN is present and
     verifies, this returns the token's verified identifier — provable, not
@@ -89,26 +89,43 @@ def _agreement_actor() -> str:
     existing self-declared MCP_AGENT_HINT (F-02 acute): any process can
     set that to any string, so receipts.emit() stamps
     actor.identity_verified: false unconditionally in that case.
+
+    Identity-plane Stage 2: for a delegated token, this returns the LEAF
+    (VerifiedIdentity.delegation_path[-1]), not the root identifier. This
+    is safe specifically because check_action() ignores this return value
+    for enforcement whenever a token is present — it independently
+    verifies the SAME token and uses VerifiedIdentity.identifier (always
+    the ROOT) for Agreement matching. If this function's leaf string were
+    ever used for Agreement matching, a holder could rename itself via
+    attenuate(delegate_to=...) to an unrelated, more-privileged Agreement
+    actor and inherit permissions the root never had — see identity.py's
+    attenuate() docstring for the full reasoning. This function's return
+    value only ever reaches the untrusted (ignored) actor argument and the
+    receipt's agent_hint, never enforcement.
     """
     verified = _verified_identity()
     if verified is not None:
+        if verified.delegation_path:
+            return verified.delegation_path[-1]
         return verified.identifier
     return os.environ.get("MCP_AGENT_HINT", "unknown-agent")
 
 
 def _emit(**kwargs) -> dict:
     """Wrap receipts.emit(), injecting revocation_state, agreement_hash,
-    identity_verified, and (post-action) the Invariant verification block
-    so every MCP-emitted receipt carries them from one source (§7
-    invariant 4). Returns the written receipt dict (receipts.emit()'s
-    return value)."""
+    identity_verified, delegation_path, and (post-action) the Invariant
+    verification block so every MCP-emitted receipt carries them from one
+    source (§7 invariant 4). Returns the written receipt dict
+    (receipts.emit()'s return value)."""
     env_after = kwargs.get("env_after") or receipts.snapshot()
     kwargs["env_after"] = env_after
+    verified = _verified_identity()
     return receipts.emit(
         revocation_state=agreements.revocation_state(),
         agreement_hash=agreements.agreement_hash(),
         invariant=invariant_check.run_verification(env_after),
-        identity_verified=_verified_identity() is not None,
+        identity_verified=verified is not None,
+        delegation_path=verified.delegation_path if verified is not None else None,
         **kwargs,
     )
 
@@ -793,6 +810,59 @@ def amend_agreement(additions: list[str] | None = None, removals: list[str] | No
     if classification.get("violations"):
         response["violations"] = [list(v) for v in classification["violations"]]
     return json.dumps(response)
+
+
+@_enforced_tool(
+    "attenuate_identity",
+    lambda a: {"delegate_to": a.get("delegate_to"), "added_caveat_count": len(a.get("caveats") or [])},
+)
+def attenuate_identity(token: str, caveats: list[str] | None = None, delegate_to: str | None = None) -> str:
+    """Narrow an identity TOKEN (identity-plane Stage 2) — append forbid-
+    only CAVEATS and, optionally, delegate to a named sub-agent.
+
+    Unlike `mint` (human-only, issues root authority), this IS agent-
+    reachable: a delegating agent narrows its own token at runtime to hand
+    to a sub-agent. Safe because attenuation can only narrow, never
+    broaden (identity.attenuate enforces this via the same forbid-only
+    caveat gate mint uses, plus a monotonicity assertion) — this tool is
+    subject to the same deny-by-default enforcement gate as every other
+    tool (F-11), same as any other action.
+
+    Returns the new token directly to the caller. The receipt recorded for
+    this call never contains the new token itself (mirroring set_secret's
+    "secret values are never exposed" precedent) — receipts sync
+    externally (`seshat receipts sync`), and a live bearer capability
+    token must never be persisted there.
+    """
+    env_before = receipts.snapshot()
+    target = {"delegate_to": delegate_to, "caveats": caveats or []}
+
+    try:
+        new_token = identity.attenuate(token, caveats, delegate_to=delegate_to)
+    except identity.IllegalCaveatError as e:
+        result = {"status": "failure", "error": str(e)}
+        _emit(
+            action="attenuate_identity",
+            target=target,
+            result=result,
+            env_before=env_before,
+            session_id=SESSION_ID,
+            actor_type="mcp_session",
+            agent_hint=_agreement_actor(),
+        )
+        return json.dumps(result)
+
+    result = {"status": "success"}
+    _emit(
+        action="attenuate_identity",
+        target=target,
+        result=result,
+        env_before=env_before,
+        session_id=SESSION_ID,
+        actor_type="mcp_session",
+        agent_hint=_agreement_actor(),
+    )
+    return json.dumps({"status": "success", "token": new_token})
 
 
 # ── MCP resources ──────────────────────────────────────────────────────────
