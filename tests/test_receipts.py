@@ -590,6 +590,26 @@ class TestIdentityVerifiedThreading:
         )
         assert receipt["actor"]["delegation_path"] == []
 
+    def test_delegation_path_populated_when_supplied(self, receipts_dir, monkeypatch):
+        """Identity-plane Stage 2: delegation_path is a real, threaded
+        parameter — not the Stage 1 hardcoded empty-list literal."""
+        import receipts as receipts_mod
+        monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
+        monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
+        monkeypatch.setattr(receipts_mod, "CHAIN_HEAD_PATH", receipts_dir / ".chain_head")
+        monkeypatch.setattr(receipts_mod, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        receipt = receipts_mod.emit(
+            action="start_project", target={"project": "p"}, result={"status": "success"},
+            env_before={"listening_ports": [], "managed_projects": {}},
+            session_id="s", actor_type="test", agent_hint="agent-grandchild",
+            identity_verified=True,
+            delegation_path=["agent-root", "agent-child", "agent-grandchild"],
+        )
+        assert receipt["actor"]["delegation_path"] == ["agent-root", "agent-child", "agent-grandchild"]
+
 
 class TestReceiptLoading:
     """Test the load() function from the extracted module."""
