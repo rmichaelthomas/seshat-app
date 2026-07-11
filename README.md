@@ -2,9 +2,9 @@
 
 Govern what AI agents do on your machine.
 
-*Part of the Liminate family — trust infrastructure for autonomous AI, built on a [62-word prose-as-syntax language](https://github.com/rmichaelthomas/liminate).*
+*Part of the Liminate family — trust infrastructure for autonomous AI, built on a [61-word prose-as-syntax language](https://github.com/rmichaelthomas/liminate).*
 
-Seshat is a local governance layer for AI coding agents. It sits between your agent (Claude Code, Cursor, Windsurf) and your machine, enforcing permissions you write in plain English. Every action — permitted or denied — gets a tamper-proof, hash-chained receipt. Not a sandbox. Not a prompt wrapper. A governance layer with a receipt chain.
+Seshat is a local environmental agent harness for AI coding agents. It sits between your agent (Claude Code, Cursor, Windsurf) and your machine, enforcing permissions you write in plain English. Every action — permitted or denied — gets a tamper-proof, hash-chained receipt. Not a sandbox. Not a prompt wrapper. A governance layer with a receipt chain.
 
 ## See it in action
 
@@ -42,8 +42,8 @@ Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a pro
 
 | | Repo | What it does |
 |---|---|---|
-| **← this repo** | [**seshat-app**](https://github.com/rmichaelthomas/seshat-app) | **Local agent harness. Agreement enforcement, receipts, CLI/TUI/dashboard/MCP server.** |
-| | [liminate](https://github.com/rmichaelthomas/liminate) | The language and interpreter. 62 words, deterministic execution, domain packs. |
+| **← this repo** | [**seshat-app**](https://github.com/rmichaelthomas/seshat-app) | **Local environmental agent harness. Agreement enforcement, receipts, CLI/TUI/dashboard/MCP server.** |
+| | [liminate](https://github.com/rmichaelthomas/liminate) | The language and interpreter. 61 words, deterministic execution, domain packs. |
 | | [liminate-invariant](https://github.com/rmichaelthomas/liminate-invariant) | Semantic verification harness. Deterministic claim-verification correction loop. |
 | | [liminate-mcp](https://github.com/rmichaelthomas/liminate-mcp) | Authoring MCP server. Helps an agent draft, validate, explain, and test Agreements. |
 
@@ -285,7 +285,7 @@ Everything lives in `~/.seshat/`:
 
 ## How it works
 
-Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a 62-word prose-as-syntax language. The Agreement and verification contracts are Liminate files. The interpreter runs locally — your policies never leave your machine.
+Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a 61-word prose-as-syntax language. The Agreement and verification contracts are Liminate files. The interpreter runs locally — your policies never leave your machine.
 
 The local tool is fully self-contained. Your `.limn` files, your receipt JSON files, your Agreement — you own them. Optionally sync receipts to [liminate.dev](https://liminate.dev) for cloud storage, search, and team visibility. If you stop using the platform, you keep everything.
 

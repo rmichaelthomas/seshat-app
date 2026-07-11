@@ -15,29 +15,29 @@
   --text-muted:   #A7987B;
   --text-dim:     #726551;
   --decor:        #4E4534;
-  /* Amber identity */
-  --amber:        #E0A84C;
-  --amber-hi:     #F2C169;
-  --amber-dim:    #8C6E34;
-  --amber-deep:   #1F1509;
+  /* Amber identity — converged to seshat_tui/colors.py (canonical Seshat token source) */
+  --amber:        #E8AE52;
+  --amber-hi:     #F6C56E;
+  --amber-dim:    #A07E3E;
+  --amber-deep:   #241708;
   /* Domain accents */
   --projects:     #C9B896;   /* neutral */
-  --agreements:   #6FBF63;   /* green */
+  --agreements:   #74C767;   /* green */
   --receipts:     #B78FE0;   /* purple */
-  --invariant:    #5FBDB6;   /* cyan */
+  --invariant:    #63C6BE;   /* cyan */
   --revocations:  #DD6E5A;   /* red */
   --vault:        #6EA8C4;   /* blue */
   /* Status + actor colors (existing) */
-  --green:        #6FBF63;
+  --green:        #74C767;
   --red:          #DD6E5A;
   --orange:       #E0994C;
   --blue:         #6EA8C4;
   --purple:       #B78FE0;
-  --cyan:         #5FBDB6;
+  --cyan:         #63C6BE;
   --yellow:       #f59e0b;
   --radius:       6px;
   --radius-lg:    10px;
-  --mono: 'Berkeley Mono','JetBrains Mono','SF Mono','Fira Code','Cascadia Code','Courier New',monospace;
+  --mono: 'Commit Mono','Recursive','SF Mono','Fira Code','Cascadia Code','Courier New',monospace;
   --accent:       var(--amber);
   --accent-light: color-mix(in srgb, var(--amber) 12%, transparent);
   --accent-border: color-mix(in srgb, var(--amber) 25%, transparent);
@@ -71,7 +71,7 @@ html, body {
 .header-action:empty { display: none; }
 
 .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
-.logo-glyph { color: var(--blue); }
+.logo-glyph { color: var(--amber); }
 
 .subtitle {
   font-size: 11px; color: var(--text-muted);
@@ -80,9 +80,9 @@ html, body {
 
 .btn-vault { font-family: var(--mono); letter-spacing: 0; }
 .btn-vault.active {
-  background: rgba(129,140,248,0.12);
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
   color: var(--blue);
-  border-color: rgba(129,140,248,0.3);
+  border-color: color-mix(in srgb, var(--blue) 30%, transparent);
 }
 
 /* ── Layout ───────────────────────────────────────────────────────────────── */
@@ -225,11 +225,11 @@ html, body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .error-preview code {
-  font-family: var(--mono); background: rgba(249,115,22,0.1); padding: 0 3px; border-radius: 3px;
+  font-family: var(--mono); background: color-mix(in srgb, var(--orange) 10%, transparent); padding: 0 3px; border-radius: 3px;
 }
 .conflict-inline { font-size: 11px; color: var(--red); margin-top: 2px; }
 .conflict-inline code {
-  font-family: var(--mono); background: rgba(239,68,68,0.1); padding: 0 3px; border-radius: 3px;
+  font-family: var(--mono); background: color-mix(in srgb, var(--red) 10%, transparent); padding: 0 3px; border-radius: 3px;
 }
 .project-port { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
 .child-port   { color: var(--text-muted); }
@@ -245,8 +245,8 @@ html, body {
   font-size: 12px; transition: background 0.1s, color 0.1s, border-color 0.1s; flex-shrink: 0;
 }
 .action-btn:hover           { background: var(--surface-2); color: var(--text); }
-.action-btn.start-btn:hover { background: rgba(34,197,94,0.12); color: var(--green); border-color: rgba(34,197,94,0.3); }
-.action-btn.stop-btn:hover  { background: rgba(239,68,68,0.12); color: var(--red);   border-color: rgba(239,68,68,0.3); }
+.action-btn.start-btn:hover { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
+.action-btn.stop-btn:hover  { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red);   border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 .action-btn:disabled        { opacity: 0.3; cursor: not-allowed; }
 
 .empty-state {
@@ -263,7 +263,7 @@ html, body {
 }
 .orphan-row {
   display: flex; align-items: center; gap: 12px; padding: 9px 16px;
-  border-bottom: 1px solid var(--border); background: rgba(249,115,22,0.03);
+  border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--orange) 3%, transparent);
 }
 .orphan-port { font-family: var(--mono); font-size: 12px; color: var(--orange); min-width: 56px; }
 .orphan-info { flex: 1; min-width: 0; }
@@ -323,7 +323,7 @@ html, body {
   font-size: 11px; transition: background 0.1s, color 0.1s;
 }
 .vault-row-btn:hover          { background: var(--surface-2); color: var(--text); }
-.vault-row-btn.delete:hover   { color: var(--red); border-color: rgba(239,68,68,0.3); }
+.vault-row-btn.delete:hover   { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 
 .vault-empty {
   padding: 20px; text-align: center;
@@ -353,7 +353,7 @@ html, body {
   border: 1px solid var(--border); border-radius: var(--radius);
   color: var(--text); font-size: 13px; font-family: inherit; outline: none;
 }
-.vault-import-controls select:focus { border-color: var(--blue); }
+.vault-import-controls select:focus { border-color: var(--accent); }
 
 /* ── Detail panel ─────────────────────────────────────────────────────────── */
 
@@ -373,36 +373,36 @@ html, body {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; padding: 3px 10px; border-radius: 20px; margin-bottom: 16px;
 }
-.detail-status.running  { background: rgba(34,197,94,0.12);  color: var(--green); }
+.detail-status.running  { background: color-mix(in srgb, var(--green) 12%, transparent);  color: var(--green); }
 .detail-status.stopped  { background: var(--surface-2);       color: var(--text-muted); }
-.detail-status.conflict { background: rgba(239,68,68,0.12);   color: var(--red); }
-.detail-status.error    { background: rgba(249,115,22,0.12);  color: var(--orange); }
-.detail-status.degraded { background: rgba(245,158,11,0.12);  color: var(--yellow); }
+.detail-status.conflict { background: color-mix(in srgb, var(--red) 12%, transparent);   color: var(--red); }
+.detail-status.error    { background: color-mix(in srgb, var(--orange) 12%, transparent);  color: var(--orange); }
+.detail-status.degraded { background: color-mix(in srgb, var(--yellow) 12%, transparent);  color: var(--yellow); }
 
 .conflict-message, .error-block {
   padding: 10px 12px; border-radius: var(--radius);
   font-size: 12px; line-height: 1.65; margin-bottom: 16px;
 }
 .conflict-message {
-  background: rgba(239,68,68,0.07); border: 1px solid rgba(239,68,68,0.2); color: var(--red);
+  background: color-mix(in srgb, var(--red) 7%, transparent); border: 1px solid color-mix(in srgb, var(--red) 20%, transparent); color: var(--red);
 }
 .conflict-message code {
-  font-family: var(--mono); background: rgba(239,68,68,0.12); padding: 0 3px; border-radius: 3px;
+  font-family: var(--mono); background: color-mix(in srgb, var(--red) 12%, transparent); padding: 0 3px; border-radius: 3px;
 }
 .error-block {
-  background: rgba(249,115,22,0.07); border: 1px solid rgba(249,115,22,0.22); color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 7%, transparent); border: 1px solid color-mix(in srgb, var(--orange) 22%, transparent); color: var(--orange);
 }
 .error-block-message {
   font-family: var(--mono); font-size: 11px; word-break: break-word; margin-bottom: 8px;
 }
-.error-block-location { font-size: 11px; color: rgba(249,115,22,0.7); margin-bottom: 8px; }
+.error-block-location { font-size: 11px; color: color-mix(in srgb, var(--orange) 70%, transparent); margin-bottom: 8px; }
 .error-block-actions  { display: flex; gap: 6px; flex-wrap: wrap; }
 .error-action-btn {
-  font-size: 11px; padding: 3px 8px; border: 1px solid rgba(249,115,22,0.3);
+  font-size: 11px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--orange) 30%, transparent);
   border-radius: 4px; background: transparent; color: var(--orange);
   cursor: pointer; transition: background 0.1s;
 }
-.error-action-btn:hover { background: rgba(249,115,22,0.12); }
+.error-action-btn:hover { background: color-mix(in srgb, var(--orange) 12%, transparent); }
 
 .detail-actions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
 .detail-btn {
@@ -413,12 +413,12 @@ html, body {
   transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
 .detail-btn:hover         { background: var(--surface-3); }
-.detail-btn.start         { border-color: rgba(34,197,94,0.3); background: rgba(34,197,94,0.08); color: var(--green); }
-.detail-btn.start:hover   { background: rgba(34,197,94,0.15); }
-.detail-btn.stop          { border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.08); color: var(--red); }
-.detail-btn.stop:hover    { background: rgba(239,68,68,0.15); }
+.detail-btn.start         { border-color: color-mix(in srgb, var(--green) 30%, transparent); background: color-mix(in srgb, var(--green) 8%, transparent); color: var(--green); }
+.detail-btn.start:hover   { background: color-mix(in srgb, var(--green) 15%, transparent); }
+.detail-btn.stop          { border-color: color-mix(in srgb, var(--red) 30%, transparent); background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); }
+.detail-btn.stop:hover    { background: color-mix(in srgb, var(--red) 15%, transparent); }
 .detail-btn.danger        { color: var(--text-muted); font-size: 12px; }
-.detail-btn.danger:hover  { color: var(--red); border-color: rgba(239,68,68,0.3); }
+.detail-btn.danger:hover  { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 
 .detail-section { margin-bottom: 22px; }
 .detail-section-title {
@@ -464,8 +464,8 @@ html, body {
   font-size: 10px; padding: 2px 6px; border-radius: 10px; flex-shrink: 0;
   margin-top: 1px;
 }
-.dep-status.connected    { background: rgba(34,197,94,0.12);  color: var(--green); }
-.dep-status.disconnected { background: rgba(239,68,68,0.12);  color: var(--red); }
+.dep-status.connected    { background: color-mix(in srgb, var(--green) 12%, transparent);  color: var(--green); }
+.dep-status.disconnected { background: color-mix(in srgb, var(--red) 12%, transparent);  color: var(--red); }
 .dep-status.unknown      { background: var(--surface-3);      color: var(--text-muted); }
 
 /* Env var status in detail panel */
@@ -477,9 +477,9 @@ html, body {
 }
 .env-key    { font-family: var(--mono); color: var(--text-dim); }
 .env-status { font-size: 11px; padding: 1px 6px; border-radius: 10px; flex-shrink: 0; }
-.env-status.shared   { background: rgba(34,197,94,0.1);   color: var(--green); }
-.env-status.override { background: rgba(129,140,248,0.1); color: var(--blue); }
-.env-status.missing  { background: rgba(239,68,68,0.1);   color: var(--red); }
+.env-status.shared   { background: color-mix(in srgb, var(--green) 10%, transparent);   color: var(--green); }
+.env-status.override { background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue); }
+.env-status.missing  { background: color-mix(in srgb, var(--red) 10%, transparent);   color: var(--red); }
 
 /* Log viewer */
 .log-viewer {
@@ -504,7 +504,7 @@ html, body {
   border: 1px solid transparent; font-size: 13px; font-weight: 500;
   cursor: pointer; transition: opacity 0.1s, background 0.1s;
 }
-.btn-primary       { background: var(--blue); color: #fff; border-color: var(--blue); }
+.btn-primary       { background: var(--accent); color: var(--amber-deep); border-color: var(--accent); }
 .btn-primary:hover { opacity: 0.85; }
 .btn-ghost         { background: transparent; color: var(--text-dim); border-color: var(--border); }
 .btn-ghost:hover   { background: var(--surface-2); color: var(--text); }
@@ -561,7 +561,7 @@ textarea, select {
   border-radius: var(--radius); color: var(--text);
   font-size: 13px; font-family: inherit; outline: none; transition: border-color 0.15s;
 }
-input:focus, textarea:focus, select:focus { border-color: var(--blue); }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 textarea { resize: vertical; }
 
@@ -605,8 +605,8 @@ textarea { resize: vertical; }
   color: var(--text); box-shadow: 0 4px 20px rgba(0,0,0,0.4);
   animation: toastIn 0.2s ease; max-width: 320px;
 }
-.toast.success { border-color: rgba(34,197,94,0.4); color: var(--green); }
-.toast.error   { border-color: rgba(239,68,68,0.4); color: var(--red); }
+.toast.success { border-color: color-mix(in srgb, var(--green) 40%, transparent); color: var(--green); }
+.toast.error   { border-color: color-mix(in srgb, var(--red) 40%, transparent); color: var(--red); }
 
 @keyframes toastIn {
   from { transform: translateX(16px); opacity: 0; }
@@ -824,8 +824,8 @@ textarea { resize: vertical; }
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  background: rgba(245, 158, 11, 0.08);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--yellow) 20%, transparent);
   font-size: 13px;
   color: var(--yellow);
 }
@@ -834,7 +834,7 @@ textarea { resize: vertical; }
 
 .router-banner code {
   font-family: var(--mono);
-  background: rgba(245, 158, 11, 0.15);
+  background: color-mix(in srgb, var(--yellow) 15%, transparent);
   padding: 1px 4px;
   border-radius: 3px;
   color: var(--yellow);
@@ -842,16 +842,16 @@ textarea { resize: vertical; }
 
 .router-banner-btn {
   padding: 4px 10px;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
   border-radius: 5px;
-  background: rgba(245, 158, 11, 0.06);
+  background: color-mix(in srgb, var(--yellow) 6%, transparent);
   color: var(--yellow);
   cursor: pointer;
   font-size: 12px;
   white-space: nowrap;
 }
 
-.router-banner-btn:hover { background: rgba(245, 158, 11, 0.15); }
+.router-banner-btn:hover { background: color-mix(in srgb, var(--yellow) 15%, transparent); }
 
 /* ── Router setup modal ──────────────────────────────────────────────────── */
 
@@ -1063,7 +1063,7 @@ textarea { resize: vertical; }
   font-size: 12px; font-family: var(--mono); outline: none;
   transition: border-color 0.15s;
 }
-.config-edit-input:focus { border-color: var(--blue); }
+.config-edit-input:focus { border-color: var(--accent); }
 .config-edit-port {
   width: 90px;
 }
@@ -1106,7 +1106,7 @@ textarea { resize: vertical; }
 }
 .search-input:focus {
   outline: none;
-  border-color: var(--blue);
+  border-color: var(--accent);
 }
 .search-input::placeholder { color: var(--text-muted); }
 .search-clear {
@@ -1182,9 +1182,9 @@ textarea { resize: vertical; }
   font-weight: 500;
   letter-spacing: 0.02em;
 }
-.attr-dashboard { background: rgba(59, 130, 246, 0.15); color: var(--blue); }
-.attr-agent     { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
-.attr-cli       { background: rgba(34, 197, 94, 0.12);  color: var(--green); }
+.attr-dashboard { background: color-mix(in srgb, var(--blue) 15%, transparent); color: var(--blue); }
+.attr-agent     { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
+.attr-cli       { background: color-mix(in srgb, var(--green) 12%, transparent);  color: var(--green); }
 .attr-unknown   { background: rgba(255,255,255,0.06);    color: var(--text-muted); }
 
 .agent-tag {
@@ -1194,15 +1194,15 @@ textarea { resize: vertical; }
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(168, 85, 247, 0.18);
-  color: #a855f7;
+  background: color-mix(in srgb, var(--purple) 18%, transparent);
+  color: var(--purple);
   vertical-align: middle;
   letter-spacing: 0.04em;
 }
 
 /* ── Receipts view ────────────────────────────────────────────────────────── */
 
-.btn-receipts.active { color: #a855f7; border-color: rgba(168,85,247,0.35); background: rgba(168,85,247,0.08); }
+.btn-receipts.active { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 35%, transparent); background: color-mix(in srgb, var(--purple) 8%, transparent); }
 
 /* Reused as a <td colspan> fallback for "no receipts match this filter" in
    the reference-styled .tbl (see renderReceiptRows() in app.js). The card
@@ -1227,13 +1227,13 @@ textarea { resize: vertical; }
 .stale-banner {
   display: flex; align-items: center; gap: 12px;
   padding: 7px 16px;
-  background: rgba(129, 140, 248, 0.07);
-  border-bottom: 1px solid rgba(129, 140, 248, 0.18);
+  background: color-mix(in srgb, var(--blue) 7%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--blue) 18%, transparent);
   font-size: 12px; color: var(--text-muted);
 }
 .stale-banner span { flex: 1; }
 .stale-banner-btn {
-  padding: 3px 9px; border: 1px solid rgba(129, 140, 248, 0.3);
+  padding: 3px 9px; border: 1px solid color-mix(in srgb, var(--blue) 30%, transparent);
   border-radius: var(--radius); background: transparent;
   color: var(--blue); font-size: 11px; cursor: pointer;
 }
@@ -1264,7 +1264,7 @@ textarea { resize: vertical; }
   font-size: 13px; font-family: inherit; outline: none;
   transition: border-color 0.15s;
 }
-.prompt-input:focus { border-color: var(--blue); }
+.prompt-input:focus { border-color: var(--accent); }
 
 /* ── Six-domain redesign: shared component classes ──────────────────────────
    Copied from the visual reference (seshat_dashboard_reference.html) so later
@@ -1354,7 +1354,7 @@ textarea { resize: vertical; }
 
 /* claim status */
 .claim-verified { color: var(--green); }
-.claim-corrected { color: var(--orange); }
+.claim-corrected { color: var(--cyan); }
 .claim-escalated { color: var(--red); }
 
 /* audit status (vault, revocations) */
