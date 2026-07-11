@@ -178,7 +178,7 @@ def test_inspect_a_valid_token_shows_details(monkeypatch):
 def test_inspect_a_forged_token_reports_unverified_without_crashing(monkeypatch):
     token = identity.mint("agent-root")
     header_b64, payload_b64, sig_b64 = token.split(".")
-    forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:])
+    forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[0] != "A" else "B") + sig_b64[1:])
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["identity", "inspect", forged])
     assert result.exit_code == 0

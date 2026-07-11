@@ -125,7 +125,7 @@ class TestIdentityTokenWiring:
         import identity
         token = identity.mint("agent-x")
         header_b64, payload_b64, sig_b64 = token.split(".")
-        forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:])
+        forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[0] != "A" else "B") + sig_b64[1:])
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", forged)
         monkeypatch.setattr(
             mcp_server.agreements, "load_agreement",

@@ -29,7 +29,7 @@ def test_verify_rejects_a_forged_signature():
     header_b64, payload_b64, sig_b64 = token.split(".")
     # Flip the last character of the signature — still valid base64url,
     # but a different byte string, so the recomputed HMAC chain can't match.
-    tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+    tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
     forged = f"{header_b64}.{payload_b64}.{tampered_sig}"
     assert identity.verify(forged) is None
 
@@ -274,7 +274,7 @@ class TestAttenuation:
     def test_attenuate_rejects_an_unverifiable_parent_token(self):
         parent = identity.mint("agent-root")
         header_b64, payload_b64, sig_b64 = parent.split(".")
-        tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+        tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
         forged_parent = f"{header_b64}.{payload_b64}.{tampered_sig}"
         with pytest.raises(identity.IllegalCaveatError):
             identity.attenuate(forged_parent, ['forbid action is "wipe_disk"'])
@@ -296,7 +296,7 @@ class TestAttenuation:
         parent = identity.mint("agent-root")
         child = identity.attenuate(parent, ['forbid action is "wipe_disk"'], delegate_to="agent-child")
         header_b64, payload_b64, sig_b64 = child.split(".")
-        tampered_sig = ("A" if sig_b64[-1] != "A" else "B") + sig_b64[1:]
+        tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
         forged = f"{header_b64}.{payload_b64}.{tampered_sig}"
         assert identity.verify(forged) is None
 
