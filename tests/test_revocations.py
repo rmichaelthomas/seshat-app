@@ -425,3 +425,115 @@ class TestRevocationStateReceiptAdditivity:
         assert r1["previous_hash"] == r0["receipt_hash"]
         assert self._recompute_hash(r0) == r0["receipt_hash"]
         assert self._recompute_hash(r1) == r1["receipt_hash"]
+
+
+# ── Phase 4: identity-plane Stage 3 — path-aware token revocation ──────────
+
+
+class TestIdentityRevocation:
+    """Root-identity revocation via the self-declared actor string already
+    worked before this stage (TestRevocationComposition above) — it's the
+    same composed-evaluation path. What's new here: revoking a verified
+    token's ROOT, a delegated HOP, or a specific token's NONCE, none of
+    which (except root) were ever reachable through the old mechanism
+    since only `actor` (always the root once a token verifies) was ever
+    bound in the composed program."""
+
+    AGREEMENT = 'permit actor is "agent-root" and action is "translate"'
+
+    def test_root_revocation_denies_with_revoked_identity_mode(self, monkeypatch, tmp_path):
+        import identity
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
+        )
+        token = identity.mint("agent-root", ttl_hours=None)
+        d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
+        assert d.allowed is False
+        assert d.mode == "revoked-identity"
+
+    def test_unrevoked_root_is_unaffected(self, monkeypatch, tmp_path):
+        import identity
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "some-other-agent"'
+        )
+        token = identity.mint("agent-root", ttl_hours=None)
+        d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
+        assert d.allowed is True
+
+    def test_revoking_root_denies_a_two_hop_grandchild(self, monkeypatch, tmp_path):
+        import identity
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
+        )
+        root = identity.mint("agent-root", ttl_hours=None)
+        child = identity.attenuate(root, [], delegate_to="agent-child")
+        grandchild = identity.attenuate(child, [], delegate_to="agent-grandchild")
+
+        d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=grandchild)
+        assert d.allowed is False
+        assert d.mode == "revoked-identity"
+
+    def test_revoking_a_mid_path_hop_denies_below_but_not_an_unrelated_root_direct_token(self, monkeypatch, tmp_path):
+        import identity
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "agent-child"'
+        )
+        root = identity.mint("agent-root", ttl_hours=None)
+        child = identity.attenuate(root, [], delegate_to="agent-child")
+        grandchild = identity.attenuate(child, [], delegate_to="agent-grandchild")
+
+        denied = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=grandchild)
+        assert denied.allowed is False
+        assert denied.mode == "revoked-identity"
+
+        # An unrelated, non-delegated root-direct token is unaffected —
+        # revoking "agent-child" must not touch the root itself.
+        unrelated = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=root)
+        assert unrelated.allowed is True
+
+    def test_revoking_a_specific_token_by_nonce_does_not_affect_a_sibling(self, monkeypatch, tmp_path):
+        import identity
+        token_a = identity.mint("agent-root", ttl_hours=None, nonce="nonce-a")
+        token_b = identity.mint("agent-root", ttl_hours=None, nonce="nonce-b")
+
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "nonce-a"'
+        )
+
+        d_a = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token_a)
+        d_b = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token_b)
+        assert d_a.allowed is False
+        assert d_a.mode == "revoked-identity"
+        assert d_b.allowed is True
+
+    def test_identity_revocation_runs_under_the_f07_staleness_gate(self, monkeypatch, tmp_path):
+        """A stale revocations.limn still denies by default (F-07) BEFORE
+        the identity-revocation check ever runs — unchanged, not a
+        regression."""
+        import identity
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
+        )
+        monkeypatch.setattr(
+            agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / "never-written" / ".marker"
+        )
+        token = identity.mint("agent-root", ttl_hours=None)
+        d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
+        assert d.allowed is False
+        assert d.mode == "stale-revocations"
+
+    def test_token_absent_revocation_behavior_is_unchanged(self, monkeypatch, tmp_path):
+        """No token, no change: the pre-Stage-3 actor-string revocation
+        path (TestRevocationComposition) still applies unmodified."""
+        _mock_synced_recently(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
+        )
+        d = check_action("agent-root", "translate", agreement_text=self.AGREEMENT)
+        assert d.allowed is False
+        assert d.mode == "forbidden"
