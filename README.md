@@ -1,5 +1,9 @@
 # Seshat
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/rmichaelthomas/seshat-app/blob/main/LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
+[![Homebrew](https://img.shields.io/badge/Homebrew-tap-orange)](https://github.com/rmichaelthomas/homebrew-seshat)
+
 Govern what AI agents do on your machine.
 
 *Part of the Liminate family — trust infrastructure for autonomous AI, built on a [61-word prose-as-syntax language](https://github.com/rmichaelthomas/liminate).*
