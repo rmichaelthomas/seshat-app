@@ -1895,7 +1895,7 @@ def entrench_remove(verb, subject):
 cli.add_command(entrench_cmd, name="entrench")
 
 
-# ── Identity command (identity-plane Stage 1) ───────────────────────────────
+# ── Identity command (identity-plane arc; ID-Q4 Phase 1: Ed25519) ──────────
 #
 # Human-only surface — mint requires the root key and issues authority, so
 # it must never be an MCP tool (§9.4). Minted-identity metadata lives under
@@ -1905,9 +1905,42 @@ def _identity_meta_path(identifier: str) -> Path:
     return identity.IDENTITY_DIR / f"{identifier}.json"
 
 
+def _write_identity_meta(path: Path, meta: dict) -> None:
+    """Persist identity metadata (including, since ID-Q4 Phase 1, the
+    holder's live Ed25519 private key) to PATH, created mode 0o600 from
+    the moment it exists — this file is a human-surface secret store, and
+    unlike the token alone, a holder private key is a forging credential
+    if leaked. Uses os.open with an explicit mode rather than
+    write-then-chmod so there is no window where the file is
+    world-readable."""
+    identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(meta, indent=2))
+
+
+def _find_holder_private_key(token: str) -> str | None:
+    """Look up the current holder's private key for TOKEN by scanning
+    ~/.seshat/identity/*.json for a persisted mint/attenuate --as record
+    whose token field matches exactly. None if not found — e.g. a legacy
+    HS256-macaroon token (which has no holder key at all), or an
+    EdDSA-chain token minted/attenuated outside this CLI's own
+    bookkeeping (attenuate() will then refuse with a clear error rather
+    than silently proceeding unkeyed)."""
+    identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+    for f in identity.IDENTITY_DIR.glob("*.json"):
+        try:
+            meta = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if meta.get("token") == token:
+            return meta.get("holder_private_key")
+    return None
+
+
 @cli.group(name="identity")
 def identity_cmd():
-    """Mint and inspect agent identity tokens (HMAC capability tokens)."""
+    """Mint and inspect agent identity tokens (Ed25519 capability tokens)."""
 
 
 @identity_cmd.command(name="mint")
@@ -1935,6 +1968,12 @@ def identity_mint(agent, caveats, ttl_hours, until_date):
     `until` — `until` would make a forbid go INERT after the date, which
     is backwards for "the token has expired". See identity.mint's
     docstring for the mechanism.
+
+    ID-Q4 Phase 1: the token is an Ed25519 next-key block chain, signed by
+    the Keychain-backed root key. A freshly generated holder private key
+    is persisted alongside the token (0o600) so a later `identity
+    attenuate` at the terminal can narrow it without ever touching the
+    root key — never printed here.
     """
     caveat_list = list(caveats)
     if until_date:
@@ -1945,20 +1984,20 @@ def identity_mint(agent, caveats, ttl_hours, until_date):
         mint_kwargs["ttl_hours"] = ttl_hours
 
     try:
-        token = identity.mint(agent, caveats=caveat_list, **mint_kwargs)
+        token, holder_private_key = identity.mint(agent, caveats=caveat_list, **mint_kwargs)
     except identity.IllegalCaveatError as e:
         console.print(f"[red]Refused to mint — illegal caveat:[/red] {e}")
         sys.exit(1)
 
     verified = identity.verify(token)
-    identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
     meta = {
         "identifier": agent,
         "caveats": verified.caveats if verified else caveat_list,
         "minted_at": datetime.now(timezone.utc).isoformat(),
         "token": token,
+        "holder_private_key": holder_private_key,
     }
-    _identity_meta_path(agent).write_text(json.dumps(meta, indent=2))
+    _write_identity_meta(_identity_meta_path(agent), meta)
 
     console.print(f"[green]✓[/green] Minted identity token for [bold]{agent}[/bold]:\n")
     console.print(token)
@@ -2014,9 +2053,19 @@ def identity_attenuate(token, caveats, delegate_to):
     If --as is given, the resulting child token's metadata is persisted
     under ~/.seshat/identity/<child>.json (listable via `identity list`),
     matching `identity mint`'s behavior.
+
+    ID-Q4 Phase 1: for an Ed25519 token, the current holder's private key
+    is looked up from this install's own ~/.seshat/identity/*.json
+    bookkeeping (whichever record's `token` matches TOKEN exactly) and
+    used to sign the new block — the root private key is never read. A
+    legacy HS256-macaroon TOKEN attenuates via the unchanged root-key
+    path instead; no holder key is needed or looked up for it.
     """
+    holder_private_key = _find_holder_private_key(token)
     try:
-        new_token = identity.attenuate(token, list(caveats), delegate_to=delegate_to)
+        new_token, new_holder_private_key = identity.attenuate(
+            token, list(caveats), delegate_to=delegate_to, holder_private_key=holder_private_key,
+        )
     except identity.IllegalCaveatError as e:
         console.print(f"[red]Refused to attenuate:[/red] {e}")
         sys.exit(1)
@@ -2025,15 +2074,15 @@ def identity_attenuate(token, caveats, delegate_to):
     console.print(new_token)
 
     if delegate_to:
-        identity.IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
         verified = identity.verify(new_token)
         meta = {
             "identifier": delegate_to,
             "caveats": verified.caveats if verified else list(caveats),
             "minted_at": datetime.now(timezone.utc).isoformat(),
             "token": new_token,
+            "holder_private_key": new_holder_private_key,
         }
-        _identity_meta_path(delegate_to).write_text(json.dumps(meta, indent=2))
+        _write_identity_meta(_identity_meta_path(delegate_to), meta)
         console.print(f"\n  [dim]Set SESHAT_IDENTITY_TOKEN to this value for {delegate_to}'s MCP session.[/dim]")
 
 
@@ -2125,6 +2174,48 @@ def identity_revoke(identifier, token_to_revoke):
 
     _write_revocations(new_text)
     console.print(f"[green]✓[/green] Revoked: [bold]{target_id}[/bold]")
+
+
+@identity_cmd.group(name="keys")
+def identity_keys_cmd():
+    """Inspect this install's Ed25519 root signing key (public half only)."""
+
+
+@identity_keys_cmd.command(name="show")
+def identity_keys_show():
+    """Print the root public key.
+
+    This is the value to hand a third party — an auditor, an enterprise
+    SIEM — for independent, cross-org verification of every token this
+    install mints, without ever handing over a forging key (ID-Q4 Phase
+    1's whole point). Never prints the private key.
+    """
+    try:
+        pub_hex = identity.root_public_key_hex()
+    except identity.IdentityKeyUnavailableError as e:
+        console.print(f"[red]Cannot read the root public key:[/red] {e}")
+        sys.exit(1)
+
+    console.print(pub_hex)
+    console.print(
+        "\n  [dim]This is the ROOT PUBLIC key for this install — safe to share. "
+        "Hand it to a third party so they can independently verify tokens this "
+        "install mints, without ever needing this install's private key.[/dim]"
+    )
+
+
+@identity_keys_cmd.command(name="export")
+@click.option("--out", "out_path", required=True, type=click.Path(), help="File to write the public key to.")
+def identity_keys_export(out_path):
+    """Write the root public key to --out, for transmission to a third party."""
+    try:
+        pub_hex = identity.root_public_key_hex()
+    except identity.IdentityKeyUnavailableError as e:
+        console.print(f"[red]Cannot read the root public key:[/red] {e}")
+        sys.exit(1)
+
+    Path(out_path).write_text(pub_hex + "\n")
+    console.print(f"[green]✓[/green] Wrote root public key to [bold]{out_path}[/bold]")
 
 
 cli.add_command(identity_cmd, name="identity")

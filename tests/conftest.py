@@ -53,8 +53,28 @@ def _test_identity_root_key(monkeypatch):
     """Isolate every test from the real macOS Keychain for the identity
     root key, mirroring _test_mac_key above. Without this, mint()/verify()
     calls in the test suite would read/write the developer's real Keychain
-    entry."""
+    entry. Legacy HS256-macaroon path only (§7)."""
     import identity as identity_mod
     monkeypatch.setattr(
         identity_mod, "_root_key", lambda: b"test-only-identity-root-key-not-for-real-use"
     )
+
+
+@pytest.fixture(autouse=True)
+def _test_identity_root_signing_key(monkeypatch):
+    """Isolate every test from the real macOS Keychain for the Ed25519 root
+    signing key (ID-Q4 Phase 1), mirroring _test_identity_root_key above.
+    A single fixed keypair for the whole run — not per-test-random — so a
+    token minted in one test still verifies if checked from another, the
+    same way the real Keychain-backed key would be stable across calls.
+    Patches both accessors directly (never real keyring get/set) so a test
+    that breaks _root_signing_key specifically (simulating "the private
+    key is unavailable") leaves _root_public_key work — this is exactly
+    what proves verification needs only the public half (§10 benchmark 6)."""
+    import identity as identity_mod
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    fixed_private = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    fixed_public = fixed_private.public_key()
+    monkeypatch.setattr(identity_mod, "_root_signing_key", lambda: fixed_private)
+    monkeypatch.setattr(identity_mod, "_root_public_key", lambda: fixed_public)

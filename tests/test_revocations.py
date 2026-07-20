@@ -447,7 +447,7 @@ class TestIdentityRevocation:
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
         )
-        token = identity.mint("agent-root", ttl_hours=None)
+        token, _key = identity.mint("agent-root", ttl_hours=None)
         d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
         assert d.allowed is False
         assert d.mode == "revoked-identity"
@@ -458,7 +458,7 @@ class TestIdentityRevocation:
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid actor is "some-other-agent"'
         )
-        token = identity.mint("agent-root", ttl_hours=None)
+        token, _key = identity.mint("agent-root", ttl_hours=None)
         d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
         assert d.allowed is True
 
@@ -468,9 +468,9 @@ class TestIdentityRevocation:
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid actor is "agent-root"'
         )
-        root = identity.mint("agent-root", ttl_hours=None)
-        child = identity.attenuate(root, [], delegate_to="agent-child")
-        grandchild = identity.attenuate(child, [], delegate_to="agent-grandchild")
+        root, root_key = identity.mint("agent-root", ttl_hours=None)
+        child, child_key = identity.attenuate(root, [], delegate_to="agent-child", holder_private_key=root_key)
+        grandchild, _key = identity.attenuate(child, [], delegate_to="agent-grandchild", holder_private_key=child_key)
 
         d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=grandchild)
         assert d.allowed is False
@@ -482,9 +482,9 @@ class TestIdentityRevocation:
         monkeypatch.setattr(
             agreements, "load_revocations", lambda: 'forbid actor is "agent-child"'
         )
-        root = identity.mint("agent-root", ttl_hours=None)
-        child = identity.attenuate(root, [], delegate_to="agent-child")
-        grandchild = identity.attenuate(child, [], delegate_to="agent-grandchild")
+        root, root_key = identity.mint("agent-root", ttl_hours=None)
+        child, child_key = identity.attenuate(root, [], delegate_to="agent-child", holder_private_key=root_key)
+        grandchild, _key = identity.attenuate(child, [], delegate_to="agent-grandchild", holder_private_key=child_key)
 
         denied = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=grandchild)
         assert denied.allowed is False
@@ -497,8 +497,8 @@ class TestIdentityRevocation:
 
     def test_revoking_a_specific_token_by_nonce_does_not_affect_a_sibling(self, monkeypatch, tmp_path):
         import identity
-        token_a = identity.mint("agent-root", ttl_hours=None, nonce="nonce-a")
-        token_b = identity.mint("agent-root", ttl_hours=None, nonce="nonce-b")
+        token_a, _key_a = identity.mint("agent-root", ttl_hours=None, nonce="nonce-a")
+        token_b, _key_b = identity.mint("agent-root", ttl_hours=None, nonce="nonce-b")
 
         _mock_synced_recently(monkeypatch, tmp_path)
         monkeypatch.setattr(
@@ -522,7 +522,7 @@ class TestIdentityRevocation:
         monkeypatch.setattr(
             agreements, "LAST_SYNCED_REVOCATIONS_PATH", tmp_path / "never-written" / ".marker"
         )
-        token = identity.mint("agent-root", ttl_hours=None)
+        token, _key = identity.mint("agent-root", ttl_hours=None)
         d = check_action("ignored", "translate", agreement_text=self.AGREEMENT, token=token)
         assert d.allowed is False
         assert d.mode == "stale-revocations"

@@ -93,7 +93,7 @@ class TestIdentityTokenWiring:
 
     def test_agreement_actor_uses_verified_identifier_with_a_valid_token(self, monkeypatch):
         import identity
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
         monkeypatch.setenv("MCP_AGENT_HINT", "claude-code")
         assert mcp_server._agreement_actor() == "agent-x"
@@ -105,7 +105,7 @@ class TestIdentityTokenWiring:
 
     def test_enforced_tool_permits_with_a_valid_token_and_matching_agreement(self, monkeypatch):
         import identity
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
         monkeypatch.setattr(
             mcp_server.agreements, "load_agreement",
@@ -123,7 +123,7 @@ class TestIdentityTokenWiring:
 
     def test_enforced_tool_denies_identity_invalid_with_a_forged_token(self, monkeypatch):
         import identity
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         header_b64, payload_b64, sig_b64 = token.split(".")
         forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[0] != "A" else "B") + sig_b64[1:])
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", forged)
@@ -141,7 +141,7 @@ class TestIdentityTokenWiring:
 
     def test_emit_marks_identity_verified_true_when_token_present(self, monkeypatch, tmp_path):
         import identity
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
         monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
         monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
@@ -200,20 +200,20 @@ class TestDelegation:
 
     def test_agreement_actor_returns_leaf_for_a_delegated_token(self, monkeypatch):
         import identity
-        root = identity.mint("agent-root")
-        child = identity.attenuate(root, [], delegate_to="agent-child")
+        root, root_key = identity.mint("agent-root")
+        child, _key = identity.attenuate(root, [], delegate_to="agent-child", holder_private_key=root_key)
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", child)
         assert mcp_server._agreement_actor() == "agent-child"
 
     def test_agreement_actor_returns_root_identifier_when_undelegated(self, monkeypatch):
         import identity
-        token = identity.mint("agent-root")
+        token, _key = identity.mint("agent-root")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", token)
         assert mcp_server._agreement_actor() == "agent-root"
 
     def test_attenuate_identity_tool_denied_by_default_without_agreement_permit(self, monkeypatch):
         import identity
-        root = identity.mint("agent-root")
+        root, _root_key = identity.mint("agent-root")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
         monkeypatch.setattr(mcp_server.agreements, "load_agreement", lambda: None)
 
@@ -221,11 +221,26 @@ class TestDelegation:
         assert "DENIED" in result
 
     def test_attenuate_identity_tool_succeeds_when_permitted_and_returns_new_token(self, monkeypatch, tmp_path):
+        """ID-Q4 Phase 1: identity.attenuate() now returns (token, holder_
+        private_key) for an EdDSA-chain input, and — since mcp_server.py's
+        attenuate_identity has no parameter to carry a holder key — falls
+        back to SESHAT_IDENTITY_HOLDER_KEY, mirroring exactly how
+        SESHAT_IDENTITY_TOKEN already works: a human provisions both env
+        vars for an agent's MCP session, and the agent narrows its own
+        session token. mcp_server.py is BYTE-IDENTICAL to main
+        (unchanged): `new_token = identity.attenuate(...)` binds to the
+        WHOLE (token, key) tuple, which rides through unmodified to the
+        JSON response as `"token": [tok, key]` — the same channel
+        mcp_server.py's own docstring says a live bearer token already
+        travels on ('the receipt recorded for this call never contains
+        the new token itself... a live bearer capability token must never
+        be persisted there'). The holder key gets identical treatment."""
         import identity
         import json as json_module
 
-        root = identity.mint("agent-root")
+        root, root_key = identity.mint("agent-root")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setenv("SESHAT_IDENTITY_HOLDER_KEY", root_key)
         monkeypatch.setattr(
             mcp_server.agreements, "load_agreement",
             lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
@@ -241,24 +256,52 @@ class TestDelegation:
             token=root, caveats=['forbid action is "wipe_disk"'], delegate_to="agent-child",
         ))
         assert result["status"] == "success"
-        new_token = result["token"]
+        new_token, new_holder_key = result["token"]
+        assert new_holder_key
         verified = identity.verify(new_token)
         assert verified is not None
         assert verified.delegation_path == ["agent-root", "agent-child"]
 
-        # The raw new token must never land in the receipt chain — receipts
-        # sync externally (seshat receipts sync), so a live bearer
-        # capability token must not be persisted there.
+        # The raw new token AND its holder key must never land in the
+        # receipt chain — receipts sync externally (seshat receipts
+        # sync), so a live bearer capability token (and, the same class
+        # of secret, a holder private key) must never be persisted there.
         files = sorted(tmp_path.glob("*.json"))
         assert len(files) == 1
         receipt = json_module.loads(files[0].read_text())
         assert new_token not in json_module.dumps(receipt)
+        assert new_holder_key not in json_module.dumps(receipt)
         assert receipt["actor"]["identity_verified"] is True
+
+    def test_attenuate_identity_tool_fails_closed_without_the_holder_key_env_var(self, monkeypatch):
+        """Documents the fallback's absence path: mcp_server.py's
+        attenuate_identity has no way to pass a holder key directly, so
+        without SESHAT_IDENTITY_HOLDER_KEY set, attenuation fails closed
+        rather than silently proceeding unkeyed."""
+        import identity
+        import json as json_module
+
+        root, _root_key = identity.mint("agent-root")
+        monkeypatch.delenv("SESHAT_IDENTITY_HOLDER_KEY", raising=False)
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
+        )
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        result = json_module.loads(mcp_server.attenuate_identity(
+            token=root, caveats=['forbid action is "wipe_disk"'],
+        ))
+        assert result["status"] == "failure"
 
     def test_attenuate_identity_tool_rejects_an_illegal_caveat(self, monkeypatch):
         import identity
-        root = identity.mint("agent-root")
+        root, root_key = identity.mint("agent-root")
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setenv("SESHAT_IDENTITY_HOLDER_KEY", root_key)
         monkeypatch.setattr(
             mcp_server.agreements, "load_agreement",
             lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
@@ -275,8 +318,8 @@ class TestDelegation:
 
     def test_emit_threads_delegation_path_for_a_delegated_caller(self, monkeypatch, tmp_path):
         import identity
-        root = identity.mint("agent-root")
-        child = identity.attenuate(root, [], delegate_to="agent-child")
+        root, root_key = identity.mint("agent-root")
+        child, _key = identity.attenuate(root, [], delegate_to="agent-child", holder_private_key=root_key)
         monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", child)
         monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
         monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
