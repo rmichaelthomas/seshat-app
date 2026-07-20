@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -1528,17 +1529,35 @@ def receipts_sync(dry_run):
 
 
 @receipts.command(name="verify")
-def receipts_verify():
+@click.option(
+    "--pubkey", "pubkey_hex", default=None,
+    help="Verify version-3 receipts against this hex Ed25519 public key "
+         "instead of the local Keychain — the auditor's path. Works on a "
+         "machine that has never held the private key.",
+)
+def receipts_verify(pubkey_hex):
     """Verify the local receipt hash chain integrity.
 
-    Each receipt is verified via its keyed HMAC hash (F-01) unless it
-    predates chain-keying (no receipt_version), in which case it is
-    verified via the legacy plain-sha256 method — but ONLY as long as no
-    keyed receipt has appeared earlier in the chain. The chain only ever
-    moves forward from unkeyed to keyed, never back, so an unversioned
-    receipt appearing after a keyed one is treated as forgery, not
-    nostalgia. After the link-walk, the disk state is compared against
-    the persisted .chain_head anchor to catch tail-truncation, which a
+    Each receipt is verified according to its receipt_version:
+
+    \b
+    - version 3 (ID-Q4 Phase 2): Ed25519 signature check — against the
+      local Keychain-backed receipt public key, or, with --pubkey,
+      against a supplied public key. The first receipts independently
+      verifiable by a third party, not just the emitting machine.
+    - version 2: HMAC recompute (F-01), unchanged.
+    - absent, before any keyed (version >= 2) receipt: legacy
+      plain-sha256, link-verified only, unchanged.
+    - absent, after a keyed receipt: forgery, hard fail (unchanged).
+
+    The chain only ever moves forward: an unversioned receipt appearing
+    after a keyed one is forgery, not nostalgia, and a version-2 receipt
+    appearing after a version-3 one is a downgrade, not a fork — both hard
+    fail. With --pubkey, version-2 and unversioned receipts cannot be
+    verified by this method (no HMAC key; wrong scheme) and are reported
+    as unverifiable rather than as failures — only their chain linkage is
+    checked. After the link-walk, the disk state is compared against the
+    persisted .chain_head anchor to catch tail-truncation, which a
     self-consistent-but-shorter chain can't reveal on its own.
     """
     files = sorted(receipts_module.RECEIPTS_DIR.glob("*.json"))
@@ -1546,11 +1565,20 @@ def receipts_verify():
         console.print("[dim]No receipts to verify.[/dim]")
         return
 
+    pubkey = None
+    if pubkey_hex is not None:
+        try:
+            pubkey = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
+        except Exception as e:
+            console.print(f"[red]Invalid --pubkey:[/red] {e}")
+            sys.exit(1)
+
     expected_previous: str | None = None
     total = 0
     broken_at: str | None = None
-    graduated_to_keyed = False
+    highest_version_seen = 0  # 0 = no keyed (version >= 2) receipt seen yet
     legacy_count = 0
+    unverifiable_count = 0
 
     for f in files:
         total += 1
@@ -1577,15 +1605,64 @@ def receipts_verify():
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
 
         version = receipt.get("receipt_version")
-        if version is not None and version >= 2:
-            graduated_to_keyed = True
+
+        if version is not None and version >= 3:
+            highest_version_seen = max(highest_version_seen, version)
+            if pubkey is not None:
+                verifying_key = pubkey
+            else:
+                try:
+                    verifying_key = receipts_module._require_receipt_public_key()
+                except receipts_module.ReceiptKeyUnavailableError as exc:
+                    broken_at = f.name
+                    console.print(f"[red]✗[/red] {f.name} — cannot verify: {exc}")
+                    break
             try:
-                computed_hash = receipts_module._keyed_hash(canonical)
-            except receipts_module.ReceiptKeyUnavailableError as exc:
+                verifying_key.verify(bytes.fromhex(stored_hash), canonical.encode("utf-8"))
+            except Exception:
                 broken_at = f.name
-                console.print(f"[red]✗[/red] {f.name} — cannot verify: {exc}")
+                console.print(
+                    f"[red]✗[/red] {f.name} — signature verification failed "
+                    "(receipt was modified)"
+                )
                 break
-        elif graduated_to_keyed:
+
+        elif version is not None and version == 2:
+            if highest_version_seen >= 3:
+                # The chain only ever moves forward — a version-2 receipt
+                # can never legitimately follow a version-3 one.
+                broken_at = f.name
+                console.print(
+                    f"[red]✗[/red] {f.name} — downgrade detected: a "
+                    "version-2 receipt appears after the chain had already "
+                    "graduated to version-3 (Ed25519-signed) receipts"
+                )
+                break
+            highest_version_seen = max(highest_version_seen, 2)
+            if pubkey is not None:
+                unverifiable_count += 1
+                console.print(
+                    f"[yellow]?[/yellow] {f.name} — unverifiable-by-this-method: "
+                    "a version-2, HMAC-keyed receipt has no Ed25519 signature "
+                    "to check against --pubkey. Only chain linkage was checked."
+                )
+            else:
+                try:
+                    computed_hash = receipts_module._keyed_hash(canonical)
+                except receipts_module.ReceiptKeyUnavailableError as exc:
+                    broken_at = f.name
+                    console.print(f"[red]✗[/red] {f.name} — cannot verify: {exc}")
+                    break
+                if computed_hash != stored_hash:
+                    broken_at = f.name
+                    console.print(
+                        f"[red]✗[/red] {f.name} — hash mismatch (receipt was modified)\n"
+                        f"  Stored:   [dim]{stored_hash}[/dim]\n"
+                        f"  Computed: [dim]{computed_hash}[/dim]"
+                    )
+                    break
+
+        elif highest_version_seen >= 2:
             # An unversioned receipt can never legitimately appear after
             # the chain already graduated to keyed receipts — the chain
             # never downgrades. Treat as forgery, not legacy.
@@ -1596,18 +1673,27 @@ def receipts_verify():
                 "receipts"
             )
             break
+
         else:
             legacy_count += 1
-            computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-        if computed_hash != stored_hash:
-            broken_at = f.name
-            console.print(
-                f"[red]✗[/red] {f.name} — hash mismatch (receipt was modified)\n"
-                f"  Stored:   [dim]{stored_hash}[/dim]\n"
-                f"  Computed: [dim]{computed_hash}[/dim]"
-            )
-            break
+            if pubkey is not None:
+                unverifiable_count += 1
+                console.print(
+                    f"[yellow]?[/yellow] {f.name} — unverifiable-by-this-method: "
+                    "a legacy, unkeyed (plain sha256) receipt has no Ed25519 "
+                    "signature to check against --pubkey. Only chain linkage "
+                    "was checked."
+                )
+            else:
+                computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                if computed_hash != stored_hash:
+                    broken_at = f.name
+                    console.print(
+                        f"[red]✗[/red] {f.name} — hash mismatch (receipt was modified)\n"
+                        f"  Stored:   [dim]{stored_hash}[/dim]\n"
+                        f"  Computed: [dim]{computed_hash}[/dim]"
+                    )
+                    break
 
         expected_previous = stored_hash
 
@@ -1620,6 +1706,14 @@ def receipts_verify():
             f"[yellow]⚠[/yellow] {legacy_count} receipt(s) verified via the legacy "
             "unkeyed method (written before chain keying) — link-verified "
             "only, not forgery-resistant."
+        )
+
+    if unverifiable_count:
+        console.print(
+            f"[yellow]⚠[/yellow] {unverifiable_count} receipt(s) are "
+            "unverifiable-by-this-method under --pubkey (version-2 HMAC or "
+            "legacy plain-hash) — chain linkage was checked, signatures "
+            "were not."
         )
 
     # Anchor check — catches tail-truncation, which the link-walk alone
@@ -1644,6 +1738,35 @@ def receipts_verify():
             return
 
     console.print(f"[green]✓[/green] Chain intact — {total} receipt(s) verified.")
+
+
+@receipts.group(name="keys")
+def receipts_keys_cmd():
+    """Inspect this install's Ed25519 receipt signing key (public half only)."""
+
+
+@receipts_keys_cmd.command(name="show")
+def receipts_keys_show():
+    """Print the receipt signing public key.
+
+    This is the value to hand a third party — an auditor, an enterprise
+    SIEM — for independent, cross-org verification of every version-3
+    receipt this install emits (via `seshat receipts verify --pubkey`),
+    without ever handing over a forging key (ID-Q4 Phase 2's whole
+    point). Never prints the private key.
+    """
+    try:
+        pub_hex = receipts_module.receipt_public_key_hex()
+    except receipts_module.ReceiptKeyUnavailableError as e:
+        console.print(f"[red]Cannot read the receipt public key:[/red] {e}")
+        sys.exit(1)
+
+    console.print(pub_hex)
+    console.print(
+        "\n  [dim]This is the RECEIPT PUBLIC key for this install — safe to share. "
+        "Hand it to a third party so they can independently verify receipts this "
+        "install emits, without ever needing this install's private key.[/dim]"
+    )
 
 
 # ── Revocations command ─────────────────────────────────────────────────────
