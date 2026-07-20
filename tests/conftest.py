@@ -37,15 +37,15 @@ def _no_invariant_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_groups_by_default(monkeypatch):
+def _no_teams_by_default(monkeypatch):
     """Isolate every test from whatever may actually exist at
-    ~/.seshat/groups.limn on the host machine, mirroring
-    _no_revocations_by_default above. check_action() resolves groups
+    ~/.seshat/teams.limn on the host machine, mirroring
+    _no_revocations_by_default above. check_action() resolves teams
     independently of the agreement_text override, so without this every
-    check_action call in the suite would read the developer's real groups
-    file. Tests that need specific groups content override load_groups
+    check_action call in the suite would read the developer's real teams
+    file. Tests that need specific teams content override load_teams
     explicitly in the test body."""
-    monkeypatch.setattr(agreements, "load_groups", lambda: None)
+    monkeypatch.setattr(agreements, "load_teams", lambda: None)
 
 
 @pytest.fixture(autouse=True)

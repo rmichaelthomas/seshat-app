@@ -25,7 +25,7 @@ REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
 LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
 INVARIANT_PATH = Path.home() / ".seshat" / "invariant.limn"
 ENTRENCHED_PATH = Path.home() / ".seshat" / "entrenched.limn"
-GROUPS_PATH = Path.home() / ".seshat" / "groups.limn"
+TEAMS_PATH = Path.home() / ".seshat" / "teams.limn"
 
 # F-07: how old the last successful `seshat revocations sync` may be
 # before check_action treats an *existing* revocations.limn as stale and
@@ -84,10 +84,10 @@ def load_entrenched() -> str | None:
         return None
 
 
-def load_groups() -> str | None:
-    """Return the groups file text, or None if it doesn't exist."""
+def load_teams() -> str | None:
+    """Return the teams file text, or None if it doesn't exist."""
     try:
-        return GROUPS_PATH.read_text()
+        return TEAMS_PATH.read_text()
     except FileNotFoundError:
         return None
 
@@ -99,7 +99,7 @@ def load_groups() -> str | None:
 # (actor/action/scope) are deliberately NOT here: their composition is
 # byte-for-byte unchanged (F-02).
 NEW_ENFORCEMENT_FACTS: tuple[str, ...] = (
-    "actor-groups", "delegation-path", "delegation-depth", "token-nonce",
+    "actor-teams", "delegation-path", "delegation-depth", "token-nonce",
 )
 
 
@@ -107,32 +107,38 @@ def new_fact_probe_values() -> dict:
     """Inert probe values for the new facts, used by identity.is_legal_caveat.
     Shapes must match real enforcement binding: list / list / number / string."""
     return {
-        "actor-groups": ["__seshat_probe_group__"],
+        "actor-teams": ["__seshat_probe_team__"],
         "delegation-path": ["__seshat_probe_hop__"],
         "delegation-depth": 1,
         "token-nonce": "__seshat_probe_nonce__",
     }
 
 
-def resolve_groups(actor: str, groups_text: str | None = None) -> list[str]:
-    """Transitive closure of ACTOR's group memberships from groups.limn.
+def resolve_teams(actor: str, teams_text: str | None = None) -> list[str]:
+    """Transitive closure of ACTOR's team memberships from teams.limn.
 
-    Schema convention: a list named `<group>-members` holds actor names;
-    a list named `<group>-parents` holds parent group names. Any other
+    Named `teams`, not `groups`, to stay clear of Seshat's long-standing
+    project-group concept (`start_group`/`stop_group`, `registry.list_groups`,
+    `seshat://groups`) — that one names sets of PROJECTS started together;
+    this one names sets of ACTORS for permission purposes. Two unrelated
+    ideas, two words.
+
+    Schema convention: a list named `<team>-members` holds actor names;
+    a list named `<team>-parents` holds parent team names. Any other
     symbol is inert. Direct membership seeds the walk; parents are
     followed transitively with a visited set (cycle-safe). Returns a
     sorted list for determinism.
 
     Fail-safe on the GRANT side: a missing, unreadable, or erroring
-    groups.limn resolves to [] — the actor simply belongs to no groups,
-    so group-conditioned permits never fire. Never raises.
+    teams.limn resolves to [] — the actor simply belongs to no teams,
+    so team-conditioned permits never fire. Never raises.
     """
-    if groups_text is None:
-        groups_text = load_groups()
-    if groups_text is None:
+    if teams_text is None:
+        teams_text = load_teams()
+    if teams_text is None:
         return []
     try:
-        result = liminate.run(groups_text, enter_phase2=False, auto_confirm_amber=True)
+        result = liminate.run(teams_text, enter_phase2=False, auto_confirm_amber=True)
     except Exception:
         return []
     if any(r.status.name in _ERROR_STATUS_NAMES for r in result.results):
@@ -477,7 +483,7 @@ def check_action(
     else:
         delegation_path = [actor]
     new_facts = {
-        "actor-groups": resolve_groups(actor),
+        "actor-teams": resolve_teams(actor),
         "delegation-path": delegation_path,
         "delegation-depth": len(delegation_path),
         "token-nonce": (verified.token_nonce if verified is not None and verified.token_nonce else "none"),

@@ -1,9 +1,15 @@
-# Delegation facts & groups — POST-build benchmarks
+# Delegation facts & teams — POST-build benchmarks
 
 **Date:** 2026-07-20  
 **Branch:** `feat/delegation-facts-and-groups`  
 **liminate:** 0.16.0  
 **Full suite:** 492 passed
+
+> Naming note: the org-membership surface is `teams` (`seshat teams`,
+> `~/.seshat/teams.limn`, `actor-teams`). It was briefly drafted as `groups`,
+> which collided with Seshat's long-standing project-group concept
+> (`start_group`/`stop_group`, `registry.list_groups`, `seshat://groups`).
+> The branch name predates the rename.
 
 ## Legacy decisions (the §3 four) — must be identical to pre
 
@@ -40,17 +46,17 @@ references them, and the `composed` program text is character-identical to main.
 ## New capability evidence (post-only)
 
 ```
--- group-conditioned permit: actor IS in engineering --
-$ seshat groups check claude-code
+-- team-conditioned permit: actor IS in engineering --
+$ seshat teams check claude-code
 engineering
 $ seshat agreement check start_project --actor claude-code
 ALLOW  mode=permitted
-  Rule:   permit action is start_project and actor-groups includes engineering
+  Rule:   permit action is start_project and actor-teams includes engineering
   Reason: Permitted by Agreement.
 
 -- same Agreement, actor NOT in engineering --
-$ seshat groups check claude-code
-claude-code belongs to no groups.
+$ seshat teams check claude-code
+claude-code belongs to no teams.
 $ seshat agreement check start_project --actor claude-code
 DENY  mode=default-deny
   Reason: No Agreement rule permits this action (deny-by-default).
@@ -62,6 +68,6 @@ delegation-path=['root-agent', 'sub-a', 'sub-b', 'sub-c'] depth=4
   Rule:   forbid delegation-depth is above 3
 ```
 
-Group membership flips a permit that names no actor, and delegation depth
+Team membership flips a permit that names no actor, and delegation depth
 denies a chain the Agreement never enumerated — both with zero Liminate
 vocabulary change.

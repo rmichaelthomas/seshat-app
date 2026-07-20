@@ -836,13 +836,13 @@ def agreement_amend(receipt_id, allow_deescalation):
 cli.add_command(agreement_cmd, name="agreement")
 
 
-# ── Groups commands ─────────────────────────────────────────────────────────
+# ── Teams commands ─────────────────────────────────────────────────────────
 
-GROUPS_STARTER = """\
--- Seshat Groups — org membership, resolved by the harness at enforcement time.
--- Convention: `<group>-members` lists actor names; `<group>-parents` lists
--- parent group names. The harness computes the transitive closure and binds
--- it as the `actor-groups` fact. remember-statements only — nothing else
+TEAMS_STARTER = """\
+-- Seshat Teams — actor membership, resolved by the harness at enforcement time.
+-- Convention: `<team>-members` lists actor names; `<team>-parents` lists
+-- parent team names. The harness computes the transitive closure and binds
+-- it as the `actor-teams` fact. remember-statements only — nothing else
 -- belongs in this file.
 
 remember a list called engineering-members with "claude-code"
@@ -850,12 +850,12 @@ remember a list called engineering-parents
 """
 
 
-def _validate_groups_source(source: str) -> list:
-    """Groups files are self-contained programs — unlike Agreements, they
+def _validate_teams_source(source: str) -> list:
+    """Teams files are self-contained programs — unlike Agreements, they
     reference no enforcement-time facts, so NO unbound-reference
     forgiveness applies. Any parse/semantic/runtime error blocks install.
     Additionally, only `remember` statements are allowed: a deontic or
-    mutation verb in groups.limn would execute on every resolution run."""
+    mutation verb in teams.limn would execute on every resolution run."""
     import liminate
 
     result = liminate.run(source, enter_phase2=False, auto_confirm_amber=True)
@@ -871,65 +871,65 @@ def _validate_groups_source(source: str) -> list:
     return blocking
 
 
-def _print_groups_validation_errors(blocking: list) -> None:
+def _print_teams_validation_errors(blocking: list) -> None:
     """Like _print_validation_errors, but synthesizes a message for a
     non-remember statement — those results carry no interpreter error
     message of their own (they executed fine; they just don't belong)."""
     for r in blocking:
         loc = f"line {r.line}: " if getattr(r, "line", None) else ""
         message = r.message or (
-            f"only remember statements are allowed in groups.limn, got: {r.canonical}"
+            f"only remember statements are allowed in teams.limn, got: {r.canonical}"
         )
         console.print(f"  [red]{loc}{message}[/red]")
 
 
 @cli.group()
-def groups_cmd():
-    """Org-membership groups feeding the `actor-groups` enforcement fact."""
+def teams_cmd():
+    """Actor-membership teams feeding the `actor-teams` enforcement fact."""
 
 
-@groups_cmd.command(name="init")
-@click.option("--force", is_flag=True, default=False, help="Overwrite an existing groups file.")
-def groups_init(force):
-    """Write the starter groups file to ~/.seshat/groups.limn."""
-    path = agreements.GROUPS_PATH
+@teams_cmd.command(name="init")
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing teams file.")
+def teams_init(force):
+    """Write the starter teams file to ~/.seshat/teams.limn."""
+    path = agreements.TEAMS_PATH
     if path.exists() and not force:
-        console.print(f"[yellow]Groups file already exists at {path}.[/yellow] Use --force to overwrite.")
+        console.print(f"[yellow]Teams file already exists at {path}.[/yellow] Use --force to overwrite.")
         sys.exit(1)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(GROUPS_STARTER)
-    console.print(f"[green]✓[/green] Groups written to [cyan]{path}[/cyan]")
+    path.write_text(TEAMS_STARTER)
+    console.print(f"[green]✓[/green] Teams written to [cyan]{path}[/cyan]")
 
 
-@groups_cmd.command(name="show")
-def groups_show():
-    """Print the current groups file."""
-    text = agreements.load_groups()
+@teams_cmd.command(name="show")
+def teams_show():
+    """Print the current teams file."""
+    text = agreements.load_teams()
     if text is None:
         console.print(
-            f"[dim]No groups file exists at {agreements.GROUPS_PATH}. "
-            f"Run: seshat groups init[/dim]"
+            f"[dim]No teams file exists at {agreements.TEAMS_PATH}. "
+            f"Run: seshat teams init[/dim]"
         )
         return
     console.print(text)
 
 
-@groups_cmd.command(name="install")
+@teams_cmd.command(name="install")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
-@click.option("--force", is_flag=True, default=False, help="Overwrite an existing groups file.")
-def groups_install(path, force):
-    """Validate a Liminate groups file and install it to ~/.seshat/groups.limn.
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing teams file.")
+def teams_install(path, force):
+    """Validate a Liminate teams file and install it to ~/.seshat/teams.limn.
 
     Reads PATH, checks it runs cleanly through the interpreter and contains
-    only `remember` statements (a broken or deontic groups file is never
+    only `remember` statements (a broken or deontic teams file is never
     installed), and writes it to the enforcement surface. This is a human
     action at the terminal — like `agreement install`, it is deliberately
     not gated by the Agreement itself; the filesystem boundary is the
     protection. No agent-reachable path writes this file.
     """
-    dest = agreements.GROUPS_PATH
+    dest = agreements.TEAMS_PATH
     if dest.exists() and not force:
-        console.print(f"[yellow]Groups file already exists at {dest}.[/yellow] Use --force to overwrite.")
+        console.print(f"[yellow]Teams file already exists at {dest}.[/yellow] Use --force to overwrite.")
         sys.exit(1)
 
     try:
@@ -938,35 +938,35 @@ def groups_install(path, force):
         console.print(f"[red]Could not read {path} as text — not installed.[/red] ({exc})")
         sys.exit(1)
 
-    blocking = _validate_groups_source(source)
+    blocking = _validate_teams_source(source)
     if blocking:
-        console.print(f"[red]Groups file did not validate — not installed.[/red]")
-        _print_groups_validation_errors(blocking)
+        console.print(f"[red]Teams file did not validate — not installed.[/red]")
+        _print_teams_validation_errors(blocking)
         sys.exit(1)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(source)
-    console.print(f"[green]✓[/green] Groups installed to [cyan]{dest}[/cyan]")
+    console.print(f"[green]✓[/green] Teams installed to [cyan]{dest}[/cyan]")
 
 
-@groups_cmd.command(name="check")
+@teams_cmd.command(name="check")
 @click.argument("actor")
-def groups_check(actor):
-    """Print the resolved transitive group closure for ACTOR.
+def teams_check(actor):
+    """Print the resolved transitive team closure for ACTOR.
 
-    The diagnostic for group resolution: a missing or broken groups.limn
+    The diagnostic for team resolution: a missing or broken teams.limn
     fails safe to an empty closure (grants fail closed), which is silent
     at enforcement time — this is where you see it.
     """
-    resolved = agreements.resolve_groups(actor)
+    resolved = agreements.resolve_teams(actor)
     if not resolved:
-        console.print(f"[dim]{actor} belongs to no groups.[/dim]")
+        console.print(f"[dim]{actor} belongs to no teams.[/dim]")
         return
-    for group in resolved:
-        console.print(group)
+    for team in resolved:
+        console.print(team)
 
 
-cli.add_command(groups_cmd, name="groups")
+cli.add_command(teams_cmd, name="teams")
 
 
 # ── Invariant commands ──────────────────────────────────────────────────────

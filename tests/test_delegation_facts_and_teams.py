@@ -1,7 +1,7 @@
-"""Tests for the delegation facts, group-membership closure, and the probe
+"""Tests for the delegation facts, team-membership closure, and the probe
 parity invariant (design session 2026-07-20).
 
-Four new harness-bound facts — actor-groups, delegation-path,
+Four new harness-bound facts — actor-teams, delegation-path,
 delegation-depth, token-nonce — reach the interpreter via
 liminate.run(inject=...) as inert data, never text composition. The three
 legacy facts (actor/action/scope) stay text-composed byte-for-byte (F-02).
@@ -12,94 +12,94 @@ from click.testing import CliRunner
 import agreements
 import cli
 import identity
-from agreements import check_action, resolve_groups
+from agreements import check_action, resolve_teams
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def groups(monkeypatch):
-    """Install groups.limn text for the duration of one test. conftest's
-    autouse _no_groups_by_default already isolates from the host file;
+def teams(monkeypatch):
+    """Install teams.limn text for the duration of one test. conftest's
+    autouse _no_teams_by_default already isolates from the host file;
     this overrides it with specific content."""
     def _install(text):
-        monkeypatch.setattr(agreements, "load_groups", lambda: text)
+        monkeypatch.setattr(agreements, "load_teams", lambda: text)
     return _install
 
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point the groups/agreement enforcement paths at a tmp dir so CLI
+    """Point the teams/agreement enforcement paths at a tmp dir so CLI
     tests never touch the developer's real ~/.seshat (failure mode 7)."""
     seshat = tmp_path / ".seshat"
     seshat.mkdir()
-    monkeypatch.setattr(agreements, "GROUPS_PATH", seshat / "groups.limn")
+    monkeypatch.setattr(agreements, "TEAMS_PATH", seshat / "teams.limn")
     monkeypatch.setattr(agreements, "AGREEMENT_PATH", seshat / "agreement.limn")
     return tmp_path
 
 
 # ── Resolver ────────────────────────────────────────────────────────────────
 
-def test_resolve_groups_direct_membership():
+def test_resolve_teams_direct_membership():
     text = 'remember a list called eng-members with "alice"\n'
-    assert resolve_groups("alice", text) == ["eng"]
+    assert resolve_teams("alice", text) == ["eng"]
 
 
-def test_resolve_groups_transitive_through_two_parent_levels():
+def test_resolve_teams_transitive_through_two_parent_levels():
     text = (
         'remember a list called eng-members with "alice"\n'
         'remember a list called eng-parents with "rnd"\n'
         'remember a list called rnd-parents with "company"\n'
     )
-    assert resolve_groups("alice", text) == ["company", "eng", "rnd"]
+    assert resolve_teams("alice", text) == ["company", "eng", "rnd"]
 
 
-def test_resolve_groups_cyclic_file_terminates():
+def test_resolve_teams_cyclic_file_terminates():
     """Required gate: a -> b -> a must not hang, and must return both."""
     text = (
         'remember a list called a-members with "alice"\n'
         'remember a list called a-parents with "b"\n'
         'remember a list called b-parents with "a"\n'
     )
-    assert resolve_groups("alice", text) == ["a", "b"]
+    assert resolve_teams("alice", text) == ["a", "b"]
 
 
-def test_resolve_groups_missing_file_is_empty(monkeypatch):
-    monkeypatch.setattr(agreements, "load_groups", lambda: None)
-    assert resolve_groups("alice") == []
+def test_resolve_teams_missing_file_is_empty(monkeypatch):
+    monkeypatch.setattr(agreements, "load_teams", lambda: None)
+    assert resolve_teams("alice") == []
 
 
-def test_resolve_groups_erroring_file_is_empty():
-    """Fail-safe on the grant side: a broken groups.limn withholds every
-    group rather than resolving to something arbitrary."""
-    assert resolve_groups("alice", 'forbid actor is "x"') == []
+def test_resolve_teams_erroring_file_is_empty():
+    """Fail-safe on the grant side: a broken teams.limn withholds every
+    team rather than resolving to something arbitrary."""
+    assert resolve_teams("alice", 'forbid actor is "x"') == []
 
 
-def test_resolve_groups_parse_error_is_empty():
-    assert resolve_groups("alice", "remember a list called broken with\n") == []
+def test_resolve_teams_parse_error_is_empty():
+    assert resolve_teams("alice", "remember a list called broken with\n") == []
 
 
-def test_resolve_groups_actor_in_no_groups_is_empty():
+def test_resolve_teams_actor_in_no_teams_is_empty():
     text = 'remember a list called eng-members with "alice"\n'
-    assert resolve_groups("bob", text) == []
+    assert resolve_teams("bob", text) == []
 
 
-def test_resolve_groups_is_sorted_for_determinism():
+def test_resolve_teams_is_sorted_for_determinism():
     text = (
         'remember a list called zeta-members with "alice"\n'
         'remember a list called alpha-members with "alice"\n'
         'remember a list called middle-members with "alice"\n'
     )
-    assert resolve_groups("alice", text) == ["alpha", "middle", "zeta"]
+    assert resolve_teams("alice", text) == ["alpha", "middle", "zeta"]
 
 
-def test_resolve_groups_ignores_non_membership_symbols():
+def test_resolve_teams_ignores_non_membership_symbols():
     text = (
         'remember a list called eng-members with "alice"\n'
         'remember a string called some-note with "alice"\n'
         'remember a list called unrelated with "alice"\n'
     )
-    assert resolve_groups("alice", text) == ["eng"]
+    assert resolve_teams("alice", text) == ["eng"]
 
 
 # ── check_action integration: the four legacy benchmark scenarios ───────────
@@ -128,62 +128,62 @@ def test_legacy_decisions_unchanged_by_new_facts(actor, action, allowed, mode):
 
 # ── check_action integration: the new facts ─────────────────────────────────
 
-GROUP_PERMIT = 'permit action is "start_project" and actor-groups includes "engineering"\n'
+TEAM_PERMIT = 'permit action is "start_project" and actor-teams includes "engineering"\n'
 
 
-def test_group_permit_allows_with_membership(groups):
-    groups('remember a list called engineering-members with "claude-code"\n')
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+def test_team_permit_allows_with_membership(teams):
+    teams('remember a list called engineering-members with "claude-code"\n')
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is True
     assert d.mode == "permitted"
 
 
-def test_group_permit_default_denies_without_membership(groups):
-    groups('remember a list called engineering-members with "someone-else"\n')
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+def test_team_permit_default_denies_without_membership(teams):
+    teams('remember a list called engineering-members with "someone-else"\n')
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is False
     assert d.mode == "default-deny"
 
 
-def test_group_permit_default_denies_with_no_groups_file():
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+def test_team_permit_default_denies_with_no_teams_file():
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is False
     assert d.mode == "default-deny"
 
 
-def test_group_permit_allows_through_transitive_parent(groups):
-    groups(
+def test_team_permit_allows_through_transitive_parent(teams):
+    teams(
         'remember a list called sre-members with "claude-code"\n'
         'remember a list called sre-parents with "engineering"\n'
     )
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is True
 
 
 UNLESS_AGREEMENT = (
     'permit action is "deploy"\n'
-    'forbid action is "deploy" unless actor-groups includes "sre"\n'
+    'forbid action is "deploy" unless actor-teams includes "sre"\n'
 )
 
 
-def test_forbid_unless_group_membership_takes_the_exception(groups):
-    groups('remember a list called sre-members with "claude-code"\n')
+def test_forbid_unless_team_membership_takes_the_exception(teams):
+    teams('remember a list called sre-members with "claude-code"\n')
     d = check_action("claude-code", "deploy", agreement_text=UNLESS_AGREEMENT)
     assert d.allowed is True
     assert d.mode == "permitted"
 
 
-def test_forbid_unless_group_membership_fires_without_it(groups):
-    groups('remember a list called sre-members with "someone-else"\n')
+def test_forbid_unless_team_membership_fires_without_it(teams):
+    teams('remember a list called sre-members with "someone-else"\n')
     d = check_action("claude-code", "deploy", agreement_text=UNLESS_AGREEMENT)
     assert d.allowed is False
     assert d.mode == "forbidden"
 
 
-def test_empty_actor_groups_is_fail_closed():
+def test_empty_actor_teams_is_fail_closed():
     """An empty injected list is fail-closed: `not includes` prohibitions
     fire against it rather than silently passing."""
-    agreement = 'permit action is "go"\nforbid actor-groups not includes "x"\n'
+    agreement = 'permit action is "go"\nforbid actor-teams not includes "x"\n'
     d = check_action("claude-code", "go", agreement_text=agreement)
     assert d.allowed is False
     assert d.mode == "forbidden"
@@ -238,18 +238,18 @@ def test_token_nonce_is_none_sentinel_when_tokenless():
     assert d.allowed is True
 
 
-def test_groups_resolve_against_root_not_the_delegated_leaf(groups):
-    """Failure mode 5: group resolution keys off `actor`, which after
+def test_teams_resolve_against_root_not_the_delegated_leaf(teams):
+    """Failure mode 5: team resolution keys off `actor`, which after
     verification is always the ROOT identifier — never the self-chosen
-    leaf. A delegate must not inherit groups by renaming itself."""
-    groups('remember a list called engineering-members with "root-agent"\n')
+    leaf. A delegate must not inherit teams by renaming itself."""
+    teams('remember a list called engineering-members with "root-agent"\n')
     token = _delegated_token("root-agent", ["engineering-impostor"])
-    d = check_action("ignored", "start_project", agreement_text=GROUP_PERMIT, token=token)
+    d = check_action("ignored", "start_project", agreement_text=TEAM_PERMIT, token=token)
     assert d.allowed is True  # resolved from root-agent's real membership
 
-    groups('remember a list called engineering-members with "engineering-impostor"\n')
+    teams('remember a list called engineering-members with "engineering-impostor"\n')
     token = _delegated_token("outsider", ["engineering-impostor"])
-    d = check_action("ignored", "start_project", agreement_text=GROUP_PERMIT, token=token)
+    d = check_action("ignored", "start_project", agreement_text=TEAM_PERMIT, token=token)
     assert d.allowed is False  # the leaf's name buys nothing
 
 
@@ -271,34 +271,34 @@ def test_inject_never_parses_values_as_program_text():
     result = liminate.run(
         'permit action is "start_project"\n',
         enter_phase2=False, auto_confirm_amber=True,
-        inject={"action": "start_project", "actor-groups": [HOSTILE]},
+        inject={"action": "start_project", "actor-teams": [HOSTILE]},
     )
     assert [r.status.name for r in result.results] == ["SUCCESS"]
 
 
-def test_hostile_group_name_is_inert_at_the_inject_boundary(monkeypatch):
-    """Whatever resolve_groups returns crosses into the interpreter as
-    data. A group name carrying quotes, a newline and a whole embedded
+def test_hostile_team_name_is_inert_at_the_inject_boundary(monkeypatch):
+    """Whatever resolve_teams returns crosses into the interpreter as
+    data. A team name carrying quotes, a newline and a whole embedded
     statement cannot introduce a rule or alter another rule's outcome."""
     monkeypatch.setattr(
-        agreements, "resolve_groups", lambda actor: ["engineering", HOSTILE]
+        agreements, "resolve_teams", lambda actor: ["engineering", HOSTILE]
     )
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is True
     assert d.mode == "permitted"   # the smuggled forbid never became a rule
 
 
-def test_hostile_groups_file_fails_safe_to_empty(groups):
-    """Upstream of the inject boundary: a groups.limn whose quoted string
+def test_hostile_teams_file_fails_safe_to_empty(teams):
+    """Upstream of the inject boundary: a teams.limn whose quoted string
     breaks out into a second statement is an *erroring* file, so it
     resolves to [] rather than executing the smuggled statement. The
     resulting decision is a deny — grants fail closed (invariant 3)."""
-    groups(
+    teams(
         'remember a list called engineering-members with "claude-code"\n'
         f'remember a list called hostile-members with "{HOSTILE}"\n'
     )
-    assert resolve_groups("claude-code") == []
-    d = check_action("claude-code", "start_project", agreement_text=GROUP_PERMIT)
+    assert resolve_teams("claude-code") == []
+    d = check_action("claude-code", "start_project", agreement_text=TEAM_PERMIT)
     assert d.allowed is False
     assert d.mode == "default-deny"
 
@@ -368,12 +368,12 @@ def test_check_action_injects_exactly_the_enforcement_facts(monkeypatch):
 
 
 @pytest.mark.parametrize("line,legal", [
-    ('forbid actor-groups includes "contractors"', True),
+    ('forbid actor-teams includes "contractors"', True),
     ('forbid delegation-depth is above 3', True),
     ('forbid delegation-path includes "sub-c"', True),
     ('starting "2026-01-01" forbid delegation-depth is above 2', True),
     ('forbid unbound-thing is above 3', False),
-    ('permit actor-groups includes "x"', False),
+    ('permit actor-teams includes "x"', False),
     ('forbid token-nonce is "abc"', True),
 ])
 def test_caveat_legality_over_the_new_facts(line, legal):
@@ -411,75 +411,75 @@ def test_mint_with_new_caveat_denies_after_delegation_hops():
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
-def test_groups_init_then_check_resolves_the_starter_group(isolated_home, monkeypatch):
+def test_teams_init_then_check_resolves_the_starter_team(isolated_home, monkeypatch):
     monkeypatch.setattr(
-        agreements, "load_groups", lambda: agreements.GROUPS_PATH.read_text()
+        agreements, "load_teams", lambda: agreements.TEAMS_PATH.read_text()
     )
     runner = CliRunner()
-    assert runner.invoke(cli.cli, ["groups", "init"]).exit_code == 0
-    result = runner.invoke(cli.cli, ["groups", "check", "claude-code"])
+    assert runner.invoke(cli.cli, ["teams", "init"]).exit_code == 0
+    result = runner.invoke(cli.cli, ["teams", "check", "claude-code"])
     assert result.exit_code == 0
     assert "engineering" in result.output
 
 
-def test_groups_init_refuses_to_overwrite_without_force(isolated_home):
+def test_teams_init_refuses_to_overwrite_without_force(isolated_home):
     runner = CliRunner()
-    runner.invoke(cli.cli, ["groups", "init"])
-    result = runner.invoke(cli.cli, ["groups", "init"])
+    runner.invoke(cli.cli, ["teams", "init"])
+    result = runner.invoke(cli.cli, ["teams", "init"])
     assert result.exit_code == 1
     assert "already exists" in result.output
 
 
-def test_groups_show_hints_when_absent(isolated_home):
+def test_teams_show_hints_when_absent(isolated_home):
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "show"])
+    result = runner.invoke(cli.cli, ["teams", "show"])
     assert result.exit_code == 0
     # Normalize: the rich console hard-wraps the hint across lines.
-    assert "seshat groups init" in " ".join(result.output.split())
+    assert "seshat teams init" in " ".join(result.output.split())
 
 
-def test_groups_install_rejects_a_non_remember_statement(isolated_home, tmp_path):
+def test_teams_install_rejects_a_non_remember_statement(isolated_home, tmp_path):
     src = tmp_path / "bad.limn"
     src.write_text('remember a list called x-members with "a"\nshow x-members\n')
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 1
     assert "only remember statements are allowed" in result.output
-    assert not agreements.GROUPS_PATH.exists()
+    assert not agreements.TEAMS_PATH.exists()
 
 
-def test_groups_install_rejects_a_resolving_deontic_statement(isolated_home, tmp_path):
+def test_teams_install_rejects_a_resolving_deontic_statement(isolated_home, tmp_path):
     """A forbid whose predicate resolves cleanly still doesn't belong —
     it would execute on every resolution run."""
     src = tmp_path / "bad.limn"
     src.write_text('remember a string called actor with "x"\nforbid actor is "x"\n')
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 1
-    assert not agreements.GROUPS_PATH.exists()
+    assert not agreements.TEAMS_PATH.exists()
 
 
-def test_groups_install_rejects_a_parse_error(isolated_home, tmp_path):
+def test_teams_install_rejects_a_parse_error(isolated_home, tmp_path):
     src = tmp_path / "bad.limn"
     src.write_text("remember a list called broken with\n")
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 1
-    assert not agreements.GROUPS_PATH.exists()
+    assert not agreements.TEAMS_PATH.exists()
 
 
-def test_groups_install_rejects_unbound_reference_no_forgiveness(isolated_home, tmp_path):
-    """Unlike an Agreement, a groups file references no enforcement-time
+def test_teams_install_rejects_unbound_reference_no_forgiveness(isolated_home, tmp_path):
+    """Unlike an Agreement, a teams file references no enforcement-time
     facts — so unbound-reference errors are blocking here."""
     src = tmp_path / "bad.limn"
     src.write_text('remember a list called x-members with "a"\nforbid actor is "x"\n')
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 1
-    assert not agreements.GROUPS_PATH.exists()
+    assert not agreements.TEAMS_PATH.exists()
 
 
-def test_groups_install_writes_a_valid_file(isolated_home, tmp_path):
+def test_teams_install_writes_a_valid_file(isolated_home, tmp_path):
     src = tmp_path / "good.limn"
     src.write_text(
         "-- a comment\n"
@@ -487,27 +487,27 @@ def test_groups_install_writes_a_valid_file(isolated_home, tmp_path):
         'remember a list called sre-parents with "engineering"\n'
     )
     runner = CliRunner()
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 0
-    assert agreements.GROUPS_PATH.read_text() == src.read_text()
+    assert agreements.TEAMS_PATH.read_text() == src.read_text()
 
 
-def test_groups_install_refuses_to_overwrite_without_force(isolated_home, tmp_path):
+def test_teams_install_refuses_to_overwrite_without_force(isolated_home, tmp_path):
     src = tmp_path / "good.limn"
     src.write_text('remember a list called sre-members with "claude-code"\n')
     runner = CliRunner()
-    runner.invoke(cli.cli, ["groups", "install", str(src)])
-    result = runner.invoke(cli.cli, ["groups", "install", str(src)])
+    runner.invoke(cli.cli, ["teams", "install", str(src)])
+    result = runner.invoke(cli.cli, ["teams", "install", str(src)])
     assert result.exit_code == 1
     assert "already exists" in result.output
 
 
-def test_groups_check_reports_no_groups_for_an_unknown_actor(isolated_home, monkeypatch):
+def test_teams_check_reports_no_teams_for_an_unknown_actor(isolated_home, monkeypatch):
     monkeypatch.setattr(
-        agreements, "load_groups", lambda: agreements.GROUPS_PATH.read_text()
+        agreements, "load_teams", lambda: agreements.TEAMS_PATH.read_text()
     )
     runner = CliRunner()
-    runner.invoke(cli.cli, ["groups", "init"])
-    result = runner.invoke(cli.cli, ["groups", "check", "nobody"])
+    runner.invoke(cli.cli, ["teams", "init"])
+    result = runner.invoke(cli.cli, ["teams", "check", "nobody"])
     assert result.exit_code == 0
-    assert "no groups" in result.output
+    assert "no teams" in result.output

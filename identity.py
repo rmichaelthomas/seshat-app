@@ -177,7 +177,7 @@ def is_legal_caveat(line: str) -> bool:
     The decidable subset resolves against SEVEN facts: actor, action and
     scope (text-composed into the probe program, mirroring check_action's
     unchanged F-02 composition) plus the four
-    agreements.NEW_ENFORCEMENT_FACTS — actor-groups, delegation-path,
+    agreements.NEW_ENFORCEMENT_FACTS — actor-teams, delegation-path,
     delegation-depth, token-nonce — bound via liminate.run(inject=...) as
     inert data. Both this probe and check_action source those four from
     agreements.new_fact_probe_values() / the same constant, so a fact
@@ -187,7 +187,7 @@ def is_legal_caveat(line: str) -> bool:
 
     The forbid-only rule below is unchanged and load-bearing for the new
     facts specifically: membership and provenance are expressible in a
-    caveat only as PROHIBITION. A caveat can forbid on group membership
+    caveat only as PROHIBITION. A caveat can forbid on team membership
     or delegation depth (narrowing), but can never assert membership to
     gain authority (widening).
 
