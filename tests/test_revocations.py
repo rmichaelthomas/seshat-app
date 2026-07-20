@@ -357,12 +357,16 @@ class TestRevocationStateReceiptAdditivity:
         )
         return d
 
-    def _recompute_hash(self, receipt: dict) -> str:
+    def _verify_hash(self, receipt: dict) -> bool:
         verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-        return hmac.new(
-            b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
+        try:
+            receipts_mod._receipt_public_key().verify(
+                bytes.fromhex(receipt["receipt_hash"]), canonical.encode("utf-8"),
+            )
+            return True
+        except Exception:
+            return False
 
     def test_field_omitted_when_none_and_chain_verifies(self, receipts_dir):
         receipts_mod.emit(
@@ -377,7 +381,7 @@ class TestRevocationStateReceiptAdditivity:
         files = sorted(receipts_dir.glob("*.json"))
         receipt = json.loads(files[0].read_text())
         assert "revocation_state" not in receipt
-        assert self._recompute_hash(receipt) == receipt["receipt_hash"]
+        assert self._verify_hash(receipt)
 
     def test_field_present_when_given_and_chain_still_verifies(self, receipts_dir):
         state = {"head_hash": "deadbeef", "last_checked": None}
@@ -394,7 +398,7 @@ class TestRevocationStateReceiptAdditivity:
         files = sorted(receipts_dir.glob("*.json"))
         receipt = json.loads(files[0].read_text())
         assert receipt["revocation_state"] == state
-        assert self._recompute_hash(receipt) == receipt["receipt_hash"]
+        assert self._verify_hash(receipt)
 
     def test_chain_mixes_with_and_without_field_without_breaking_links(self, receipts_dir):
         receipts_mod.emit(
@@ -423,8 +427,8 @@ class TestRevocationStateReceiptAdditivity:
 
         assert r0["previous_hash"] is None
         assert r1["previous_hash"] == r0["receipt_hash"]
-        assert self._recompute_hash(r0) == r0["receipt_hash"]
-        assert self._recompute_hash(r1) == r1["receipt_hash"]
+        assert self._verify_hash(r0)
+        assert self._verify_hash(r1)
 
 
 # ── Phase 4: identity-plane Stage 3 — path-aware token revocation ──────────

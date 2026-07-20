@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import keyring
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from registry import Registry
 from scanner import Scanner
@@ -34,16 +36,35 @@ RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 LOCK_PATH = RECEIPTS_DIR / ".chain.lock"
 CHAIN_HEAD_PATH = RECEIPTS_DIR / ".chain_head"
 
-# receipt_version 2 = keyed (HMAC-SHA256) + anchored (.chain_head). A
-# receipt with no receipt_version (or < 2) predates this and was hashed
-# with a plain, unkeyed sha256 — verify still reads it, but only as a
-# legacy, link-verified-only prefix (F-01 §7 failure mode #2).
-RECEIPT_VERSION = 2
+# receipt_version 3 = Ed25519-signed (ID-Q4 Phase 2) + anchored
+# (.chain_head) — the first receipts independently verifiable by anyone
+# holding just the public key (receipt_public_key_hex()), not only the
+# emitting machine. receipt_version 2 = HMAC-keyed + anchored — still
+# verified via _keyed_hash, never deleted (§8/§9: no re-signing of
+# history, no flag day; a chain may legitimately contain a version-2
+# prefix followed by a version-3 suffix). A receipt with no
+# receipt_version (or < 2) predates keying entirely and was hashed with a
+# plain, unkeyed sha256 — verify still reads it, but only as a legacy,
+# link-verified-only prefix (F-01 §7 failure mode #2).
+RECEIPT_VERSION = 3
 
 # Same Keychain service vault.py uses for its Fernet key — one
 # key-storage mechanism in this codebase, not two.
 MAC_SERVICE_NAME = "seshat"
 MAC_KEY_ITEM = "receipt_mac_key"
+
+# ID-Q4 Phase 2: the Ed25519 receipt signing key, a *distinct* Keychain
+# item from MAC_KEY_ITEM — never reused. MAC_KEY_ITEM's stored value is an
+# HMAC secret and must stay readable, unchanged, for legacy version-2
+# receipt verification (§11 failure mode #3: reusing it would stop every
+# version-2 receipt from verifying).
+RECEIPT_SIGNING_KEY_ITEM = "receipt_signing_key"
+# The signing key's PUBLIC half, cached under its own item at generation
+# time so verification can recover it WITHOUT ever touching the private-
+# key item — this is what makes "verify a version-3 chain from the public
+# key alone, on a machine that never held the private key" true for this
+# install (§10 benchmark 1 — the thesis of Phase 2).
+RECEIPT_SIGNING_PUBLIC_KEY_ITEM = "receipt_signing_public_key"
 
 
 class ReceiptKeyUnavailableError(RuntimeError):
@@ -74,6 +95,102 @@ def _keyed_hash(canonical: str) -> str:
             "unavailable. Refusing to emit an unkeyed receipt."
         ) from exc
     return hmac.new(key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+# ── Ed25519 receipt signing key management (ID-Q4 Phase 2) ──────────────────
+
+def _private_key_hex(key: ed25519.Ed25519PrivateKey) -> str:
+    return key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).hex()
+
+
+def _public_key_hex(key: ed25519.Ed25519PublicKey) -> str:
+    return key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    ).hex()
+
+
+def _receipt_signing_key() -> ed25519.Ed25519PrivateKey:
+    """Per-install Ed25519 receipt signing key, Keychain-backed via
+    `keyring` — generated once and stored as raw 32-byte hex, the same
+    shape/flow _mac_key() uses for its HMAC secret (and identity.py's
+    _root_signing_key() uses for the identity root key). Generation also
+    backfills RECEIPT_SIGNING_PUBLIC_KEY_ITEM so _receipt_public_key()
+    never needs this function (or Keychain access to the private half)
+    again. Any failure here propagates to the caller; _signed_hash
+    converts that into the fail-closed ReceiptKeyUnavailableError."""
+    raw = keyring.get_password(MAC_SERVICE_NAME, RECEIPT_SIGNING_KEY_ITEM)
+    if raw:
+        return ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(raw))
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    keyring.set_password(MAC_SERVICE_NAME, RECEIPT_SIGNING_KEY_ITEM, _private_key_hex(private_key))
+    keyring.set_password(
+        MAC_SERVICE_NAME, RECEIPT_SIGNING_PUBLIC_KEY_ITEM, _public_key_hex(private_key.public_key())
+    )
+    return private_key
+
+
+def _receipt_public_key() -> ed25519.Ed25519PublicKey:
+    """The signing key's PUBLIC half only — reads
+    RECEIPT_SIGNING_PUBLIC_KEY_ITEM directly, a distinct Keychain item from
+    the private key, so this never needs the private key to be available
+    (§10 benchmark 1: the cross-org, public-key-only verification
+    property). Falls back to _receipt_signing_key() only to bootstrap a
+    fresh install that has never emitted a version-3 receipt yet (mirrors
+    _receipt_signing_key()'s lazy-generate-on-first-use behavior) — once
+    that runs once, this function never touches the private-key item
+    again."""
+    raw = keyring.get_password(MAC_SERVICE_NAME, RECEIPT_SIGNING_PUBLIC_KEY_ITEM)
+    if raw:
+        return ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(raw))
+    return _receipt_signing_key().public_key()
+
+
+def _require_receipt_signing_key() -> ed25519.Ed25519PrivateKey:
+    try:
+        return _receipt_signing_key()
+    except Exception as exc:
+        raise ReceiptKeyUnavailableError(
+            "Cannot sign a receipt: the Keychain-backed Ed25519 receipt "
+            "signing key is unavailable. Refusing to emit an unsigned "
+            "receipt."
+        ) from exc
+
+
+def _require_receipt_public_key() -> ed25519.Ed25519PublicKey:
+    try:
+        return _receipt_public_key()
+    except Exception as exc:
+        raise ReceiptKeyUnavailableError(
+            "Cannot verify a receipt: the Keychain-backed Ed25519 receipt "
+            "public key is unavailable. Refusing to operate unkeyed."
+        ) from exc
+
+
+def receipt_public_key_hex() -> str:
+    """This install's receipt-signing public key, 64 hex chars — the value
+    to export/hand to a third party (an auditor, an enterprise SIEM) for
+    independent, cross-org verification of every version-3 receipt this
+    install emits, without ever handing over a forging key. This is what
+    ID-Q4 Phase 2 exists to produce (§6, §10 benchmark 1)."""
+    return _public_key_hex(_require_receipt_public_key())
+
+
+def _signed_hash(canonical: str) -> str:
+    """Ed25519 signature over CANONICAL — the identical canonical bytes
+    _keyed_hash receives, via the identical call site in emit() — hex-
+    encoded. 128 hex chars (a 64-byte signature) rather than _keyed_hash's
+    64 (a 32-byte HMAC digest); callers must not assume a fixed 64-char
+    receipt_hash (§11 failure mode #2). Fails closed exactly like
+    _keyed_hash: _require_receipt_signing_key raises
+    ReceiptKeyUnavailableError rather than falling back to an unsigned
+    receipt."""
+    key = _require_receipt_signing_key()
+    return key.sign(canonical.encode("utf-8")).hex()
 
 
 def snapshot() -> dict:
@@ -204,10 +321,10 @@ def emit(
         receipt["receipt_version"] = RECEIPT_VERSION
 
         canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-        # Fail closed: _keyed_hash raises ReceiptKeyUnavailableError rather
-        # than falling back to an unkeyed hash. Nothing is written below if
+        # Fail closed: _signed_hash raises ReceiptKeyUnavailableError rather
+        # than falling back to an unsigned hash. Nothing is written below if
         # this raises (F-01).
-        receipt_hash = _keyed_hash(canonical)
+        receipt_hash = _signed_hash(canonical)
         receipt["receipt_hash"] = receipt_hash
 
         # Microsecond resolution (not just seconds): under the lock, concurrent

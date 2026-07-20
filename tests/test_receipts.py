@@ -244,14 +244,15 @@ class TestConcurrentEmission:
                 f"expected previous_hash={expected_previous}, "
                 f"got {receipt['previous_hash']}"
             )
-            # Verify the receipt_hash is correct (keyed HMAC — F-01)
+            # Verify the receipt_hash is a valid Ed25519 signature (ID-Q4
+            # Phase 2) over the canonical receipt bytes.
             stored_hash = receipt["receipt_hash"]
             verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
             canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
-            computed = hmac.new(
-                b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256
-            ).hexdigest()
-            assert computed == stored_hash, f"Hash mismatch in {f.name}"
+            import receipts as receipts_mod
+            receipts_mod._receipt_public_key().verify(
+                bytes.fromhex(stored_hash), canonical.encode("utf-8"),
+            )
             expected_previous = stored_hash
 
         anchor = json.loads((receipts_dir / ".chain_head").read_text())
@@ -369,13 +370,12 @@ class TestAgreementHashField:
 
 
 class TestKeyedChain:
-    """F-01: receipt_hash must be a keyed MAC, not a plain, unkeyed hash
-    anyone can recompute. The MAC key itself is mocked repo-wide in
-    conftest.py's autouse _test_mac_key fixture."""
+    """F-01 / ID-Q4 Phase 2: receipt_hash must be an Ed25519 signature, not
+    a plain, unkeyed hash anyone can recompute. The signing key itself is
+    mocked repo-wide in conftest.py's autouse _test_receipt_signing_key
+    fixture (a fixed keypair, distinct from identity's)."""
 
-    def test_emit_hash_is_keyed_not_plain_sha256(self, receipts_dir, monkeypatch):
-        import hmac
-
+    def test_emit_hash_is_signed_not_plain_sha256(self, receipts_dir, monkeypatch):
         import receipts as receipts_mod
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
@@ -393,10 +393,23 @@ class TestKeyedChain:
         verify_copy = {k: v for k, v in receipt.items() if k != "receipt_hash"}
         canonical = json.dumps(verify_copy, sort_keys=True, separators=(",", ":"))
         plain_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        keyed = hmac.new(b"test-only-mac-key-not-for-real-use", canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
+        assert receipt["receipt_version"] == 3
         assert receipt["receipt_hash"] != plain_sha256
-        assert receipt["receipt_hash"] == keyed
+        # 128 hex chars (a 64-byte Ed25519 signature) — not 64 (a sha256
+        # digest or the old HMAC digest) — §11 failure mode #2.
+        assert len(receipt["receipt_hash"]) == 128
+        # Verifies against the (mocked) receipt public key — the same
+        # verification an auditor holding only receipt_public_key_hex()
+        # would perform (§10 benchmark 1).
+        receipts_mod._receipt_public_key().verify(
+            bytes.fromhex(receipt["receipt_hash"]), canonical.encode("utf-8"),
+        )
+        # A signature over tampered bytes must not verify.
+        with pytest.raises(Exception):
+            receipts_mod._receipt_public_key().verify(
+                bytes.fromhex(receipt["receipt_hash"]), (canonical + "x").encode("utf-8"),
+            )
 
     def test_emit_stamps_receipt_version(self, receipts_dir, monkeypatch):
         import receipts as receipts_mod
@@ -415,7 +428,7 @@ class TestKeyedChain:
         assert receipt["receipt_version"] == receipts_mod.RECEIPT_VERSION
         assert receipts_mod.RECEIPT_VERSION >= 2
 
-    def test_emit_fails_closed_when_mac_key_unavailable(self, receipts_dir, monkeypatch):
+    def test_emit_fails_closed_when_signing_key_unavailable(self, receipts_dir, monkeypatch):
         import receipts as receipts_mod
         monkeypatch.setattr(receipts_mod, "RECEIPTS_DIR", receipts_dir)
         monkeypatch.setattr(receipts_mod, "LOCK_PATH", receipts_dir / ".chain.lock")
@@ -426,7 +439,7 @@ class TestKeyedChain:
 
         def _boom():
             raise RuntimeError("keychain locked")
-        monkeypatch.setattr(receipts_mod, "_mac_key", _boom)
+        monkeypatch.setattr(receipts_mod, "_receipt_signing_key", _boom)
 
         with pytest.raises(receipts_mod.ReceiptKeyUnavailableError):
             receipts_mod.emit(
@@ -435,7 +448,7 @@ class TestKeyedChain:
                 session_id="s", actor_type="test", agent_hint="test",
             )
 
-        # Fail closed means nothing was written — no unkeyed receipt, no
+        # Fail closed means nothing was written — no unsigned receipt, no
         # partial anchor update.
         assert list(receipts_dir.glob("*.json")) == []
         assert not (receipts_dir / ".chain_head").exists()
