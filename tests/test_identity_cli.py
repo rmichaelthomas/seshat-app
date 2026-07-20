@@ -9,6 +9,21 @@ import cli
 import identity
 
 
+def _persist_meta(tmp_path, identifier, token, holder_key, caveats=None):
+    """Write an identity metadata record the way `identity mint`/`identity
+    attenuate --as` would — used to seed ~/.seshat/identity/ for tests
+    that call identity.mint()/attenuate() directly rather than through the
+    CLI, so `identity attenuate`'s _find_holder_private_key lookup (ID-Q4
+    Phase 1) can find the holder key for a subsequent CLI attenuate call."""
+    (tmp_path / f"{identifier}.json").write_text(json.dumps({
+        "identifier": identifier,
+        "caveats": caveats or [],
+        "minted_at": "test",
+        "token": token,
+        "holder_private_key": holder_key,
+    }))
+
+
 def test_mint_prints_a_serialized_token_and_writes_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
     runner = CliRunner()
@@ -108,7 +123,8 @@ def test_mint_is_not_an_mcp_tool():
 
 def test_attenuate_narrows_and_prints_a_token(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
-    parent = identity.mint("agent-root", ttl_hours=None)
+    parent, parent_key = identity.mint("agent-root", ttl_hours=None)
+    _persist_meta(tmp_path, "agent-root", parent, parent_key)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "attenuate", parent,
@@ -126,7 +142,8 @@ def test_attenuate_narrows_and_prints_a_token(tmp_path, monkeypatch):
 
 def test_attenuate_with_as_persists_metadata_for_the_child(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
-    parent = identity.mint("agent-root")
+    parent, parent_key = identity.mint("agent-root")
+    _persist_meta(tmp_path, "agent-root", parent, parent_key)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "attenuate", parent,
@@ -140,18 +157,24 @@ def test_attenuate_with_as_persists_metadata_for_the_child(tmp_path, monkeypatch
     meta = json.loads(meta_path.read_text())
     verified = identity.verify(meta["token"])
     assert verified.delegation_path == ["agent-root", "agent-child"]
+    # ID-Q4 Phase 1: the new holder's private key is persisted (0o600) so
+    # a later `identity attenuate` at the terminal can narrow it further.
+    assert meta["holder_private_key"]
+    assert oct(meta_path.stat().st_mode)[-3:] == "600"
 
 
 def test_attenuate_rejects_an_illegal_caveat(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "IDENTITY_DIR", tmp_path)
-    parent = identity.mint("agent-root")
+    parent, parent_key = identity.mint("agent-root")
+    _persist_meta(tmp_path, "agent-root", parent, parent_key)
     runner = CliRunner()
     result = runner.invoke(cli.cli, [
         "identity", "attenuate", parent,
         "--caveat", 'permit action is "wipe_disk"',
     ])
     assert result.exit_code != 0
-    assert list(tmp_path.glob("*.json")) == []
+    # Only the pre-seeded parent record — no new (child) file on failure.
+    assert [f.name for f in tmp_path.glob("*.json")] == ["agent-root.json"]
 
 
 def test_attenuate_rejects_an_unverifiable_parent(tmp_path, monkeypatch):
@@ -165,8 +188,8 @@ def test_attenuate_rejects_an_unverifiable_parent(tmp_path, monkeypatch):
 
 
 def test_inspect_a_valid_token_shows_details(monkeypatch):
-    token = identity.mint("agent-root", caveats=['forbid action is "wipe_disk"'])
-    child = identity.attenuate(token, [], delegate_to="agent-child")
+    token, holder_key = identity.mint("agent-root", caveats=['forbid action is "wipe_disk"'])
+    child, _child_key = identity.attenuate(token, [], delegate_to="agent-child", holder_private_key=holder_key)
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["identity", "inspect", child])
     assert result.exit_code == 0
@@ -176,7 +199,7 @@ def test_inspect_a_valid_token_shows_details(monkeypatch):
 
 
 def test_inspect_a_forged_token_reports_unverified_without_crashing(monkeypatch):
-    token = identity.mint("agent-root")
+    token, _holder_key = identity.mint("agent-root")
     header_b64, payload_b64, sig_b64 = token.split(".")
     forged = f"{header_b64}.{payload_b64}." + (("A" if sig_b64[0] != "A" else "B") + sig_b64[1:])
     runner = CliRunner()
@@ -254,7 +277,7 @@ def test_revoke_identifier_appends_forbid_and_subsequent_token_is_denied(tmp_pat
         lambda: agreements.REVOCATIONS_PATH.read_text() if agreements.REVOCATIONS_PATH.exists() else None,
     )
 
-    token = identity.mint("agent-x", ttl_hours=None)
+    token, _key = identity.mint("agent-x", ttl_hours=None)
     d = agreements.check_action(
         "ignored", "translate",
         agreement_text='permit actor is "agent-x" and action is "translate"',
@@ -272,8 +295,8 @@ def test_revoke_by_token_extracts_the_nonce(tmp_path, monkeypatch):
         lambda: agreements.REVOCATIONS_PATH.read_text() if agreements.REVOCATIONS_PATH.exists() else None,
     )
 
-    token_a = identity.mint("agent-x", ttl_hours=None, nonce="nonce-a")
-    token_b = identity.mint("agent-x", ttl_hours=None, nonce="nonce-b")
+    token_a, _key_a = identity.mint("agent-x", ttl_hours=None, nonce="nonce-a")
+    token_b, _key_b = identity.mint("agent-x", ttl_hours=None, nonce="nonce-b")
 
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["identity", "revoke", "--token", token_a])

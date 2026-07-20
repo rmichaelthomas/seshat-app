@@ -195,9 +195,9 @@ DEPTH_AGREEMENT = 'permit action is "go"\nforbid delegation-depth is above 3\n'
 
 
 def _delegated_token(root, hops):
-    token = identity.mint(root, ttl_hours=None)
+    token, holder_key = identity.mint(root, ttl_hours=None)
     for hop in hops:
-        token = identity.attenuate(token, delegate_to=hop)
+        token, holder_key = identity.attenuate(token, delegate_to=hop, holder_private_key=holder_key)
     return token
 
 
@@ -307,9 +307,9 @@ def test_hostile_delegate_to_is_rejected_at_attenuate_time():
     """Defense in depth ahead of the inject boundary: a delegation marker
     naming hostile characters is not a legal caveat, so attenuate refuses
     to mint it — the hostile hop never reaches delegation-path at all."""
-    token = identity.mint("root-agent", ttl_hours=None)
+    token, holder_key = identity.mint("root-agent", ttl_hours=None)
     with pytest.raises(identity.IllegalCaveatError):
-        identity.attenuate(token, delegate_to=HOSTILE)
+        identity.attenuate(token, delegate_to=HOSTILE, holder_private_key=holder_key)
 
 
 def test_hostile_delegation_path_is_inert_at_the_inject_boundary(monkeypatch):
@@ -392,18 +392,18 @@ def test_mint_with_new_caveat_denies_after_delegation_hops():
     grows past the limit, with the Agreement itself saying nothing about
     delegation."""
     agreement = 'permit action is "go"\n'
-    token = identity.mint(
+    token, holder_key = identity.mint(
         "root-agent", caveats=['forbid delegation-depth is above 2'], ttl_hours=None
     )
 
     d = check_action("ignored", "go", agreement_text=agreement, token=token)
     assert d.allowed is True, "undelegated: depth 1, under the caveat's limit"
 
-    one_hop = identity.attenuate(token, delegate_to="sub-a")
+    one_hop, one_hop_key = identity.attenuate(token, delegate_to="sub-a", holder_private_key=holder_key)
     d = check_action("ignored", "go", agreement_text=agreement, token=one_hop)
     assert d.allowed is True, "one hop: depth 2, still at the limit"
 
-    two_hops = identity.attenuate(one_hop, delegate_to="sub-b")
+    two_hops, _key = identity.attenuate(one_hop, delegate_to="sub-b", holder_private_key=one_hop_key)
     d = check_action("ignored", "go", agreement_text=agreement, token=two_hops)
     assert d.allowed is False
     assert d.mode == "forbidden"

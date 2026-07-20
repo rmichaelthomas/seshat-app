@@ -119,7 +119,7 @@ class TestTokenVerification:
     def test_valid_token_overrides_actor_and_permits(self):
         import identity
 
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         agreement = 'permit actor is "agent-x" and action is "start_project"'
         d = check_action("ignored-untrusted-string", "start_project", agreement_text=agreement, token=token)
         assert d.allowed is True
@@ -128,7 +128,7 @@ class TestTokenVerification:
     def test_forged_token_denies_as_identity_invalid(self):
         import identity
 
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         header_b64, payload_b64, sig_b64 = token.split(".")
         tampered_sig = ("A" if sig_b64[0] != "A" else "B") + sig_b64[1:]
         forged = f"{header_b64}.{payload_b64}.{tampered_sig}"
@@ -141,7 +141,7 @@ class TestTokenVerification:
     def test_token_caveat_forbids_even_when_agreement_permits(self):
         import identity
 
-        token = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
+        token, _key = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
         agreement = 'permit actor is "agent-x" and action is "wipe_disk"'
         d = check_action("agent-x", "wipe_disk", agreement_text=agreement, token=token)
         assert d.allowed is False
@@ -154,7 +154,7 @@ class TestTokenVerification:
         permit (see is_legal_caveat's docstring)."""
         import identity
 
-        token = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
+        token, _key = identity.mint("agent-x", caveats=['forbid action is "wipe_disk"'])
         agreement = (
             'permit actor is "agent-x" and action is "translate"\n'
             'permit actor is "agent-x" and action is "wipe_disk"'
@@ -180,7 +180,7 @@ class TestTokenVerification:
         # failure) by hand-building a valid signature over an illegal
         # 'permit' caveat, then confirm verify() itself refuses it.
         signature = identity._chain_signature("agent-x", ['permit action is "wipe_disk"'])
-        header = identity._b64(__import__("json").dumps({"alg": identity._ALG, "typ": identity._TYP}).encode())
+        header = identity._b64(__import__("json").dumps({"alg": identity._ALG_HMAC, "typ": identity._TYP}).encode())
         payload = identity._b64(__import__("json").dumps(
             {"identifier": "agent-x", "location": "x", "caveats": ['permit action is "wipe_disk"']}
         ).encode())
@@ -206,7 +206,7 @@ class TestTokenVerification:
         import identity
 
         monkeypatch.setattr(agreements, "load_agreement", lambda: None)
-        token = identity.mint("agent-x")
+        token, _key = identity.mint("agent-x")
         d = check_action("agent-x", "start_project", agreement_text=None, token=token)
         assert d.allowed is False
         assert d.mode == "no-agreement"
