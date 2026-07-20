@@ -858,7 +858,7 @@ def attenuate_identity(token: str, caveats: list[str] | None = None, delegate_to
     target = {"delegate_to": delegate_to, "caveats": caveats or []}
 
     try:
-        new_token = identity.attenuate(token, caveats, delegate_to=delegate_to)
+        new_token, holder_key = identity.attenuate(token, caveats, delegate_to=delegate_to)
     except identity.IllegalCaveatError as e:
         result = {"status": "failure", "error": str(e)}
         _emit(
@@ -882,7 +882,7 @@ def attenuate_identity(token: str, caveats: list[str] | None = None, delegate_to
         actor_type="mcp_session",
         agent_hint=_agreement_actor(),
     )
-    return json.dumps({"status": "success", "token": new_token})
+    return json.dumps({"status": "success", "token": new_token, "holder_key": holder_key})
 
 
 # ── MCP resources ──────────────────────────────────────────────────────────
