@@ -37,6 +37,18 @@ def _no_invariant_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_groups_by_default(monkeypatch):
+    """Isolate every test from whatever may actually exist at
+    ~/.seshat/groups.limn on the host machine, mirroring
+    _no_revocations_by_default above. check_action() resolves groups
+    independently of the agreement_text override, so without this every
+    check_action call in the suite would read the developer's real groups
+    file. Tests that need specific groups content override load_groups
+    explicitly in the test body."""
+    monkeypatch.setattr(agreements, "load_groups", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _test_identity_root_key(monkeypatch):
     """Isolate every test from the real macOS Keychain for the identity
     root key, mirroring _test_mac_key above. Without this, mint()/verify()
