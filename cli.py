@@ -836,6 +836,139 @@ def agreement_amend(receipt_id, allow_deescalation):
 cli.add_command(agreement_cmd, name="agreement")
 
 
+# ── Teams commands ─────────────────────────────────────────────────────────
+
+TEAMS_STARTER = """\
+-- Seshat Teams — actor membership, resolved by the harness at enforcement time.
+-- Convention: `<team>-members` lists actor names; `<team>-parents` lists
+-- parent team names. The harness computes the transitive closure and binds
+-- it as the `actor-teams` fact. remember-statements only — nothing else
+-- belongs in this file.
+
+remember a list called engineering-members with "claude-code"
+remember a list called engineering-parents
+"""
+
+
+def _validate_teams_source(source: str) -> list:
+    """Teams files are self-contained programs — unlike Agreements, they
+    reference no enforcement-time facts, so NO unbound-reference
+    forgiveness applies. Any parse/semantic/runtime error blocks install.
+    Additionally, only `remember` statements are allowed: a deontic or
+    mutation verb in teams.limn would execute on every resolution run."""
+    import liminate
+
+    result = liminate.run(source, enter_phase2=False, auto_confirm_amber=True)
+    blocking = [
+        r for r in result.results
+        if r.status.name in ("ERROR_PARSE", "ERROR_SEMANTIC", "ERROR_RUNTIME",
+                             "AMBER_PRECEDENCE", "AMBER_AMBIGUITY")
+    ]
+    for r in result.results:
+        verb = agreements._verb_of(r.canonical)
+        if verb is not None and verb != "remember" and r not in blocking:
+            blocking.append(r)   # non-remember statement — report it
+    return blocking
+
+
+def _print_teams_validation_errors(blocking: list) -> None:
+    """Like _print_validation_errors, but synthesizes a message for a
+    non-remember statement — those results carry no interpreter error
+    message of their own (they executed fine; they just don't belong)."""
+    for r in blocking:
+        loc = f"line {r.line}: " if getattr(r, "line", None) else ""
+        message = r.message or (
+            f"only remember statements are allowed in teams.limn, got: {r.canonical}"
+        )
+        console.print(f"  [red]{loc}{message}[/red]")
+
+
+@cli.group()
+def teams_cmd():
+    """Actor-membership teams feeding the `actor-teams` enforcement fact."""
+
+
+@teams_cmd.command(name="init")
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing teams file.")
+def teams_init(force):
+    """Write the starter teams file to ~/.seshat/teams.limn."""
+    path = agreements.TEAMS_PATH
+    if path.exists() and not force:
+        console.print(f"[yellow]Teams file already exists at {path}.[/yellow] Use --force to overwrite.")
+        sys.exit(1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(TEAMS_STARTER)
+    console.print(f"[green]✓[/green] Teams written to [cyan]{path}[/cyan]")
+
+
+@teams_cmd.command(name="show")
+def teams_show():
+    """Print the current teams file."""
+    text = agreements.load_teams()
+    if text is None:
+        console.print(
+            f"[dim]No teams file exists at {agreements.TEAMS_PATH}. "
+            f"Run: seshat teams init[/dim]"
+        )
+        return
+    console.print(text)
+
+
+@teams_cmd.command(name="install")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--force", is_flag=True, default=False, help="Overwrite an existing teams file.")
+def teams_install(path, force):
+    """Validate a Liminate teams file and install it to ~/.seshat/teams.limn.
+
+    Reads PATH, checks it runs cleanly through the interpreter and contains
+    only `remember` statements (a broken or deontic teams file is never
+    installed), and writes it to the enforcement surface. This is a human
+    action at the terminal — like `agreement install`, it is deliberately
+    not gated by the Agreement itself; the filesystem boundary is the
+    protection. No agent-reachable path writes this file.
+    """
+    dest = agreements.TEAMS_PATH
+    if dest.exists() and not force:
+        console.print(f"[yellow]Teams file already exists at {dest}.[/yellow] Use --force to overwrite.")
+        sys.exit(1)
+
+    try:
+        source = Path(path).read_text()
+    except UnicodeDecodeError as exc:
+        console.print(f"[red]Could not read {path} as text — not installed.[/red] ({exc})")
+        sys.exit(1)
+
+    blocking = _validate_teams_source(source)
+    if blocking:
+        console.print(f"[red]Teams file did not validate — not installed.[/red]")
+        _print_teams_validation_errors(blocking)
+        sys.exit(1)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(source)
+    console.print(f"[green]✓[/green] Teams installed to [cyan]{dest}[/cyan]")
+
+
+@teams_cmd.command(name="check")
+@click.argument("actor")
+def teams_check(actor):
+    """Print the resolved transitive team closure for ACTOR.
+
+    The diagnostic for team resolution: a missing or broken teams.limn
+    fails safe to an empty closure (grants fail closed), which is silent
+    at enforcement time — this is where you see it.
+    """
+    resolved = agreements.resolve_teams(actor)
+    if not resolved:
+        console.print(f"[dim]{actor} belongs to no teams.[/dim]")
+        return
+    for team in resolved:
+        console.print(team)
+
+
+cli.add_command(teams_cmd, name="teams")
+
+
 # ── Invariant commands ──────────────────────────────────────────────────────
 
 INVARIANT_STARTER = """\

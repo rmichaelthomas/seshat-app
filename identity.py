@@ -167,13 +167,29 @@ def _strip_temporal_prefix(line: str) -> str:
 def is_legal_caveat(line: str) -> bool:
     """True only for the locked §5 subset: an optional temporal prefix,
     followed by exactly one **forbid** statement whose predicate resolves
-    fully against just the (actor, action, scope) facts — proven by
-    actually running it through the real liminate interpreter with those
-    three facts remembered as dummy probe values, the same shape
-    agreements.check_action() composes at real enforcement time. This is
-    deliberately NOT a hand-rolled predicate grammar: reusing the real
-    evaluator is what proves offline decidability, rather than asserting
-    it.
+    fully against the enforcement facts — proven by actually running it
+    through the real liminate interpreter with those facts bound to dummy
+    probe values, the same shape agreements.check_action() composes at
+    real enforcement time. This is deliberately NOT a hand-rolled
+    predicate grammar: reusing the real evaluator is what proves offline
+    decidability, rather than asserting it.
+
+    The decidable subset resolves against SEVEN facts: actor, action and
+    scope (text-composed into the probe program, mirroring check_action's
+    unchanged F-02 composition) plus the four
+    agreements.NEW_ENFORCEMENT_FACTS — actor-teams, delegation-path,
+    delegation-depth, token-nonce — bound via liminate.run(inject=...) as
+    inert data. Both this probe and check_action source those four from
+    agreements.new_fact_probe_values() / the same constant, so a fact
+    added to enforcement but not to the probe (or vice versa) breaks the
+    parity test rather than silently drifting: a caveat that passes
+    legality here must not error at enforcement time.
+
+    The forbid-only rule below is unchanged and load-bearing for the new
+    facts specifically: membership and provenance are expressible in a
+    caveat only as PROHIBITION. A caveat can forbid on team membership
+    or delegation depth (narrowing), but can never assert membership to
+    gain authority (widening).
 
     `permit` is deliberately NOT a legal caveat verb, despite the design
     naming "forbid / permit" as the allow-deny shape: Liminate composes a
@@ -228,7 +244,10 @@ def is_legal_caveat(line: str) -> bool:
         f"{stripped}\n"
     )
     try:
-        result = liminate.run(probe, enter_phase2=False, auto_confirm_amber=True)
+        result = liminate.run(
+            probe, enter_phase2=False, auto_confirm_amber=True,
+            inject=agreements.new_fact_probe_values(),
+        )
     except Exception:
         return False
     return not any(r.status.name in agreements._ERROR_STATUS_NAMES for r in result.results)

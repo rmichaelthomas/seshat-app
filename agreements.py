@@ -25,6 +25,7 @@ REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations.limn"
 LAST_SYNCED_REVOCATIONS_PATH = Path.home() / ".seshat" / "revocations" / ".last_synced_revocations"
 INVARIANT_PATH = Path.home() / ".seshat" / "invariant.limn"
 ENTRENCHED_PATH = Path.home() / ".seshat" / "entrenched.limn"
+TEAMS_PATH = Path.home() / ".seshat" / "teams.limn"
 
 # F-07: how old the last successful `seshat revocations sync` may be
 # before check_action treats an *existing* revocations.limn as stale and
@@ -81,6 +82,87 @@ def load_entrenched() -> str | None:
         return ENTRENCHED_PATH.read_text()
     except FileNotFoundError:
         return None
+
+
+def load_teams() -> str | None:
+    """Return the teams file text, or None if it doesn't exist."""
+    try:
+        return TEAMS_PATH.read_text()
+    except FileNotFoundError:
+        return None
+
+
+# The four facts this build adds to enforcement composition. Both
+# check_action's inject dict and identity.is_legal_caveat's probe inject
+# dict MUST derive from this tuple — tested, not assumed (see the
+# consistency invariants). The three legacy text-composed facts
+# (actor/action/scope) are deliberately NOT here: their composition is
+# byte-for-byte unchanged (F-02).
+NEW_ENFORCEMENT_FACTS: tuple[str, ...] = (
+    "actor-teams", "delegation-path", "delegation-depth", "token-nonce",
+)
+
+
+def new_fact_probe_values() -> dict:
+    """Inert probe values for the new facts, used by identity.is_legal_caveat.
+    Shapes must match real enforcement binding: list / list / number / string."""
+    return {
+        "actor-teams": ["__seshat_probe_team__"],
+        "delegation-path": ["__seshat_probe_hop__"],
+        "delegation-depth": 1,
+        "token-nonce": "__seshat_probe_nonce__",
+    }
+
+
+def resolve_teams(actor: str, teams_text: str | None = None) -> list[str]:
+    """Transitive closure of ACTOR's team memberships from teams.limn.
+
+    Named `teams`, not `groups`, to stay clear of Seshat's long-standing
+    project-group concept (`start_group`/`stop_group`, `registry.list_groups`,
+    `seshat://groups`) — that one names sets of PROJECTS started together;
+    this one names sets of ACTORS for permission purposes. Two unrelated
+    ideas, two words.
+
+    Schema convention: a list named `<team>-members` holds actor names;
+    a list named `<team>-parents` holds parent team names. Any other
+    symbol is inert. Direct membership seeds the walk; parents are
+    followed transitively with a visited set (cycle-safe). Returns a
+    sorted list for determinism.
+
+    Fail-safe on the GRANT side: a missing, unreadable, or erroring
+    teams.limn resolves to [] — the actor simply belongs to no teams,
+    so team-conditioned permits never fire. Never raises.
+    """
+    if teams_text is None:
+        teams_text = load_teams()
+    if teams_text is None:
+        return []
+    try:
+        result = liminate.run(teams_text, enter_phase2=False, auto_confirm_amber=True)
+    except Exception:
+        return []
+    if any(r.status.name in _ERROR_STATUS_NAMES for r in result.results):
+        return []
+    symtab = result.symbol_table
+
+    members_suffix, parents_suffix = "-members", "-parents"
+    direct: set[str] = set()
+    for name, entry in symtab.items():
+        if name.endswith(members_suffix) and isinstance(entry.value, list):
+            if actor in entry.value:
+                direct.add(name[: -len(members_suffix)])
+
+    closure: set[str] = set()
+    frontier = list(direct)
+    while frontier:
+        g = frontier.pop()
+        if g in closure:
+            continue          # cycle / repeat guard
+        closure.add(g)
+        parents_entry = symtab.get(f"{g}{parents_suffix}")
+        if parents_entry is not None and isinstance(parents_entry.value, list):
+            frontier.extend(p for p in parents_entry.value if p not in closure)
+    return sorted(closure)
 
 
 def entrenched_keys() -> set[tuple[str, str]]:
@@ -391,6 +473,23 @@ def check_action(
                         reason=f"Identity '{candidate}' is revoked (revocations.limn).",
                     )
 
+    # New enforcement facts (design session 2026-07-20). Always bound —
+    # a fact must never be unbound (scope's "none" precedent). Bound via
+    # liminate.run(inject=...) as inert data: injection-proof by
+    # construction, no text composition, no quoting. The three legacy
+    # facts stay text-composed byte-for-byte (F-02).
+    if verified is not None and verified.delegation_path:
+        delegation_path = list(verified.delegation_path)
+    else:
+        delegation_path = [actor]
+    new_facts = {
+        "actor-teams": resolve_teams(actor),
+        "delegation-path": delegation_path,
+        "delegation-depth": len(delegation_path),
+        "token-nonce": (verified.token_nonce if verified is not None and verified.token_nonce else "none"),
+    }
+    assert set(new_facts) == set(NEW_ENFORCEMENT_FACTS)
+
     composed = (
         f'remember a string called actor with "{actor}"\n'
         f'remember a string called action with "{action}"\n'
@@ -402,7 +501,10 @@ def check_action(
     )
 
     try:
-        result = liminate.run(composed, enter_phase2=False, auto_confirm_amber=True)
+        result = liminate.run(
+            composed, enter_phase2=False, auto_confirm_amber=True,
+            inject=new_facts,
+        )
     except Exception as e:
         return Decision(
             allowed=False,
