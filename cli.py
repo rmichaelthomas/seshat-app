@@ -16,9 +16,11 @@ Usage:
 """
 
 import base64
+import difflib
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -632,6 +634,204 @@ def _validate_agreement_source(source: str) -> list:
     ]
 
 
+# ── Agreement lint ──────────────────────────────────────────────────────────
+#
+# The gap this closes: `permit action is "start_projct"` — one transposed
+# letter — is a perfectly valid Liminate program that silently means
+# deny-forever, and a silently-denying Agreement looks exactly like a
+# working one. Enforcement cannot catch this (a permit that never matches
+# is indistinguishable from a permit that shouldn't), so it is caught here,
+# before the file reaches the enforcement surface.
+#
+# Lint is ADVISORY at enforcement time: check_action neither calls nor
+# knows about any of this. Zero runtime coupling.
+
+# A fact reference is a bare name in comparison position. Matches the
+# subject of `is` / `includes` / `not includes`, which is every shape a
+# condition can take against a fact.
+_LINT_FACT_RE = re.compile(r"\b([a-z][a-z0-9_-]*)\s+(?:is\b|(?:not\s+)?includes\b)")
+_LINT_ACTION_LITERAL_RE = re.compile(r'\baction\s+is\s+"([^"]*)"')
+_LINT_SCOPE_LITERAL_RE = re.compile(r'\bscope\s+is\s+"([^"]*)"')
+_LINT_REMEMBER_RE = re.compile(r"^remember\s+an?\s+\S+\s+called\s+([\w-]+)")
+_LINT_QUOTED_RE = re.compile(r'"[^"]*"')
+
+# scope's sentinel when a call has no project/group target — always valid,
+# never a registry name.
+_LINT_SCOPE_SENTINEL = "none"
+
+
+class LintFinding:
+    """One lint result. `severity` is "error" (blocks) or "warning" (informs)."""
+
+    def __init__(self, severity: str, line: int | None, message: str, suggestion: str | None = None):
+        self.severity = severity
+        self.line = line
+        self.message = message
+        self.suggestion = suggestion
+
+    def __repr__(self) -> str:
+        return f"LintFinding({self.severity!r}, line={self.line}, {self.message!r})"
+
+
+def _lint_known_actions() -> set:
+    """Registered MCP action names, read LIVE from the server module.
+
+    Never a hardcoded list: a literal copy here would drift the moment a
+    tool is added or renamed, and a linter that is confidently wrong about
+    the tool vocabulary is worse than no linter. Imported lazily so the
+    ordinary CLI path never pays for loading the MCP stack.
+    """
+    try:
+        import mcp_server
+        return mcp_server.enforced_actions()
+    except Exception:
+        return set()
+
+
+def _lint_known_scopes() -> set:
+    """Registered project and group names. Best-effort: an unreadable
+    registry yields an empty set, which only suppresses scope warnings —
+    it never manufactures an error."""
+    names = set()
+    try:
+        names.update(p["name"] for p in registry.list() if "name" in p)
+        names.update(g["name"] for g in registry.list_groups() if "name" in g)
+    except Exception:
+        pass
+    return names
+
+
+def _lint_statements(source: str):
+    """Yield (line_number, statement) for each real statement.
+
+    parse_statements() skips blank and '#' lines but NOT Liminate's '--'
+    comments, which it would classify as verb 'other' — so those are
+    filtered here rather than reported as unparseable. The temporal prefix
+    is stripped before parsing via identity._strip_temporal_prefix (the
+    same helper agreements._revoked_actor_identifiers uses), since
+    `starting "..." permit ...` would otherwise parse as verb 'other' and
+    hide a real permit from every check below.
+    """
+    for lineno, raw in enumerate(source.splitlines(), start=1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("--") or stripped.startswith("#"):
+            continue
+        remainder = identity._strip_temporal_prefix(stripped)
+        parsed = amendment_diff.parse_statements(remainder)
+        if parsed:
+            yield lineno, parsed[0]
+
+
+def _lint_derationalized(statement: dict) -> str:
+    """The statement text with any `because "..."` rationale removed.
+
+    The rationale is free prose, so scanning it would invent facts and
+    actions that aren't there — `because "action is unclear"` must not
+    read as a reference to the `action` fact, nor as an action literal."""
+    text = statement["raw"]
+    if statement.get("rationale") is not None:
+        m = amendment_diff._BECAUSE_RE.search(text)
+        if m:
+            text = text[: m.start()]
+    return text
+
+
+def lint_agreement(source: str, *, known_actions=None, known_scopes=None) -> list:
+    """Return LintFindings for SOURCE, most structural first.
+
+    Errors (block an install, exit 1):
+      - any parse/semantic error the interpreter reports
+      - a reference to a fact name that cannot resolve at enforcement time
+
+    Warnings (informational, exit 0):
+      - `action is "<literal>"` naming no registered MCP tool
+      - `scope is "<literal>"` naming no registered project or group
+      - no permit statements at all — the Agreement denies everything
+    """
+    if known_actions is None:
+        known_actions = _lint_known_actions()
+    if known_scopes is None:
+        known_scopes = _lint_known_scopes()
+
+    findings = []
+
+    for r in _validate_agreement_source(source):
+        loc = getattr(r, "line", None)
+        findings.append(LintFinding("error", loc, r.message or "interpreter error"))
+
+    statements = list(_lint_statements(source))
+
+    # A name bound by a `remember` inside the Agreement itself resolves at
+    # enforcement time just as the harness-supplied facts do, so it counts
+    # as known — otherwise a self-contained Agreement would lint as broken.
+    defined = set()
+    for _lineno, stmt in statements:
+        m = _LINT_REMEMBER_RE.match(stmt["raw"].strip())
+        if m:
+            defined.add(m.group(1))
+    known_facts = agreements.KNOWN_FACTS | defined
+
+    has_permit = False
+    for lineno, stmt in statements:
+        if stmt["verb"] == "permit":
+            has_permit = True
+        if stmt["verb"] not in ("permit", "forbid", "require"):
+            continue
+
+        conditions = _lint_derationalized(stmt)
+        # Quoted literals are blanked for the FACT scan only: a string like
+        # "start_project" must not read as a bare name in comparison
+        # position. The literal scans below need the quotes intact.
+        bare = _LINT_QUOTED_RE.sub('""', conditions)
+
+        for fact in _LINT_FACT_RE.findall(bare):
+            if fact in known_facts:
+                continue
+            suggestion = difflib.get_close_matches(fact, sorted(known_facts), n=1, cutoff=0.6)
+            findings.append(LintFinding(
+                "error", lineno,
+                f'unknown fact "{fact}" — it cannot resolve at enforcement time',
+                f'Did you mean "{suggestion[0]}"?' if suggestion else None,
+            ))
+
+        for literal in _LINT_ACTION_LITERAL_RE.findall(conditions):
+            if not known_actions or literal in known_actions:
+                continue
+            suggestion = difflib.get_close_matches(literal, sorted(known_actions), n=1, cutoff=0.6)
+            findings.append(LintFinding(
+                "warning", lineno,
+                f'action "{literal}" is not a registered MCP tool — this rule can never match',
+                f'Did you mean "{suggestion[0]}"?' if suggestion else None,
+            ))
+
+        for literal in _LINT_SCOPE_LITERAL_RE.findall(conditions):
+            if literal == _LINT_SCOPE_SENTINEL or not known_scopes or literal in known_scopes:
+                continue
+            suggestion = difflib.get_close_matches(literal, sorted(known_scopes), n=1, cutoff=0.6)
+            findings.append(LintFinding(
+                "warning", lineno,
+                f'scope "{literal}" names no registered project or group',
+                f'Did you mean "{suggestion[0]}"?' if suggestion else None,
+            ))
+
+    if statements and not has_permit:
+        findings.append(LintFinding(
+            "warning", None,
+            "no permit statements — this Agreement denies everything (deny-by-default)",
+        ))
+
+    return findings
+
+
+def _print_lint_findings(findings: list) -> None:
+    for f in findings:
+        colour = "red" if f.severity == "error" else "yellow"
+        loc = f"line {f.line}: " if f.line else ""
+        console.print(f"  [{colour}]{f.severity}[/{colour}]  {loc}{f.message}")
+        if f.suggestion:
+            console.print(f"         [dim]{f.suggestion}[/dim]")
+
+
 def _print_validation_errors(blocking: list) -> None:
     for r in blocking:
         loc = f"line {r.line}: " if getattr(r, "line", None) else ""
@@ -700,6 +900,53 @@ def agreement_show():
     console.print(text)
 
 
+@agreement_cmd.command(name="lint")
+@click.option(
+    "--path", "path", default=None,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    help="Lint this file instead of the installed Agreement.",
+)
+def agreement_lint(path):
+    """Check an Agreement for typos and unresolvable references.
+
+    Catches what enforcement cannot: `permit action is "start_projct"` is a
+    valid program that silently means deny-forever, and a silently-denying
+    Agreement is indistinguishable from a working one at runtime.
+
+    Exit 0 when clean or warnings-only, 1 when errors are found — so this
+    is usable as a CI gate.
+    """
+    if path is not None:
+        try:
+            source = Path(path).read_text()
+        except UnicodeDecodeError as exc:
+            console.print(f"[red]Could not read {path} as text.[/red] ({exc})")
+            sys.exit(1)
+        label = str(path)
+    else:
+        source = agreements.load_agreement()
+        if source is None:
+            console.print(
+                f"[dim]No Agreement exists at {agreements.AGREEMENT_PATH}. "
+                f"Run: seshat agreement init[/dim]"
+            )
+            return
+        label = str(agreements.AGREEMENT_PATH)
+
+    findings = lint_agreement(source)
+    errors = [f for f in findings if f.severity == "error"]
+    warnings = [f for f in findings if f.severity == "warning"]
+
+    if not findings:
+        console.print(f"[green]✓[/green] {label} — no issues found.")
+        return
+
+    _print_lint_findings(findings)
+    summary = f"{len(errors)} error(s), {len(warnings)} warning(s)"
+    console.print(f"\n  [{'red' if errors else 'yellow'}]{summary}[/]")
+    sys.exit(1 if errors else 0)
+
+
 @agreement_cmd.command(name="install")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
 @click.option("--force", is_flag=True, default=False, help="Overwrite an existing Agreement file.")
@@ -730,6 +977,20 @@ def agreement_install(path, force):
         console.print(f"[red]Agreement did not validate — not installed.[/red]")
         _print_validation_errors(blocking)
         sys.exit(1)
+
+    # Lint after validation. Errors block, extending the existing rule that
+    # a broken Agreement never reaches the enforcement surface — a rule
+    # referencing a fact that cannot resolve IS broken, it just fails
+    # silently instead of loudly. Warnings print but never block: a typo'd
+    # action is a suspicion about intent, not a defect in the file.
+    findings = lint_agreement(source)
+    lint_errors = [f for f in findings if f.severity == "error"]
+    if lint_errors:
+        console.print("[red]Agreement failed lint — not installed.[/red]")
+        _print_lint_findings(lint_errors)
+        sys.exit(1)
+    if findings:
+        _print_lint_findings(findings)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(source)

@@ -103,6 +103,26 @@ NEW_ENFORCEMENT_FACTS: tuple[str, ...] = (
 )
 
 
+# The three facts check_action has always text-composed into the program.
+# Named here so the linter's known-fact set has ONE source shared with
+# enforcement rather than a second hardcoded list that drifts — the same
+# parity discipline NEW_ENFORCEMENT_FACTS / new_fact_probe_values() apply
+# to the injected four.
+#
+# check_action's own composition loop is deliberately NOT refactored to
+# read this tuple: the `composed` string must stay byte-for-byte identical
+# (F-02). This constant describes that loop; it does not drive it.
+LEGACY_ENFORCEMENT_FACTS: tuple[str, ...] = ("actor", "action", "scope")
+
+# Every fact name an Agreement may reference at enforcement time. A
+# reference to anything else cannot resolve when check_action runs, so an
+# Agreement naming one is broken — `seshat agreement lint` reports it as
+# an error rather than letting it fail silently at the first call.
+KNOWN_FACTS: frozenset[str] = frozenset(
+    LEGACY_ENFORCEMENT_FACTS + NEW_ENFORCEMENT_FACTS
+)
+
+
 def new_fact_probe_values() -> dict:
     """Inert probe values for the new facts, used by identity.is_legal_caveat.
     Shapes must match real enforcement binding: list / list / number / string."""

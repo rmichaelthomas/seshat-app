@@ -174,6 +174,7 @@ def _enforce(action: str, target: dict) -> str | None:
 
 
 _ENFORCED_MARKER = "_seshat_enforced_tool"
+_ENFORCED_ACTION_ATTR = "_seshat_enforced_action"
 
 
 def _enforced_tool(action: str, target_fn):
@@ -213,9 +214,28 @@ def _enforced_tool(action: str, target_fn):
                 return fn(*args, **kwargs)
 
         setattr(wrapper, _ENFORCED_MARKER, True)
+        setattr(wrapper, _ENFORCED_ACTION_ATTR, action)
         return mcp.tool()(wrapper)
 
     return decorator
+
+
+def enforced_actions() -> set[str]:
+    """Every `action` string the MCP surface enforces against, read live
+    from the registered tools.
+
+    Agreements condition on ACTION, not on tool name. The two coincide
+    today by convention, but a consumer keyed off `tool.name` would
+    silently mis-report the day someone writes
+    `@_enforced_tool("start_project_v2", ...)` on `def start_project`.
+    This reads the action the gate actually passes to check_action, so
+    the enforcement vocabulary has exactly one definition.
+    """
+    return {
+        action
+        for tool in mcp._tool_manager.list_tools()
+        if (action := getattr(tool.fn, _ENFORCED_ACTION_ATTR, None)) is not None
+    }
 
 
 def _assert_all_tools_enforced() -> None:
