@@ -1769,6 +1769,113 @@ def receipts_keys_show():
     )
 
 
+@receipts_keys_cmd.command(name="export")
+@click.option("--out", "out_path", required=True, type=click.Path(), help="File to write the public key to.")
+def receipts_keys_export(out_path):
+    """Write the receipt public key to --out, for transmission to a third party."""
+    try:
+        pub_hex = receipts_module.receipt_public_key_hex()
+    except receipts_module.ReceiptKeyUnavailableError as e:
+        console.print(f"[red]Cannot read the receipt public key:[/red] {e}")
+        sys.exit(1)
+
+    Path(out_path).write_text(pub_hex + "\n")
+    console.print(f"[green]✓[/green] Wrote receipt public key to [bold]{out_path}[/bold]")
+
+
+RECEIPTS_KEYS_REGISTER_PATH = "/api/v1/receipts/keys"
+
+
+@receipts_keys_cmd.command(name="register")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be sent without sending.")
+@click.option(
+    "--rotate", is_flag=True, default=False,
+    help="Sign the current public key's raw bytes with the current private key, "
+         "proving possession — for re-registering after the platform holds a "
+         "stale key for this account.",
+)
+def receipts_keys_register(dry_run, rotate):
+    """Register this install's receipt public key with the platform.
+
+    Sends the key this install already has — idempotent, and normally needs
+    no signature. If the platform responds 403, it holds a different key on
+    file for this account (a different machine registered it, or this
+    install's Keychain key changed since); this command does not attempt to
+    resolve that automatically. Pass --rotate to prove current possession by
+    signing the public key with its own private key — the deliberate,
+    explicit path for re-registering over a stale platform-side key. This
+    build does not generate new keypairs; an install has one receipt
+    keypair.
+    """
+    import httpx
+
+    try:
+        pub_hex = receipts_module.receipt_public_key_hex()
+    except receipts_module.ReceiptKeyUnavailableError as e:
+        console.print(f"[red]Cannot read the receipt public key:[/red] {e}")
+        sys.exit(1)
+
+    api_key = vault.get(RECEIPTS_API_KEY_VAULT_KEY)
+    if not api_key and not dry_run:
+        console.print(
+            "[red]No Receipts API key configured.[/red]\n"
+            f"  Set one with: [cyan]seshat vault set {RECEIPTS_API_KEY_VAULT_KEY} <your-key>[/cyan]\n"
+            "  Get a key at: [cyan]https://liminate.dev/keys[/cyan]"
+        )
+        sys.exit(1)
+
+    api_base = os.environ.get("SESHAT_RECEIPTS_API", RECEIPTS_API_DEFAULT)
+    url = f"{api_base}{RECEIPTS_KEYS_REGISTER_PATH}"
+
+    payload = {"public_key": pub_hex}
+    if rotate:
+        private_key = receipts_module._receipt_signing_key()
+        signature = private_key.sign(bytes.fromhex(pub_hex))
+        payload["signature"] = signature.hex()
+
+    if dry_run:
+        suffix = " [dim](with a proof-of-possession signature)[/dim]" if rotate else ""
+        console.print(f"Would register: [cyan]{pub_hex}[/cyan]{suffix} → {url}")
+        return
+
+    try:
+        resp = httpx.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        try:
+            detail = e.response.json().get("detail", str(e))
+        except Exception:
+            detail = str(e)
+
+        if e.response.status_code == 403 and not rotate:
+            console.print(
+                "[red]Registration rejected (403):[/red] the platform has a key on "
+                "file for this account that does not match this install's key.\n"
+                "  This means either this account was registered from a different "
+                "machine, or this install's Keychain key changed.\n"
+                "  If this install's key is the correct one, retry with "
+                "[cyan]seshat receipts keys register --rotate[/cyan] to prove "
+                "current possession with a signature."
+            )
+        else:
+            console.print(f"[red]Registration failed:[/red] HTTP {e.response.status_code}")
+            console.print(f"  [dim]{detail}[/dim]")
+        sys.exit(1)
+    except httpx.RequestError as e:
+        console.print(f"[red]Registration failed:[/red] {e}")
+        sys.exit(1)
+
+    console.print(f"[green]✓[/green] Registered receipt public key with {api_base}")
+
+
 # ── Revocations command ─────────────────────────────────────────────────────
 
 REVOCATIONS_API_DEFAULT = "https://liminate.dev"
