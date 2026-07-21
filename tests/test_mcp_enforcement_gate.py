@@ -221,20 +221,16 @@ class TestDelegation:
         assert "DENIED" in result
 
     def test_attenuate_identity_tool_succeeds_when_permitted_and_returns_new_token(self, monkeypatch, tmp_path):
-        """ID-Q4 Phase 1: identity.attenuate() now returns (token, holder_
-        private_key) for an EdDSA-chain input, and — since mcp_server.py's
-        attenuate_identity has no parameter to carry a holder key — falls
-        back to SESHAT_IDENTITY_HOLDER_KEY, mirroring exactly how
+        """ID-Q5: identity.attenuate() returns (token, holder_private_key)
+        for an EdDSA-chain input. mcp_server.py's attenuate_identity has no
+        parameter to carry a holder key, so it falls back to
+        SESHAT_IDENTITY_HOLDER_KEY, mirroring exactly how
         SESHAT_IDENTITY_TOKEN already works: a human provisions both env
         vars for an agent's MCP session, and the agent narrows its own
-        session token. mcp_server.py is BYTE-IDENTICAL to main
-        (unchanged): `new_token = identity.attenuate(...)` binds to the
-        WHOLE (token, key) tuple, which rides through unmodified to the
-        JSON response as `"token": [tok, key]` — the same channel
-        mcp_server.py's own docstring says a live bearer token already
-        travels on ('the receipt recorded for this call never contains
-        the new token itself... a live bearer capability token must never
-        be persisted there'). The holder key gets identical treatment."""
+        session token. attenuate_identity now unpacks the tuple itself and
+        returns `token` as a plain string, with `holder_key` as its own
+        top-level JSON field — the response shape an agent reading
+        result["token"] as a string expects."""
         import identity
         import json as json_module
 
@@ -256,7 +252,9 @@ class TestDelegation:
             token=root, caveats=['forbid action is "wipe_disk"'], delegate_to="agent-child",
         ))
         assert result["status"] == "success"
-        new_token, new_holder_key = result["token"]
+        new_token = result["token"]
+        new_holder_key = result["holder_key"]
+        assert isinstance(new_token, str)
         assert new_holder_key
         verified = identity.verify(new_token)
         assert verified is not None
@@ -272,6 +270,40 @@ class TestDelegation:
         assert new_token not in json_module.dumps(receipt)
         assert new_holder_key not in json_module.dumps(receipt)
         assert receipt["actor"]["identity_verified"] is True
+
+    def test_attenuate_identity_tool_returns_token_as_a_string_and_holder_key_as_its_own_field(
+        self, monkeypatch, tmp_path
+    ):
+        """ID-Q5 regression guard: before this fix, mcp_server.py's call
+        site bound `new_token` to the WHOLE (token, holder_key) tuple
+        identity.attenuate() returns for an EdDSA-chain input, so the JSON
+        response's `token` field silently became a 2-element list instead
+        of a string — a breaking change to an agent-reachable MCP tool. An
+        agent reading result["token"] as a string must keep getting a
+        string, with the holder key surfaced as its own named field."""
+        import identity
+        import json as json_module
+
+        root, root_key = identity.mint("agent-root")
+        monkeypatch.setenv("SESHAT_IDENTITY_TOKEN", root)
+        monkeypatch.setenv("SESHAT_IDENTITY_HOLDER_KEY", root_key)
+        monkeypatch.setattr(
+            mcp_server.agreements, "load_agreement",
+            lambda: 'permit actor is "agent-root" and action is "attenuate_identity"',
+        )
+        monkeypatch.setattr(mcp_server.receipts, "RECEIPTS_DIR", tmp_path)
+        monkeypatch.setattr(mcp_server.receipts, "LOCK_PATH", tmp_path / ".chain.lock")
+        monkeypatch.setattr(mcp_server.receipts, "CHAIN_HEAD_PATH", tmp_path / ".chain_head")
+        monkeypatch.setattr(mcp_server.receipts, "snapshot", lambda: {
+            "listening_ports": [], "managed_projects": {},
+        })
+
+        result = json_module.loads(mcp_server.attenuate_identity(
+            token=root, caveats=['forbid action is "wipe_disk"'],
+        ))
+        assert result["status"] == "success"
+        assert isinstance(result["token"], str)
+        assert isinstance(result["holder_key"], str)
 
     def test_attenuate_identity_tool_fails_closed_without_the_holder_key_env_var(self, monkeypatch):
         """Documents the fallback's absence path: mcp_server.py's

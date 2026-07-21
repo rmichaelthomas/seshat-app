@@ -78,3 +78,23 @@ def _test_identity_root_signing_key(monkeypatch):
     fixed_public = fixed_private.public_key()
     monkeypatch.setattr(identity_mod, "_root_signing_key", lambda: fixed_private)
     monkeypatch.setattr(identity_mod, "_root_public_key", lambda: fixed_public)
+
+
+@pytest.fixture(autouse=True)
+def _test_receipt_signing_key(monkeypatch):
+    """Isolate every test from the real macOS Keychain for the Ed25519
+    receipt signing key (ID-Q4 Phase 2), mirroring
+    _test_identity_root_signing_key above. A distinct fixed keypair from
+    identity's (different byte range) so a test can never accidentally
+    pass by conflating the two key domains. Patches both accessors
+    directly (never real keyring get/set) so a test that breaks
+    _receipt_signing_key specifically (simulating "the private key is
+    unavailable") leaves _receipt_public_key working — this is exactly
+    what proves verification needs only the public half (§10 benchmark 1)."""
+    import receipts as receipts_mod
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    fixed_private = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(range(32, 64)))
+    fixed_public = fixed_private.public_key()
+    monkeypatch.setattr(receipts_mod, "_receipt_signing_key", lambda: fixed_private)
+    monkeypatch.setattr(receipts_mod, "_receipt_public_key", lambda: fixed_public)
