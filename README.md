@@ -270,7 +270,49 @@ seshat revocations sync         Pull from the platform
 seshat vault list               List vault keys (names only)
 seshat vault set <key> <value>  Set a shared secret
 seshat vault audit              Cross-reference keys vs. project declarations
+
+seshat tunnel status            Show declared tunnels vs. what's actually served
+seshat tunnel up                Start the shared ngrok agent
+seshat tunnel down              Stop the shared ngrok agent
+seshat tunnel reload            Re-sync the agent with registry.yaml
 ```
+
+## Public tunnels
+
+A project that needs a public URL — an MCP server reachable from claude.ai, a
+webhook receiver — declares a `tunnel:` block in `registry.yaml`:
+
+```yaml
+- name: vault-mcp
+  port: 6150
+  start: .venv/bin/python3 mcp_server_http.py
+  tunnel:
+    provider: ngrok                              # optional, defaults to ngrok
+    domain: your-domain.ngrok-free.dev           # optional; omit for an ephemeral URL
+```
+
+`seshat start vault-mcp` now brings up the server *and* its tunnel. The
+dashboard shows the tunnel's live status and public URL alongside the project,
+so a green project with a dead tunnel is no longer possible.
+
+**One agent, many endpoints.** ngrok's free tier permits a single simultaneous
+agent session, so Seshat does not run `ngrok http <port>` per project — the
+second project would be refused with `ERR_NGROK_108`. Instead it generates one
+`~/.seshat/ngrok.yml` holding every declared endpoint and runs a single
+`ngrok start --all`, the same way it generates one `Caddyfile` for Caddy.
+
+Credentials stay out of Seshat's config: `~/.seshat/ngrok.yml` contains only
+endpoints, and ngrok's own config (holding your authtoken) is layered in at
+launch.
+
+Two consequences worth knowing:
+
+- `seshat tunnel reload` **restarts** the agent — ngrok has no CLI hot-reload,
+  so live tunnels drop for a moment. Starting a project only reloads when the
+  endpoint set actually changed.
+- Seshat will not adopt an ngrok agent it did not start. If you launched one by
+  hand, `seshat tunnel up` reports it and stops, rather than killing a process
+  it doesn't own or silently reporting someone else's tunnel as yours.
 
 ## Data
 
@@ -281,6 +323,8 @@ Everything lives in `~/.seshat/`:
 | `registry.yaml` | Registered projects |
 | `state.json` | Runtime PIDs |
 | `groups.yaml` | Group assignments |
+| `ngrok.yml` | Generated tunnel endpoints (no credentials) |
+| `ngrok.pid` | PID of the Seshat-managed ngrok agent |
 | `agreement.limn` | Agent-permission Agreement |
 | `invariant.limn` | Verification contract (optional) |
 | `revocations.limn` | Revocation set (synced from platform) |

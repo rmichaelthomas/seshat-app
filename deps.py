@@ -15,6 +15,7 @@ kicked off asynchronously so they never block the main request thread.
 """
 
 import json
+import re
 import socket
 import threading
 import time
@@ -81,7 +82,7 @@ def _check_one(dep: dict) -> dict:
     try:
         if dep_type == "tunnel":
             if provider in ("ngrok", "ngrok-stable", "ngrok-edge"):
-                result = _check_ngrok()
+                result = _check_ngrok(dep.get("port"))
             elif provider in ("cloudflare", "cloudflared"):
                 result = _check_cloudflare()
             else:
@@ -112,8 +113,14 @@ def _check_one(dep: dict) -> dict:
 # ── Tunnel checkers ────────────────────────────────────────────────────────
 
 
-def _check_ngrok() -> dict:
-    """Query ngrok's local admin API at localhost:4040."""
+def _check_ngrok(port: int | None = None) -> dict:
+    """Query ngrok's local admin API at localhost:4040.
+
+    Seshat runs one shared agent serving every tunnelled project (see
+    tunnels.py), so when `port` is given we must match *this* project's
+    endpoint. Reporting on whichever tunnel happens to be first would show a
+    project as connected on the strength of some other project's tunnel.
+    """
     try:
         req = Request("http://localhost:4040/api/tunnels",
                       headers={"User-Agent": "Seshat/1.0"})
@@ -124,11 +131,16 @@ def _check_ngrok() -> dict:
         if not tunnels:
             return _disconnected("ngrok is running but no tunnels are open")
 
+        if port is not None:
+            matching = [t for t in tunnels if _upstream_port(t) == port]
+            if not matching:
+                return _disconnected(f"no ngrok tunnel is serving localhost:{port}")
+            tunnels = matching
+
         # Prefer HTTPS tunnel if both exist
         https_tunnels = [t for t in tunnels if t.get("public_url", "").startswith("https")]
         best = https_tunnels[0] if https_tunnels else tunnels[0]
         public_url = best.get("public_url", "")
-        name       = best.get("name", "")
         proto      = best.get("proto", "")
         detail     = f"{proto} tunnel — {public_url}" if public_url else "tunnel active"
         return _connected(detail, public_url)
@@ -137,6 +149,13 @@ def _check_ngrok() -> dict:
         return _disconnected("ngrok not running (no response on localhost:4040)")
     except Exception as e:
         return _disconnected(f"ngrok check failed: {e}")
+
+
+def _upstream_port(tunnel: dict) -> int | None:
+    """Extract the local port a tunnel forwards to, from its config.addr."""
+    addr = (tunnel.get("config") or {}).get("addr", "")
+    m = re.search(r":(\d+)\s*$", addr)
+    return int(m.group(1)) if m else None
 
 
 def _check_cloudflare() -> dict:
