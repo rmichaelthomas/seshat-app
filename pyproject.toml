@@ -1,6 +1,6 @@
 [project]
 name = "seshat"
-version = "2.1.0"
+version = "2.1.1"
 requires-python = ">=3.11"
 dependencies = [
     "flask>=3.0.0",
@@ -26,10 +26,12 @@ py-modules = [
     "github", "organizer", "router", "local_scanner", "agreements",
     "receipts", "invariant_check", "amendment_diff", "identity",
 ]
-packages = ["seshat_tui", "seshat_tui.domains"]
+packages = ["seshat_tui", "seshat_tui.domains", "templates", "static"]
 
 [tool.setuptools.package-data]
 seshat_tui = ["*.tcss"]
+templates = ["*.html"]
+static = ["*.css", "*.js"]
 
 [build-system]
 requires = ["setuptools>=68"]

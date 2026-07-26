@@ -293,6 +293,22 @@ Seshat is built on [Liminate](https://github.com/rmichaelthomas/liminate), a 61-
 
 The local tool is fully self-contained. Your `.limn` files, your receipt JSON files, your Agreement — you own them. Optionally sync receipts to [liminate.dev](https://liminate.dev) for cloud storage, search, and team visibility. If you stop using the platform, you keep everything.
 
+## Development
+
+Contributing or debugging locally? Don't run against system Python — the project has its own `.venv`:
+
+```bash
+git clone https://github.com/rmichaelthomas/seshat-app.git
+cd seshat-app
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/seshat serve
+```
+
+`seshat serve` is the only start command, in dev and in production alike — there's no separate "dev mode" invocation. The `.venv` just points the same command at your local source tree instead of the Homebrew-installed copy.
+
+If you add a new top-level module (a new `.py` file listed under `py-modules` in `pyproject.toml`), re-run `.venv/bin/pip install -e . --no-deps` — setuptools' editable install bakes in a fixed module map at install time, so new modules 404 on import until it's regenerated.
+
 ## Requirements
 
 - macOS (Linux support planned)
