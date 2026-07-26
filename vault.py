@@ -171,6 +171,13 @@ class Vault:
         Return {KEY: value} for each key in env_keys, resolving:
         project-specific override > shared value > (omit if missing).
         """
+        # A project declaring no env keys needs nothing from the vault. Return
+        # early rather than decrypting it — _load() reaches into the Keychain,
+        # which is needless work here and an avoidable failure point when a
+        # project is started headlessly (e.g. from a launchd agent at login).
+        if not env_keys:
+            return {}
+
         data      = self._load()
         shared    = data.get("shared", {})
         overrides = data.get("overrides", {}).get(project_name, {})

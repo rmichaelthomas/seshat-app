@@ -123,3 +123,24 @@ def test_cli_vault_set_command_then_receipts_sync_finds_the_key(monkeypatch, tmp
     result = runner.invoke(cli_mod.cli, ["receipts", "sync"])
     assert "No Receipts API key configured" not in result.output
     assert "synced" in result.output.lower()
+
+
+def test_resolve_for_project_with_no_env_keys_never_touches_the_vault():
+    """A project declaring `env: []` must not force a Keychain read.
+
+    _load() decrypts the vault via the Keychain; doing that for a project that
+    needs nothing from it is an avoidable failure point when the project is
+    started headlessly (e.g. from a launchd agent at login).
+    """
+    from unittest.mock import patch
+
+    v = Vault()
+    with patch.object(Vault, "_load", side_effect=AssertionError("vault was loaded")):
+        assert v.resolve_for_project("vault-mcp", []) == {}
+
+
+def test_resolve_for_project_still_loads_when_keys_are_declared(monkeypatch, tmp_path):
+    _isolate_vault(monkeypatch, tmp_path)
+    v = Vault()
+    v.set("SHARED_KEY", "shared-value")
+    assert v.resolve_for_project("anything", ["SHARED_KEY"]) == {"SHARED_KEY": "shared-value"}

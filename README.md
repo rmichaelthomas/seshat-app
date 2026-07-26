@@ -314,6 +314,58 @@ Two consequences worth knowing:
   hand, `seshat tunnel up` reports it and stops, rather than killing a process
   it doesn't own or silently reporting someone else's tunnel as yours.
 
+### Autostart at login
+
+The dashboard is not running at boot, so nothing starts a tunnelled project
+until you open it. For a service that should survive a reboot unattended, add a
+launchd agent at `~/Library/LaunchAgents/dev.liminate.seshat.<project>.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.liminate.seshat.vault-mcp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/seshat</string>
+        <string>start</string>
+        <string>vault-mcp</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>AbandonProcessGroup</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/you/.seshat/logs/launchd-vault-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/you/.seshat/logs/launchd-vault-mcp.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.liminate.seshat.vault-mcp.plist
+launchctl kickstart gui/$(id -u)/dev.liminate.seshat.vault-mcp   # test without rebooting
+```
+
+Three details that are easy to get wrong:
+
+- **`AbandonProcessGroup` is required.** `seshat start` spawns the service and
+  exits; without this, launchd kills the job's surviving children on exit and
+  takes the service down with it.
+- **Set `PATH` explicitly.** launchd starts with a minimal environment, and
+  Seshat resolves `ngrok` through `PATH`.
+- **No `KeepAlive`.** This is a one-shot job. `KeepAlive` with
+  `SuccessfulExit: false` would relaunch forever whenever the service is
+  already running, since `seshat start` exits non-zero on a port conflict.
+
 ## Data
 
 Everything lives in `~/.seshat/`:
