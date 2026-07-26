@@ -35,6 +35,7 @@ from rich.text import Text
 
 from registry import Registry
 from runner import Runner
+from tunnels import TunnelManager
 from vault import RECEIPTS_API_KEY_VAULT_KEY, Vault
 from scanner import Scanner
 import amendment_diff
@@ -50,6 +51,7 @@ registry = Registry()
 runner   = Runner()
 vault    = Vault()
 scanner  = Scanner()
+tunnels  = TunnelManager(registry)
 
 # ── Session identity ────────────────────────────────────────────────────────
 
@@ -78,6 +80,19 @@ def _emit(**kwargs) -> dict:
 def _enrich_deps(project: dict, project_name: str) -> list:
     """Resolve vault-held URLs into dep configs before health-checking."""
     enriched = []
+
+    # A `tunnel:` block implies a tunnel dependency — surface its health without
+    # making the user hand-write a duplicate `dependencies:` entry. The port is
+    # carried through so deps.py checks *this* project's endpoint specifically.
+    tunnel = project.get("tunnel")
+    if tunnel and project.get("port"):
+        enriched.append({
+            "type":     "tunnel",
+            "provider": (tunnel.get("provider") or "ngrok").lower(),
+            "label":    tunnel.get("domain") or "tunnel",
+            "port":     project["port"],
+        })
+
     for dep in project.get("dependencies", []):
         d = dict(dep)
         provider = d.get("provider", "").lower()
@@ -98,6 +113,26 @@ def _enrich_deps(project: dict, project_name: str) -> list:
                     d["url"] = resolved[key]
         enriched.append(d)
     return enriched
+
+
+def _ensure_tunnel(project: dict) -> None:
+    """Bring the shared ngrok agent up for a project that declares a tunnel.
+
+    Advisory: a tunnel failure must not fail the project start, so problems are
+    reported and the process continues.
+    """
+    if not project.get("tunnel"):
+        return
+    try:
+        result = tunnels.ensure()
+    except Exception as e:
+        console.print(f"[yellow]![/yellow] tunnel not started: {e}")
+        return
+    if not result.get("ok"):
+        console.print(f"[yellow]![/yellow] tunnel: {result.get('error', 'unknown error')}")
+    elif result.get("status") == "started":
+        console.print(f"[green]✓[/green] tunnel agent started "
+                      f"({result['endpoints']} endpoint(s))")
 
 
 def _build_project_view(project: dict, scan: dict, state: dict) -> dict:
@@ -314,6 +349,7 @@ def start(name, group):
                 registry.set_pid(proj_name, pid, started_by=SESSION_ID)
                 console.print(f"[green]✓[/green] {proj_name} started (PID {pid})")
                 results.append({"name": proj_name, "status": "started", "pid": pid})
+                _ensure_tunnel(project)
                 time.sleep(0.4)
                 scan = scanner.scan()
             except Exception as e:
@@ -362,6 +398,7 @@ def start(name, group):
         registry.set_pid(name, pid, started_by=SESSION_ID)
         console.print(f"[green]✓[/green] {name} started (PID {pid})")
         result = {"status": "success", "pid": pid}
+        _ensure_tunnel(project)
         _emit(
             action="start_project",
             target={"project": name, "port": project["port"]},
@@ -601,6 +638,88 @@ def vault_audit():
 
 
 cli.add_command(vault_cmd, name="vault")
+
+
+# ── Tunnel commands ─────────────────────────────────────────────────────────
+
+@cli.group()
+def tunnel_cmd():
+    """Public tunnel management (shared ngrok agent)."""
+
+
+@tunnel_cmd.command(name="status")
+def tunnel_status():
+    """Show every declared tunnel against what the agent is actually serving."""
+    state = tunnels.status()
+    if not state["endpoints"]:
+        console.print("[dim]No projects declare a tunnel.[/dim]")
+        console.print("[dim]Add a `tunnel:` block to a project in registry.yaml.[/dim]")
+        return
+
+    agent = ("[green]running[/green]" if state["running"]
+             else "[red]not running[/red]")
+    console.print(f"ngrok agent: {agent}\n")
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Project",    style="cyan", min_width=16)
+    table.add_column("Port",       min_width=6)
+    table.add_column("Status",     min_width=14)
+    table.add_column("Public URL")
+
+    for e in state["endpoints"]:
+        color = "green" if e["status"] == "connected" else "red"
+        table.add_row(
+            e["name"],
+            str(e["port"]),
+            Text(e["status"], style=color),
+            e.get("public_url") or f"[dim]{e.get('detail', '—')}[/dim]",
+        )
+    console.print(table)
+
+
+@tunnel_cmd.command(name="up")
+def tunnel_up():
+    """Start the shared ngrok agent for all tunnelled projects."""
+    result = tunnels.start()
+    if not result.get("ok"):
+        console.print(f"[red]✗[/red] {result.get('error', 'failed to start tunnel')}")
+        sys.exit(1)
+    if result.get("status") == "no_tunnels":
+        console.print("[dim]No projects declare a tunnel — nothing to start.[/dim]")
+        return
+    if result.get("status") == "already_running":
+        console.print(f"[dim]Tunnel agent already running "
+                      f"({result['endpoints']} endpoint(s)).[/dim]")
+        return
+    console.print(f"[green]✓[/green] Tunnel agent started (PID {result['pid']}, "
+                  f"{result['endpoints']} endpoint(s))")
+
+
+@tunnel_cmd.command(name="down")
+def tunnel_down():
+    """Stop the shared ngrok agent."""
+    result = tunnels.stop()
+    if result.get("status") == "not_managed":
+        console.print("[dim]No Seshat-managed tunnel agent is running.[/dim]")
+        return
+    console.print(f"[green]✓[/green] Tunnel agent stopped (was PID {result['stopped_pid']})")
+
+
+@tunnel_cmd.command(name="reload")
+def tunnel_reload():
+    """Re-sync the agent with registry.yaml (restarts it — tunnels drop briefly)."""
+    result = tunnels.reload()
+    if not result.get("ok"):
+        console.print(f"[red]✗[/red] {result.get('error', 'reload failed')}")
+        sys.exit(1)
+    if result.get("status") == "no_tunnels":
+        console.print("[dim]No tunnels declared — agent stopped.[/dim]")
+        return
+    console.print(f"[green]✓[/green] Tunnel agent reloaded "
+                  f"({result.get('endpoints', 0)} endpoint(s))")
+
+
+cli.add_command(tunnel_cmd, name="tunnel")
 
 
 # ── Agreement commands ──────────────────────────────────────────────────────

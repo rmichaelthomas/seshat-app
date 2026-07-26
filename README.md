@@ -270,7 +270,101 @@ seshat revocations sync         Pull from the platform
 seshat vault list               List vault keys (names only)
 seshat vault set <key> <value>  Set a shared secret
 seshat vault audit              Cross-reference keys vs. project declarations
+
+seshat tunnel status            Show declared tunnels vs. what's actually served
+seshat tunnel up                Start the shared ngrok agent
+seshat tunnel down              Stop the shared ngrok agent
+seshat tunnel reload            Re-sync the agent with registry.yaml
 ```
+
+## Public tunnels
+
+A project that needs a public URL — an MCP server reachable from claude.ai, a
+webhook receiver — declares a `tunnel:` block in `registry.yaml`:
+
+```yaml
+- name: vault-mcp
+  port: 6150
+  start: .venv/bin/python3 mcp_server_http.py
+  tunnel:
+    provider: ngrok                              # optional, defaults to ngrok
+    domain: your-domain.ngrok-free.dev           # optional; omit for an ephemeral URL
+```
+
+`seshat start vault-mcp` now brings up the server *and* its tunnel. The
+dashboard shows the tunnel's live status and public URL alongside the project,
+so a green project with a dead tunnel is no longer possible.
+
+**One agent, many endpoints.** ngrok's free tier permits a single simultaneous
+agent session, so Seshat does not run `ngrok http <port>` per project — the
+second project would be refused with `ERR_NGROK_108`. Instead it generates one
+`~/.seshat/ngrok.yml` holding every declared endpoint and runs a single
+`ngrok start --all`, the same way it generates one `Caddyfile` for Caddy.
+
+Credentials stay out of Seshat's config: `~/.seshat/ngrok.yml` contains only
+endpoints, and ngrok's own config (holding your authtoken) is layered in at
+launch.
+
+Two consequences worth knowing:
+
+- `seshat tunnel reload` **restarts** the agent — ngrok has no CLI hot-reload,
+  so live tunnels drop for a moment. Starting a project only reloads when the
+  endpoint set actually changed.
+- Seshat will not adopt an ngrok agent it did not start. If you launched one by
+  hand, `seshat tunnel up` reports it and stops, rather than killing a process
+  it doesn't own or silently reporting someone else's tunnel as yours.
+
+### Autostart at login
+
+The dashboard is not running at boot, so nothing starts a tunnelled project
+until you open it. For a service that should survive a reboot unattended, add a
+launchd agent at `~/Library/LaunchAgents/dev.liminate.seshat.<project>.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.liminate.seshat.vault-mcp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/seshat</string>
+        <string>start</string>
+        <string>vault-mcp</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>AbandonProcessGroup</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/you/.seshat/logs/launchd-vault-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/you/.seshat/logs/launchd-vault-mcp.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.liminate.seshat.vault-mcp.plist
+launchctl kickstart gui/$(id -u)/dev.liminate.seshat.vault-mcp   # test without rebooting
+```
+
+Three details that are easy to get wrong:
+
+- **`AbandonProcessGroup` is required.** `seshat start` spawns the service and
+  exits; without this, launchd kills the job's surviving children on exit and
+  takes the service down with it.
+- **Set `PATH` explicitly.** launchd starts with a minimal environment, and
+  Seshat resolves `ngrok` through `PATH`.
+- **No `KeepAlive`.** This is a one-shot job. `KeepAlive` with
+  `SuccessfulExit: false` would relaunch forever whenever the service is
+  already running, since `seshat start` exits non-zero on a port conflict.
 
 ## Data
 
@@ -281,6 +375,8 @@ Everything lives in `~/.seshat/`:
 | `registry.yaml` | Registered projects |
 | `state.json` | Runtime PIDs |
 | `groups.yaml` | Group assignments |
+| `ngrok.yml` | Generated tunnel endpoints (no credentials) |
+| `ngrok.pid` | PID of the Seshat-managed ngrok agent |
 | `agreement.limn` | Agent-permission Agreement |
 | `invariant.limn` | Verification contract (optional) |
 | `revocations.limn` | Revocation set (synced from platform) |
